@@ -23,8 +23,11 @@ FIREBASE_AUTH_DOMAIN="${FIREBASE_AUTH_DOMAIN:-}"
 POSTHOG_DASHBOARD_URL="${POSTHOG_DASHBOARD_URL:-https://us.posthog.com/embedded/aUBKw6XLlFMPLf2WJbRbmEzbfSpIyQ}"
 BETTERSTACK_DASHBOARD_URL="${BETTERSTACK_DASHBOARD_URL:-}"
 LOGTAIL_SOURCE_TOKEN="${LOGTAIL_SOURCE_TOKEN:-}"
+# Lease-line / local Postgres default: no TLS. Set GitHub variable DB_SSL=true after enabling server SSL.
+DB_SSL="${DB_SSL:-false}"
 
 echo "Image: $IMAGE_REF"
+echo "DB_SSL=${DB_SSL}"
 
 if ! gcloud secrets describe DATABASE_URL >/dev/null 2>&1; then
   echo "::error::Secret DATABASE_URL missing in Secret Manager"
@@ -114,7 +117,7 @@ for svc in $DEPLOY_TARGETS; do
   ENV_CSV="${ENV_CSV}##FIREBASE_AUTH_DOMAIN=${FIREBASE_AUTH_DOMAIN}"
   ENV_CSV="${ENV_CSV}##R2_BUCKET=consigmentapp"
   ENV_CSV="${ENV_CSV}##DB_USE_POSTGRES=true"
-  ENV_CSV="${ENV_CSV}##DB_SSL=false"
+  ENV_CSV="${ENV_CSV}##DB_SSL=${DB_SSL}"
   ENV_CSV="${ENV_CSV}##DB_POOL_MAX=10"
   ENV_CSV="${ENV_CSV}##SUPABASE_URL=${SUPABASE_URL}"
   ENV_CSV="${ENV_CSV}##SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}"

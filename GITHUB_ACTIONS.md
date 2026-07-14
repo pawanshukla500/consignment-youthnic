@@ -13,6 +13,27 @@ Public app URL target: **`https://consignment.youthnic.shop`**
 
 ---
 
+## PR → continuous deploy (recommended flow)
+
+1. Create a **feature branch** and open a **Pull Request** into `main`
+2. Review / merge the PR
+3. Merge to `main` triggers **Deploy to Cloud Run** automatically
+4. Pipeline syncs secrets, builds, deploys, then checks `/api/health` for **`database: connected`**
+
+**Do not** enable Cloud Run “deploy from repository” — that path has **no** `DATABASE_URL` / JWT secrets and will break the DB.
+
+### Database rules for every deploy (prevent 503)
+
+| Rule | Why |
+|------|-----|
+| GitHub secret `DATABASE_URL` uses **public** host `117.240.112.89` (not `192.168.1.40`) | Cloud Run cannot reach LAN IPs |
+| Prefer `?sslmode=disable` until local Postgres SSL is enabled | Local PG has no TLS by default |
+| Repo variable `DB_SSL` stays **`false`** until you enable SSL on the server | Deploy sets this on Cloud Run |
+| Postgres PC (`192.168.1.40`) must stay **on** + port forward **5432 → 192.168.1.40** | Lease-line dependency |
+| If BSNL public IP changes, update `DATABASE_URL` secret | Old IP → DB down |
+
+---
+
 ## Important: one deploy path only
 
 Cloud Run console **“Deploy from repository” / continuous deployment** builds without your GitHub Secrets (no `JWT_SECRET`, `DATABASE_URL`, etc.) and will crash the container with **503**.
@@ -77,6 +98,7 @@ Repository **Variables** (Settings → Secrets and variables → Actions → Var
 | `CLOUD_RUN_SERVICE` | `consignment-youthnic-git` | Optional override |
 | `CLOUD_RUN_REGION` | `europe-west1` | Deployment region |
 | `CUSTOM_DOMAIN` | `https://consignment.youthnic.shop` | Public app URL |
+| `DB_SSL` | `false` | Keep `false` for lease-line Postgres without TLS; set `true` only after enabling SSL on the server |
 
 ### 3. GitHub Secrets (required)
 
