@@ -23,19 +23,25 @@ function normalizePermissions(role = 'user', permissions = {}) {
     ...(permissions || {}),
   };
 
+  // Organization Head = email digest recipients only (Tue/Fri). Never inherit
+  // packer defaults or admin-like module grants from BASE_PERMISSIONS / legacy rows.
   if (role === 'organization_head') {
-    normalized.consignments = true;
-    normalized.packing = true;
-    normalized.productivity = true;
-    normalized.marketplaces = true;
-    normalized.auditLogs = true;
-    normalized.users = false;
+    Object.keys(normalized).forEach((key) => {
+      normalized[key] = false;
+    });
+    return normalized;
   }
 
-  if (role !== 'admin') {
+  if (role !== 'admin' && role !== 'organization_head') {
     normalized[DELETE_CONSIGNMENTS] = permissions?.[DELETE_CONSIGNMENTS] === true;
     normalized[DELETE_VIDEOS] = permissions?.[DELETE_VIDEOS] === true;
     normalized[EDIT_BOX_QUANTITIES] = permissions?.[EDIT_BOX_QUANTITIES] === true;
+  }
+
+  if (role === 'admin') {
+    Object.keys(normalized).forEach((key) => {
+      normalized[key] = true;
+    });
   }
 
   return normalized;
@@ -44,17 +50,6 @@ function normalizePermissions(role = 'user', permissions = {}) {
 function hasPermission(user, permissionKey) {
   if (!user) return false;
   if (user.role === 'admin') return true;
-  // Organization Head: full operational visibility (not user admin / settings)
-  if (user.role === 'organization_head') {
-    const orgHeadKeys = new Set([
-      'consignments',
-      'packing',
-      'productivity',
-      'marketplaces',
-      'auditLogs',
-    ]);
-    if (orgHeadKeys.has(permissionKey)) return true;
-  }
   return user.permissions?.[permissionKey] === true;
 }
 

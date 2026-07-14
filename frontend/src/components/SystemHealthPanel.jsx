@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { Activity, CheckCircle2, AlertTriangle, RefreshCw, HardDrive, Database, ShieldCheck, Cloud, UploadCloud, Radio } from 'lucide-react'
 import { settingsAPI } from '../services/api'
-import { getPendingScanCount, getFailedScanCount } from '../utils/scanQueue'
-import { getPendingSyncJobCount, getFailedSyncJobCount } from '../utils/packingSyncQueue'
-import { getQueueCount, getFailedCount } from '../utils/videoQueue'
+import { getPendingScanCount, getFailedScanCount, resetFailedScans } from '../utils/scanQueue'
+import { getPendingSyncJobCount, getFailedSyncJobCount, resetFailedSyncJobs } from '../utils/packingSyncQueue'
+import { getQueueCount, getFailedCount, resetFailedToPending } from '../utils/videoQueue'
+import { processPackingSyncQueues } from '../services/packingSyncService'
+import { processVideoUploadQueue } from '../services/videoUploadService'
 
 function StatusPill({ ok, label }) {
   return (
@@ -45,8 +47,17 @@ function ServiceCard({ logo, title, subtitle, status, children }) {
 
 export default function SystemHealthPanel() {
   const [health, setHealth] = useState(null)
-  const [localSync, setLocalSync] = useState({ pendingScans: 0, pendingVideos: 0, failedJobs: 0 })
+  const [localSync, setLocalSync] = useState({
+    pendingScans: 0,
+    pendingVideos: 0,
+    pendingSaveJobs: 0,
+    failedJobs: 0,
+    failedScans: 0,
+    failedSaveJobs: 0,
+    failedVideos: 0,
+  })
   const [loading, setLoading] = useState(true)
+  const [retrying, setRetrying] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -64,8 +75,11 @@ export default function SystemHealthPanel() {
       setLocalSync({
         pendingScans,
         pendingVideos,
-        failedJobs: failedScans + failedSaveJobs + failedVideos,
         pendingSaveJobs,
+        failedScans,
+        failedSaveJobs,
+        failedVideos,
+        failedJobs: failedScans + failedSaveJobs + failedVideos,
       })
     } catch {
       setHealth(null)
@@ -73,6 +87,24 @@ export default function SystemHealthPanel() {
       setLoading(false)
     }
   }, [])
+
+  const retryFailedLocalSync = async () => {
+    setRetrying(true)
+    try {
+      await Promise.all([
+        resetFailedScans(),
+        resetFailedSyncJobs(),
+        resetFailedToPending(),
+      ])
+      await processPackingSyncQueues()
+      await processVideoUploadQueue({ retryFailed: true, forceNow: true })
+      await load()
+    } catch (error) {
+      console.error('[SystemHealth] retry local sync failed', error)
+    } finally {
+      setRetrying(false)
+    }
+  }
 
   useEffect(() => { load() }, [load])
 
@@ -159,14 +191,25 @@ export default function SystemHealthPanel() {
             <div className="flex justify-between gap-2"><dt className="text-slate-500">Pending scans</dt><dd className="font-bold text-slate-900">{localSync.pendingScans}</dd></div>
             <div className="flex justify-between gap-2"><dt className="text-slate-500">Pending videos</dt><dd className="font-bold text-slate-900">{localSync.pendingVideos}</dd></div>
             <div className="flex justify-between gap-2"><dt className="text-slate-500">Pending boxes</dt><dd className="font-bold text-slate-900">{localSync.pendingSaveJobs}</dd></div>
-            <div className="flex justify-between gap-2"><dt className="text-slate-500">Failed sync jobs</dt><dd className={`font-bold ${localSync.failedJobs ? 'text-red-600' : 'text-emerald-600'}`}>{localSync.failedJobs}</dd></div>
-            <p className="text-[10px] text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2">Counts are from this device's IndexedDB queue and help prevent unnoticed scan/video loss.</p>
+            <div className="flex justify-between gap-2"><dt className="text-slate-500">Failed scans / boxes / videos</dt><dd className={`font-bold ${localSync.failedJobs ? 'text-red-600' : 'text-emerald-600'}`}>{localSync.failedScans || 0} / {localSync.failedSaveJobs || 0} / {localSync.failedVideos || 0}</dd></div>
+            <p className="text-[10px] text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2">Counts are from this browser IndexedDB. Failed jobs usually come from offline periods or interrupted video uploads.</p>
+            {localSync.failedJobs > 0 && (
+              <button
+                type="button"
+                onClick={retryFailedLocalSync}
+                disabled={retrying}
+                className="w-full mt-1 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-60"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${retrying ? 'animate-spin' : ''}`} />
+                {retrying ? 'Retrying…' : 'Retry failed sync jobs'}
+              </button>
+            )}
           </dl>
         </ServiceCard>
 
         <ServiceCard
           logo={<ServiceIcon icon={Database} />}
-          title="PostgreSQL"
+          title={dataService.provider === 'cockroach' ? 'CockroachDB' : 'PostgreSQL'}
           subtitle={dataService.provider ? `${dataService.provider} — ${dataService.database || 'database'}` : 'Operational data store'}
           status={<StatusPill ok={dataService.connected} label={dataService.connected ? 'Connected' : 'Offline'} />}
         >
@@ -178,6 +221,15 @@ export default function SystemHealthPanel() {
             <div className="flex justify-between gap-2"><dt className="text-slate-500">Failed queries</dt><dd className="font-medium text-slate-800">{dataService.failedQueryCount ?? 0}</dd></div>
             {dataService.totalDocuments != null && (
               <div className="flex justify-between gap-2"><dt className="text-slate-500">Records</dt><dd className="font-bold text-primary-600">{dataService.totalDocuments?.toLocaleString()}</dd></div>
+            )}
+            {dataService.usage && (
+              <>
+                <div className="flex justify-between gap-2"><dt className="text-slate-500">Docs JSON size</dt><dd className="font-medium text-slate-800">{dataService.usage.approxDocumentsJsonPretty || '—'}</dd></div>
+                <div className="flex justify-between gap-2"><dt className="text-slate-500">Free storage</dt><dd className="font-medium text-slate-800">{dataService.usage.freeTierStorageGiB} GiB / mo</dd></div>
+                <div className="flex justify-between gap-2"><dt className="text-slate-500">Free RUs</dt><dd className="font-medium text-slate-800">{Number(dataService.usage.freeTierRUs).toLocaleString()} / mo</dd></div>
+                <div className="flex justify-between gap-2"><dt className="text-slate-500">RUs used MTD</dt><dd className="font-medium text-slate-800">{dataService.usage.rusMonthToDate != null ? Number(dataService.usage.rusMonthToDate).toLocaleString() : 'See Cloud console'}</dd></div>
+                <p className="text-[10px] text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2">{dataService.usage.note}</p>
+              </>
             )}
             {!validation.valid && (
               <p className="text-[10px] text-red-600 bg-red-50 border border-red-100 rounded-lg p-2 mt-1">{validation.error}</p>

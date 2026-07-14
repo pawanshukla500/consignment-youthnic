@@ -37,6 +37,18 @@ const DEFAULT_PERMISSIONS = {
   editBoxQuantities: false,
 }
 
+const EMAIL_ONLY_PERMISSIONS = {
+  consignments: false,
+  packing: false,
+  productivity: false,
+  marketplaces: false,
+  users: false,
+  auditLogs: false,
+  deleteConsignments: false,
+  deleteVideos: false,
+  editBoxQuantities: false,
+}
+
 const emptyForm = () => ({
   name: '',
   email: '',
@@ -44,6 +56,16 @@ const emptyForm = () => ({
   role: 'user',
   permissions: { ...DEFAULT_PERMISSIONS },
 })
+
+const permissionsForRole = (role, current = {}) => {
+  if (role === 'admin') {
+    return Object.fromEntries(ALL_PERMISSIONS.map((p) => [p.key, true]))
+  }
+  if (role === 'organization_head') {
+    return { ...EMAIL_ONLY_PERMISSIONS }
+  }
+  return { ...DEFAULT_PERMISSIONS, ...current }
+}
 
 function PermissionGrid({ permissions, onToggle, disabled }) {
   return (
@@ -200,7 +222,7 @@ export default function Users() {
       name: u.name,
       email: u.email,
       role: u.role || 'user',
-      permissions: { ...DEFAULT_PERMISSIONS, ...u.permissions },
+      permissions: permissionsForRole(u.role || 'user', u.permissions || {}),
     })
   }
 
@@ -338,7 +360,14 @@ export default function Users() {
                       {editing === u.id ? (
                         <select
                           value={editForm.role}
-                          onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                          onChange={(e) => {
+                            const role = e.target.value
+                            setEditForm({
+                              ...editForm,
+                              role,
+                              permissions: permissionsForRole(role, editForm.permissions),
+                            })
+                          }}
                           className="inp py-1.5 text-xs w-auto"
                         >
                           <option value="user">User</option>
@@ -367,8 +396,11 @@ export default function Users() {
                           <DeletionPermissionGrid
                             permissions={editForm.permissions}
                             onToggle={(key) => togglePerm(key, true)}
-                            disabled={isSubmitting || editForm.role === 'admin'}
+                            disabled={isSubmitting || editForm.role === 'admin' || editForm.role === 'organization_head'}
                           />
+                          {editForm.role === 'organization_head' && (
+                            <p className="text-[10px] text-slate-500">Email reports only — module access is locked off.</p>
+                          )}
                         </div>
                       ) : (
                         <div className="flex flex-wrap gap-1">
@@ -514,7 +546,14 @@ export default function Users() {
               <label className="block text-[11px] font-medium text-slate-600 mb-1">Role</label>
               <select
                 value={form.role}
-                onChange={(e) => setForm({ ...form, role: e.target.value })}
+                onChange={(e) => {
+                  const role = e.target.value
+                  setForm({
+                    ...form,
+                    role,
+                    permissions: permissionsForRole(role, form.permissions),
+                  })
+                }}
                 className="inp py-1.5 text-xs"
               >
                 <option value="user">User — module access only</option>
@@ -535,7 +574,9 @@ export default function Users() {
               <p className="text-[10px] text-slate-500 mt-2">Admins have access to all modules.</p>
             )}
             {form.role === 'organization_head' && (
-              <p className="text-[10px] text-slate-500 mt-2">Organization Heads receive twice-weekly email summaries (Tuesday & Friday). There is no separate Org Head page.</p>
+              <p className="text-[10px] text-slate-500 mt-2">
+                Organization Heads receive Tuesday & Friday email summaries only. Module access stays locked off.
+              </p>
             )}
           </div>
 
@@ -544,9 +585,12 @@ export default function Users() {
             <DeletionPermissionGrid
               permissions={form.permissions}
               onToggle={(key) => togglePerm(key)}
-              disabled={isSubmitting || form.role === 'admin'}
+              disabled={isSubmitting || form.role === 'admin' || form.role === 'organization_head'}
             />
-            {form.role !== 'admin' && (
+            {form.role === 'organization_head' && (
+              <p className="text-[10px] text-slate-500 mt-2">Deletion is locked off for Organization Heads.</p>
+            )}
+            {form.role !== 'admin' && form.role !== 'organization_head' && (
               <p className="text-[10px] text-slate-500 mt-2">These are off by default for non-admin users.</p>
             )}
           </div>

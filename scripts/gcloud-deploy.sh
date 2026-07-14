@@ -23,8 +23,8 @@ FIREBASE_AUTH_DOMAIN="${FIREBASE_AUTH_DOMAIN:-}"
 POSTHOG_DASHBOARD_URL="${POSTHOG_DASHBOARD_URL:-https://us.posthog.com/embedded/aUBKw6XLlFMPLf2WJbRbmEzbfSpIyQ}"
 BETTERSTACK_DASHBOARD_URL="${BETTERSTACK_DASHBOARD_URL:-}"
 LOGTAIL_SOURCE_TOKEN="${LOGTAIL_SOURCE_TOKEN:-}"
-# Lease-line / local Postgres default: no TLS. Set GitHub variable DB_SSL=true after enabling server SSL.
-DB_SSL="${DB_SSL:-false}"
+# Managed cloud DBs (Cockroach/Neon/Supabase) need TLS. Lease-line Postgres may use DB_SSL=false.
+DB_SSL="${DB_SSL:-true}"
 
 echo "Image: $IMAGE_REF"
 echo "DB_SSL=${DB_SSL}"
@@ -36,33 +36,34 @@ fi
 
 DB_URL="$(gcloud secrets versions access latest --secret=DATABASE_URL)"
 DB_HOST="$(DB_URL="$DB_URL" python3 -c 'import os,urllib.parse; print(urllib.parse.urlparse(os.environ["DB_URL"]).hostname or "")')"
+DB_PORT="$(DB_URL="$DB_URL" python3 -c 'import os,urllib.parse; u=urllib.parse.urlparse(os.environ["DB_URL"]); print(u.port or (26257 if "cockroach" in (u.hostname or "") else 5432))')"
 
-echo "DATABASE_URL host: ${DB_HOST:-unknown}"
+echo "DATABASE_URL host: ${DB_HOST:-unknown} port: ${DB_PORT}"
 
 case "$DB_HOST" in
   localhost|127.0.0.1|::1|0.0.0.0|"")
-    echo "::error::DATABASE_URL host is local/empty ($DB_HOST). Use public IP (e.g. 117.x.x.x) in GitHub secret DATABASE_URL."
+    echo "::error::DATABASE_URL host is local/empty ($DB_HOST). Use a public host (Cockroach / Neon / public IP)."
     exit 1
     ;;
 esac
 
 if echo "$DB_HOST" | grep -Eq '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)'; then
-  echo "::error::DATABASE_URL points at private LAN IP ($DB_HOST). Cloud Run cannot reach it. Use your public IP."
+  echo "::error::DATABASE_URL points at private LAN IP ($DB_HOST). Cloud Run cannot reach it. Use Cockroach Cloud or a public IP."
   exit 1
 fi
 
-echo "Probing TCP ${DB_HOST}:5432 from this runner..."
-if ! DB_HOST="$DB_HOST" python3 -c 'import os,socket,sys
-h=os.environ["DB_HOST"]
+echo "Probing TCP ${DB_HOST}:${DB_PORT} from this runner..."
+if ! DB_HOST="$DB_HOST" DB_PORT="$DB_PORT" python3 -c 'import os,socket,sys
+h=os.environ["DB_HOST"]; p=int(os.environ["DB_PORT"])
 try:
-  socket.create_connection((h,5432),timeout=15).close()
-  print("OK", h)
+  socket.create_connection((h,p),timeout=20).close()
+  print("OK", f"{h}:{p}")
 except Exception as e:
-  print("FAIL", h, e, file=sys.stderr); sys.exit(1)'; then
-  echo "::error::Cannot open TCP ${DB_HOST}:5432 from the internet. Check port forward / BSNL firewall."
+  print("FAIL", f"{h}:{p}", e, file=sys.stderr); sys.exit(1)'; then
+  echo "::error::Cannot open TCP ${DB_HOST}:${DB_PORT} from the internet. Check DATABASE_URL host/port / firewall."
   exit 1
 fi
-echo "TCP ${DB_HOST}:5432 reachable"
+echo "TCP ${DB_HOST}:${DB_PORT} reachable"
 
 SECRET_CSV=""
 for pair in \

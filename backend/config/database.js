@@ -107,6 +107,9 @@ async function initSchema() {
     return false;
   }
 
+  const isCockroach = lastValidation?.provider === 'cockroach'
+    || /cockroachdb/i.test(String(lastValidation?.host || ''));
+
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS documents (
@@ -118,7 +121,6 @@ async function initSchema() {
         PRIMARY KEY (collection, id)
       );
       CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection);
-      CREATE INDEX IF NOT EXISTS idx_documents_data_gin ON documents USING GIN (data jsonb_path_ops);
       CREATE INDEX IF NOT EXISTS idx_documents_updated_at ON documents(collection, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_documents_status
         ON documents ((data->>'status'))
@@ -154,59 +156,70 @@ async function initSchema() {
       CREATE INDEX IF NOT EXISTS idx_users_firebase_uid ON users(firebase_uid);
     `);
 
-    await pool.query(`
-      ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
-      ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+    // JSONB inverted / GIN index — Cockroach does not support jsonb_path_ops.
+    if (isCockroach) {
+      await pool.query(`
+        CREATE INVERTED INDEX IF NOT EXISTS idx_documents_data_inverted ON documents(data)
+      `);
+    } else {
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_documents_data_gin ON documents USING GIN (data jsonb_path_ops)
+      `);
+    }
 
-      DO $$
-      BEGIN
-        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
-          GRANT SELECT ON documents TO authenticated;
-          -- users table is never granted to authenticated (C1: no Realtime/user harvest)
+    if (!isCockroach) {
+      await pool.query(`
+        ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 
-          IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'auth') THEN
-            DROP POLICY IF EXISTS realtime_read_documents ON documents;
-            CREATE POLICY realtime_read_documents ON documents
-              FOR SELECT TO authenticated
-              USING (
-                (auth.jwt() ->> 'app_user_id') IS NOT NULL
-                AND collection IS DISTINCT FROM 'users'
-              );
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+            GRANT SELECT ON documents TO authenticated;
 
-            DROP POLICY IF EXISTS realtime_read_users ON users;
-            DROP POLICY IF EXISTS deny_anon_users ON users;
-            CREATE POLICY deny_anon_users ON users
-              FOR ALL TO anon, authenticated
-              USING (false)
-              WITH CHECK (false);
+            IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'auth') THEN
+              DROP POLICY IF EXISTS realtime_read_documents ON documents;
+              CREATE POLICY realtime_read_documents ON documents
+                FOR SELECT TO authenticated
+                USING (
+                  (auth.jwt() ->> 'app_user_id') IS NOT NULL
+                  AND collection IS DISTINCT FROM 'users'
+                );
+
+              DROP POLICY IF EXISTS realtime_read_users ON users;
+              DROP POLICY IF EXISTS deny_anon_users ON users;
+              CREATE POLICY deny_anon_users ON users
+                FOR ALL TO anon, authenticated
+                USING (false)
+                WITH CHECK (false);
+            END IF;
           END IF;
-        END IF;
-      END $$;
-    `);
+        END $$;
+      `);
 
-    await pool.query(`
-      DO $$
-      BEGIN
-        IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_publication_tables
-            WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'documents'
-          ) THEN
-            ALTER PUBLICATION supabase_realtime ADD TABLE public.documents;
+      await pool.query(`
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_publication_tables
+              WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'documents'
+            ) THEN
+              ALTER PUBLICATION supabase_realtime ADD TABLE public.documents;
+            END IF;
+            IF EXISTS (
+              SELECT 1 FROM pg_publication_tables
+              WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'users'
+            ) THEN
+              ALTER PUBLICATION supabase_realtime DROP TABLE public.users;
+            END IF;
           END IF;
-          -- Explicitly keep users out of Realtime publication
-          IF EXISTS (
-            SELECT 1 FROM pg_publication_tables
-            WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'users'
-          ) THEN
-            ALTER PUBLICATION supabase_realtime DROP TABLE public.users;
-          END IF;
-        END IF;
-      END $$;
-    `);
+        END $$;
+      `);
+    }
 
     recordQuerySuccess();
-    console.log('[Postgres] Schema ready.');
+    console.log(`[Postgres] Schema ready${isCockroach ? ' (cockroach)' : ''}.`);
     return true;
   } catch (e) {
     recordQueryFailure(e);

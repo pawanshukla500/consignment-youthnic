@@ -103,6 +103,7 @@ function detectProvider(hostname) {
   if (!hostname) return 'unknown';
   if (hostname.includes('neon.tech')) return 'neon';
   if (hostname.includes('supabase.co')) return 'supabase';
+  if (hostname.includes('cockroachlabs.cloud') || hostname.includes('cockroachdb.cloud')) return 'cockroach';
   if (hostname.includes('googleusercontent.com') || hostname.match(/^\d+\.\d+\.\d+\.\d+$/)) return 'cloud-sql';
   return 'postgresql';
 }
@@ -120,10 +121,18 @@ function isLocalOrPrivateHost(hostname) {
 
 function shouldUseSsl(connectionString, hostname) {
   const explicit = String(process.env.DB_SSL || '').trim().toLowerCase();
-  if (explicit === 'false' || explicit === '0' || explicit === 'off') return false;
+  if (explicit === 'false' || explicit === '0' || explicit === 'off') {
+    // Cockroach Cloud / managed hosts always need TLS — don't honor a mistaken DB_SSL=false.
+    if (/cockroachlabs\.cloud|neon\.tech|supabase\.co/i.test(hostname || '')
+      || /sslmode=(require|verify-ca|verify-full)/i.test(connectionString || '')) {
+      return true;
+    }
+    return false;
+  }
   if (explicit === 'true' || explicit === '1' || explicit === 'on') return true;
-  if (connectionString.includes('sslmode=require')) return true;
+  if (/sslmode=(require|verify-ca|verify-full)/i.test(connectionString || '')) return true;
   if (connectionString.includes('neon.tech') || connectionString.includes('supabase.co')) return true;
+  if (connectionString.includes('cockroachlabs.cloud') || connectionString.includes(':26257')) return true;
   // Production + public/routable host → require TLS unless explicitly opted out above.
   if (process.env.NODE_ENV === 'production' && !isLocalOrPrivateHost(hostname)) return true;
   return false;

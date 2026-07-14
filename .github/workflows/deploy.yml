@@ -244,7 +244,7 @@ jobs:
           FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
           FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
           LOGTAIL_SOURCE_TOKEN: ${{ secrets.LOGTAIL_SOURCE_TOKEN }}
-          DB_SSL: ${{ vars.DB_SSL || 'false' }}
+          DB_SSL: ${{ vars.DB_SSL || 'true' }}
         run: |
           if [ "${{ github.event.inputs.skip_build }}" = "true" ]; then
             export IMAGE_REF="gcr.io/$PROJECT_ID/$IMAGE_NAME:latest"

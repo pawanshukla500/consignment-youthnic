@@ -26,11 +26,11 @@ Public app URL target: **`https://consignment.youthnic.shop`**
 
 | Rule | Why |
 |------|-----|
-| GitHub secret `DATABASE_URL` uses **public** host `117.240.112.89` (not `192.168.1.40`) | Cloud Run cannot reach LAN IPs |
-| Prefer `?sslmode=disable` until local Postgres SSL is enabled | Local PG has no TLS by default |
-| Repo variable `DB_SSL` stays **`false`** until you enable SSL on the server | Deploy sets this on Cloud Run |
-| Postgres PC (`192.168.1.40`) must stay **on** + port forward **5432 → 192.168.1.40** | Lease-line dependency |
-| If BSNL public IP changes, update `DATABASE_URL` secret | Old IP → DB down |
+| GitHub secret `DATABASE_URL` must be a **public** host (Cockroach Cloud / Neon / public IP) | Cloud Run cannot reach LAN IPs like `192.168.1.40` |
+| Current production DB: **CockroachDB Cloud** (`*.cockroachlabs.cloud:26257`) with `?sslmode=verify-full` | Europe region near Cloud Run |
+| Repo variable `DB_SSL` must be **`true`** for Cockroach / Neon / Supabase | Deploy sets this on Cloud Run |
+| Deploy probes the **URL port** (Cockroach `26257`, Postgres `5432`) | Old hard-coded `5432` probe fails on Cockroach |
+| Free Basic tier ≈ **50M RUs + 10 GiB** storage/month (org credit) | Watch Cluster Overview → Usage this month |
 
 ---
 
@@ -98,7 +98,7 @@ Repository **Variables** (Settings → Secrets and variables → Actions → Var
 | `CLOUD_RUN_SERVICE` | `consignment-youthnic-git` | Optional override |
 | `CLOUD_RUN_REGION` | `europe-west1` | Deployment region |
 | `CUSTOM_DOMAIN` | `https://consignment.youthnic.shop` | Public app URL |
-| `DB_SSL` | `false` | Keep `false` for lease-line Postgres without TLS; set `true` only after enabling SSL on the server |
+| `DB_SSL` | `true` | Required for Cockroach Cloud / Neon / Supabase. Use `false` only for lease-line Postgres without TLS |
 
 ### 3. GitHub Secrets (required)
 
@@ -107,7 +107,7 @@ Repository **Variables** (Settings → Secrets and variables → Actions → Var
 | `GCP_PROJECT_ID` | GCP project ID |
 | `GCP_SA_KEY` | Full JSON key for the deploy service account |
 | `JWT_SECRET` | Strong random string (32+ chars) for app JWT signing |
-| `DATABASE_URL` | **Must be reachable from the public internet** (Cloud SQL / hosted Postgres). A LAN IP like `192.168.x.x` will crash Cloud Run with **503**. |
+| `DATABASE_URL` | **Public** Postgres-compatible URL. Prefer Cockroach Cloud (`…cockroachlabs.cloud:26257/defaultdb?sslmode=verify-full`). LAN IPs crash Cloud Run with **503**. |
 | `MAILGUN_API_KEY` | Mailgun API key |
 | `MAILGUN_DOMAIN` | e.g. `youthnic.shop` |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Full Firebase Admin SDK JSON |

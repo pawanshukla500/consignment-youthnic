@@ -29,4 +29,16 @@ assert.strictEqual(sneaky[DELETE_VIDEOS], true);
 const denied = normalizePermissions('user', {});
 assert.strictEqual(denied[DELETE_CONSIGNMENTS], false);
 
+const orgHead = normalizePermissions('organization_head', {
+  consignments: true,
+  packing: true,
+  users: true,
+  deleteConsignments: true,
+});
+assert.strictEqual(orgHead.consignments, false);
+assert.strictEqual(orgHead.packing, false);
+assert.strictEqual(orgHead.users, false);
+assert.strictEqual(orgHead[DELETE_CONSIGNMENTS], false);
+assert.strictEqual(hasPermission({ role: 'organization_head', permissions: orgHead }, 'consignments'), false);
+
 console.log('H1 permission helper tests passed.');

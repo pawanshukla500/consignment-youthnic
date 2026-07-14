@@ -141,10 +141,12 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
     if (!stage) return res.status(400).json({ error: 'stage is required.' });
 
     const isAssignee = consignment.groundTeamUserId && consignment.groundTeamUserId === req.user.id;
-    const isElevated = req.user.role === 'admin' || req.user.role === 'organization_head';
-    if (!isAssignee && !isElevated) {
+    const isAdmin = req.user.role === 'admin';
+    // Org heads are email-report recipients — they must not act as ground/admin on stages.
+    // Invoice mismatch exceptions remain elevatable by admin (or via dedicated org-head report APIs).
+    if (!isAssignee && !isAdmin) {
       return res.status(403).json({
-        error: 'Only the assigned ground team member (or management) can confirm this stage.',
+        error: 'Only the assigned ground team member (or an admin) can confirm this stage.',
         code: 'NOT_ASSIGNEE',
       });
     }
@@ -154,7 +156,7 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
       && consignment.dispatchBlockedForInvoiceMismatch
       && !consignment.invoiceMismatchExceptionApproved
     ) {
-      if (approveInvoiceException && isElevated) {
+      if (approveInvoiceException && isAdmin) {
         await firestoreHelpers.setDocument('consignments', consignment.id, {
           invoiceMismatchExceptionApproved: true,
           invoiceMismatchExceptionApprovedBy: req.user.id,
@@ -166,7 +168,7 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
         consignment.dispatchBlockedForInvoiceMismatch = false;
       } else {
         return res.status(409).json({
-          error: 'Dispatch is blocked until invoice quantity matches final packed quantity after a post-packing removal. An admin or organization head can approve an exception.',
+          error: 'Dispatch is blocked until invoice quantity matches final packed quantity after a post-packing removal. An admin can approve an exception.',
           code: 'INVOICE_QTY_MISMATCH',
         });
       }

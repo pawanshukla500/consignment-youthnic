@@ -32,8 +32,7 @@ const CopyrightPage = lazy(() => import('./pages/CopyrightPage'))
 
 const Spinner = () => <PageSpinner label="Loading application…" />
 
-const isElevatedRole = (user) =>
-  user?.role === 'admin' || user?.role === 'organization_head'
+const isElevatedRole = (user) => user?.role === 'admin'
 
 const PrivateRoute = ({ children }) => {
   const { isAuthenticated, loading, validateSession } = useAuth()

@@ -12,7 +12,7 @@ const { sendPasswordResetEmail } = require('../utils/passwordReset');
 const { isMailgunConfigured } = require('../utils/mailgun');
 const { syncDefaultAdminToFirebase } = require('../utils/adminBootstrap');
 const { sanitizeUserForApi } = require('../utils/sanitizeUser');
-const { requestUserHasAnyPermission } = require('../utils/permissions');
+const { requestUserHasAnyPermission, normalizePermissions } = require('../utils/permissions');
 const {
   shouldCheckRevoked,
   buildSessionUserFromAuth,
@@ -30,13 +30,14 @@ function normalizeIdToken(raw) {
 
 // Issue an app JWT for a verified user record (used by both login flows)
 function issueAppToken(user) {
+  const permissions = normalizePermissions(user.role, user.permissions || {});
   return jwt.sign(
     {
       id: user.id,
       email: user.email,
       name: user.name,
       role: user.role,
-      permissions: user.permissions || DEFAULT_PERMISSIONS,
+      permissions,
       firebaseUid: user.firebaseUid || user.firebase_uid || null,
       warehouseId: user.warehouseId || user.warehouse_id || user.warehouse || null,
       tokenVersion: currentTokenVersion(user),
@@ -55,7 +56,7 @@ function syncAuthenticatedProfile(user, decoded) {
   const sessionUser = buildSessionUserFromAuth(
     {
       ...user,
-      permissions: user.permissions || DEFAULT_PERMISSIONS,
+      permissions: normalizePermissions(user.role, user.permissions || {}),
     },
     decoded,
     now
@@ -121,14 +122,15 @@ async function loadDefaultAdminUser(decoded = null) {
 
 function loginResponse(sessionUser) {
   const safe = sanitizeUserForApi(sessionUser);
+  const permissions = normalizePermissions(safe.role, safe.permissions || {});
   return {
-    token: issueAppToken(sessionUser),
+    token: issueAppToken({ ...sessionUser, permissions }),
     user: {
       id: safe.id,
       email: safe.email,
       name: safe.name,
       role: safe.role,
-      permissions: safe.permissions || DEFAULT_PERMISSIONS,
+      permissions,
       firebaseUid: safe.firebaseUid || null,
       warehouseId: safe.warehouseId || null,
     }
@@ -471,30 +473,45 @@ router.get('/me', authenticateToken, async (req, res) => {
     const decoded = req.user;
     if (decoded.id === DEFAULT_USER.id) {
       const adminUser = await loadDefaultAdminForSession();
+      const permissions = normalizePermissions('admin', adminUser.permissions || DEFAULT_PERMISSIONS);
       return res.json({
         user: sanitizeUserForApi({
           ...decoded,
           email: adminUser.email,
           name: adminUser.name,
-          permissions: adminUser.permissions || DEFAULT_PERMISSIONS,
+          role: 'admin',
+          permissions,
         }),
       });
     }
     const dbUser = await firestoreHelpers.getDocument('users', decoded.id);
     if (dbUser) {
+      const role = dbUser.role || decoded.role;
+      const permissions = normalizePermissions(role, dbUser.permissions || decoded.permissions || {});
+      // Heal legacy org-head rows that still store packer/admin module grants.
+      if (role === 'organization_head' && JSON.stringify(dbUser.permissions || {}) !== JSON.stringify(permissions)) {
+        setImmediate(() => {
+          firestoreHelpers.setDocument('users', dbUser.id || decoded.id, {
+            permissions,
+            updatedAt: now(),
+          }).catch(() => {});
+        });
+      }
       return res.json({
         user: sanitizeUserForApi({
           ...decoded,
-          permissions: dbUser.permissions || decoded.permissions || DEFAULT_PERMISSIONS,
+          role,
+          permissions,
           firebaseUid: dbUser.firebaseUid || decoded.firebaseUid || null,
           warehouseId: dbUser.warehouseId || dbUser.warehouse_id || dbUser.warehouse || decoded.warehouseId || null,
         }),
       });
     }
+    const role = decoded.role;
     res.json({
       user: sanitizeUserForApi({
         ...decoded,
-        permissions: decoded.permissions || DEFAULT_PERMISSIONS,
+        permissions: normalizePermissions(role, decoded.permissions || {}),
       }),
     });
   } catch (error) {

@@ -22,10 +22,8 @@ const Sidebar = ({ forceCollapsed = false }) => {
     window.dispatchEvent(new CustomEvent('sidebarToggle', { detail: { collapsed: next } }));
   };
 
-  const isOrgHead = user?.role === 'organization_head';
   const hasPerm = (key) =>
     user?.role === 'admin' ||
-    isOrgHead ||
     user?.permissions?.[key] === true;
 
   const navGroups = [

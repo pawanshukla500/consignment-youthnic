@@ -26,7 +26,7 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
   const [busyStage, setBusyStage] = useState(null)
   const [assigning, setAssigning] = useState(false)
 
-  const isElevated = user?.role === 'admin' || user?.role === 'organization_head'
+  const isElevated = user?.role === 'admin'
   const isAssignee = consignment?.groundTeamUserId && consignment.groundTeamUserId === user?.id
   const canConfirm = isElevated || isAssignee
   const canAssign = isElevated || user?.permissions?.consignments === true

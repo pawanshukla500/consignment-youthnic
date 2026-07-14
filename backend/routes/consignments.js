@@ -17,7 +17,7 @@ const {
 } = require('../utils/consignmentWorkflow');
 const { saveBoxWithPostgresTransaction } = require('../utils/packingPersistence');
 const { getMarketplaceBarcode, normalizeSkuInput } = require('../utils/skuIdentity');
-const { enrichFileRecord, resolveStoragePath, resolvePublicUrl, deleteFile } = require('../utils/storage');
+const { resolveStoragePath, resolvePublicUrl, deleteFile } = require('../utils/storage');
 const { requirePermission, requireAnyPermission, DELETE_CONSIGNMENTS } = require('../utils/permissions');
 const { buildConsignmentId } = require('../utils/resolveConsignment');
 const { reassignConsignmentId } = require('../utils/consignmentIdMigration');
@@ -1115,15 +1115,23 @@ router.get('/:id', authenticateToken, requireAnyPermission(['consignments', 'pac
       return firestoreHelpers.batchGetDocuments(collection, ids);
     };
 
-    const [skus, boxesFromIds, queriedBoxes, videosFromIds, queriedVideos, documentsFromIds, queriedDocuments, marketplace] = await Promise.all([
+    const boxesPromise = consignment.boxIds?.length
+      ? fetchRelated(consignment.boxIds, 'boxes')
+      : firestoreHelpers.queryCollection('boxes', 'consignmentId', '==', id)
+    const videosPromise = consignment.videoIds?.length
+      ? fetchRelated(consignment.videoIds, 'videos')
+      : firestoreHelpers.queryCollection('videos', 'consignmentId', '==', id)
+    const documentsPromise = consignment.documentIds?.length
+      ? fetchRelated(consignment.documentIds, 'documents')
+      : firestoreHelpers.queryCollection('documents', 'consignmentId', '==', id)
+
+    const [skus, boxesRaw, videosRaw, documentsRaw, marketplace, adjustments] = await Promise.all([
       fetchRelated(consignment.skuIds, 'skus'),
-      fetchRelated(consignment.boxIds, 'boxes'),
-      firestoreHelpers.queryCollection('boxes', 'consignmentId', '==', id),
-      fetchRelated(consignment.videoIds, 'videos'),
-      firestoreHelpers.queryCollection('videos', 'consignmentId', '==', id),
-      fetchRelated(consignment.documentIds, 'documents'),
-      firestoreHelpers.queryCollection('documents', 'consignmentId', '==', id),
-      consignment.marketplaceId ? firestoreHelpers.getDocument('marketplaces', consignment.marketplaceId) : null
+      boxesPromise,
+      videosPromise,
+      documentsPromise,
+      consignment.marketplaceId ? firestoreHelpers.getDocument('marketplaces', consignment.marketplaceId) : null,
+      listAdjustmentsForConsignment(id),
     ]);
 
     const uniqueById = (records = []) => {
@@ -1135,29 +1143,39 @@ router.get('/:id', authenticateToken, requireAnyPermission(['consignments', 'pac
       return Array.from(byId.values());
     };
 
-    const boxes = uniqueById([...(boxesFromIds || []), ...(queriedBoxes || [])]).sort((a, b) => {
+    const boxes = uniqueById(boxesRaw || []).sort((a, b) => {
       const aNo = String(a.boxNo || a.box_no || '');
       const bNo = String(b.boxNo || b.box_no || '');
       return aNo.localeCompare(bNo, undefined, { numeric: true });
     });
 
-    const videos = uniqueById([...(videosFromIds || []), ...(queriedVideos || [])]);
-    const documents = uniqueById([...(documentsFromIds || []), ...(queriedDocuments || [])]);
+    const videos = uniqueById(videosRaw || []);
+    const documents = uniqueById(documentsRaw || []);
 
-    const [enrichedVideos, enrichedDocuments] = await Promise.all([
-      Promise.all(videos.map((v) => enrichFileRecord({ ...v, type: 'video' }))),
-      Promise.all(documents.map((d) => enrichFileRecord({ ...d, type: 'document' }))),
-    ]);
+    // playUrl is a local API path — no remote signed-URL round trips on detail load
+    const enrichedVideos = videos.map((v) => ({
+      ...v,
+      type: 'video',
+      storageProvider: v.storageProvider || 'r2',
+      playUrl: v.id ? `/api/uploads/stream/${encodeURIComponent(v.id)}?type=video` : null,
+      url: v.url || null,
+    }));
+    const enrichedDocuments = documents.map((d) => ({
+      ...d,
+      type: 'document',
+      storageProvider: d.storageProvider || 'r2',
+      playUrl: d.id ? `/api/uploads/stream/${encodeURIComponent(d.id)}?type=document` : null,
+      url: d.url || null,
+    }));
 
     // Supabase PostgreSQL is the single operational store now.
     // The previous archive/migration state no longer applies.
     const isArchived = false;
     const postgresSupport = pgEnabled();
 
-    const marketplaceMap = marketplace ? { [marketplace.id]: marketplace } : await buildMarketplaceMap(firestoreHelpers);
+    const marketplaceMap = marketplace ? { [marketplace.id]: marketplace } : {};
     const enriched = enrichWorkflowFields(enrichConsignment(consignment, marketplaceMap));
     const validSkus = (skus || []).filter(Boolean);
-    const adjustments = await listAdjustmentsForConsignment(id);
 
     // Boxes are the source of truth for packed qty (reflects removals/edits)
     const fromBoxes = recomputePackedFromBoxes(validSkus, boxes);

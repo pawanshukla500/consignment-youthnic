@@ -103,12 +103,17 @@ function mergeLivePackingSession(consignment, syncData) {
   };
 }
 
-async function loadConsignmentWithLiveSession(consignmentId) {
-  const [consignmentRes, syncRes] = await Promise.all([
-    consignmentsAPI.getById(consignmentId),
-    packingAPI.syncStatus(consignmentId).catch(() => null),
-  ]);
-  return mergeLivePackingSession(consignmentRes.data.consignment, syncRes?.data);
+async function loadConsignmentWithLiveSession(consignmentId, { withSyncStatus = true } = {}) {
+  const consignmentRes = await consignmentsAPI.getById(consignmentId)
+  const consignment = consignmentRes.data.consignment
+  const needsLive =
+    withSyncStatus &&
+    (consignment?.liveSessionActive || ['in_progress', 'pending'].includes(consignment?.status))
+  if (!needsLive) {
+    return mergeLivePackingSession(consignment, null)
+  }
+  const syncRes = await packingAPI.syncStatus(consignmentId).catch(() => null)
+  return mergeLivePackingSession(consignment, syncRes?.data)
 }
 
 function VideoPreviewCard({ video, boxNo, onDelete, addToast, canDelete }) {
@@ -421,10 +426,10 @@ const ConsignmentDetail = () => {
     const inProgress = ['in_progress', 'pending'].includes(consignment.status);
     if (!inProgress && !consignment.liveSessionActive) return undefined;
     const timer = setInterval(() => {
-      loadConsignmentWithLiveSession(id)
+      loadConsignmentWithLiveSession(id, { withSyncStatus: true })
         .then((merged) => setConsignment(merged))
         .catch(() => {});
-    }, 5000);
+    }, 15000);
     return () => clearInterval(timer);
   }, [id, consignment?.status, consignment?.liveSessionActive]);
 

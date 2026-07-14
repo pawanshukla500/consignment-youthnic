@@ -237,6 +237,7 @@ router.get('/system-health', authenticateToken, requireRole('admin'), async (req
       failedQueryCount: dbDiag.failedQueryCount,
       documentCounts: {},
       totalDocuments: 0,
+      usage: null,
     };
 
     if (usingPg) {
@@ -254,6 +255,33 @@ router.get('/system-health', authenticateToken, requireRole('admin'), async (req
         } catch (e) {
           dataService.error = 'Document count query failed.';
           if (process.env.NODE_ENV !== 'production') dataService.debugError = e.message;
+        }
+
+        // Cockroach Basic: MTD RUs + billed storage aren't in SQL; surface free-tier limits + JSON size estimate.
+        if (dbDiag.provider === 'cockroach' || /cockroach/i.test(probe.version || '')) {
+          let approxDocumentsJsonBytes = 0;
+          try {
+            const payload = await getPool().query(
+              'SELECT COALESCE(sum(octet_length(data::text)), 0)::bigint AS bytes FROM documents'
+            );
+            approxDocumentsJsonBytes = Number(payload.rows[0]?.bytes) || 0;
+          } catch {
+            approxDocumentsJsonBytes = 0;
+          }
+          dataService.usage = {
+            provider: 'cockroach',
+            approxDocumentsJsonBytes,
+            approxDocumentsJsonPretty: approxDocumentsJsonBytes < 1024
+              ? `${approxDocumentsJsonBytes} B`
+              : `${(approxDocumentsJsonBytes / 1024).toFixed(1)} KiB`,
+            freeTierStorageGiB: 10,
+            freeTierRUs: 50_000_000,
+            orgCreditUsd: 15,
+            rusMonthToDate: null,
+            storageGiBExact: null,
+            rusSource: 'Cockroach Cloud → Cluster Overview → Usage this month',
+            note: 'Basic plan does not expose month-to-date RUs or billed GiB over SQL. Check the Cloud console for exact burn.',
+          };
         }
       } else {
         dataService.error = probe.error || 'Connection failed.';
