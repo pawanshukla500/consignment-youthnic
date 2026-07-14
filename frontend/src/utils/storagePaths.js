@@ -18,7 +18,9 @@ export function buildStoragePath(consignmentId, type, fileName, boxNo, options =
   if (type === 'video') {
     if (!boxNo) throw new Error('Box number is required for video uploads')
     const box = String(boxNo).replace(/[^\w.-]/g, '_')
-    return `consignments/${safeCid}/boxes/box_${box}/video${ext}`
+    // Unique key per recording so re-uploads never share a Chrome-cached identity.
+    const rev = String(options.revision || options.clientUploadId || Date.now()).replace(/[^\w.-]/g, '_')
+    return `consignments/${safeCid}/boxes/box_${box}/video_${rev}${ext}`
   }
   const safe = (fileName || 'file').replace(/[^\w.\-() ]/g, '_')
   return `consignments/${safeCid}/documents/${Date.now()}_${safe}`

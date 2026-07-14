@@ -239,7 +239,11 @@ async function getPgDashboardSummary() {
     `),
     pool.query(`
       SELECT to_char(day, 'Dy') AS label, COALESCE(counts.value, 0)::int AS value
-      FROM generate_series(CURRENT_DATE - INTERVAL '6 days', CURRENT_DATE, INTERVAL '1 day') AS day
+      FROM generate_series(
+        (CURRENT_DATE - INTERVAL '6 days')::timestamp,
+        CURRENT_DATE::timestamp,
+        INTERVAL '1 day'
+      ) AS day
       LEFT JOIN (
         SELECT date_trunc('day', COALESCE(NULLIF(data->>'timestamp', ''), NULLIF(data->>'createdAt', ''))::timestamptz)::date AS d, COUNT(*)::int AS value
         FROM documents

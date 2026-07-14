@@ -4,12 +4,15 @@ export function getAppAuthToken() {
 }
 
 /** Build an authenticated same-origin stream URL for <video src> (token in query — browsers cannot set Authorization on video). */
-export function buildUploadStreamUrl(fileId, type = 'video') {
+export function buildUploadStreamUrl(fileId, type = 'video', cacheBust = null) {
   if (!fileId) return null
   const token = getAppAuthToken()
   if (!token) return null
   const base = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
   const params = new URLSearchParams({ type, token })
+  if (cacheBust != null && cacheBust !== '') {
+    params.set('v', String(cacheBust))
+  }
   return `${base}/api/uploads/stream/${encodeURIComponent(fileId)}?${params.toString()}`
 }
 

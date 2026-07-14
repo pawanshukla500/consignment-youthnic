@@ -130,7 +130,17 @@ function VideoPreviewCard({ video, boxNo, onDelete, addToast, canDelete }) {
     setLoadingSrc(true);
     setLoadError('');
 
-    // Prefer durable share URL (works on mobile without JWT in <video src>).
+    const cacheBust = video.uploadedAt || video.updatedAt || video.size || video.originalName || Date.now();
+
+    // Prefer authenticated no-store stream for in-app preview (avoids Chrome 24h share cache).
+    const verified = await verifyUploadStream(video.id, 'video');
+    if (verified.ok && verified.streamUrl) {
+      const streamSrc = buildUploadStreamUrl(video.id, 'video', cacheBust) || verified.streamUrl;
+      setSrc(streamSrc);
+      setLoadingSrc(false);
+      return;
+    }
+
     try {
       const { data } = await uploadsAPI.getShareLink(video.id, 'video');
       if (data?.shareUrl) {
@@ -139,21 +149,14 @@ function VideoPreviewCard({ video, boxNo, onDelete, addToast, canDelete }) {
         return;
       }
     } catch {
-      // fall through to authenticated stream
-    }
-
-    const verified = await verifyUploadStream(video.id, 'video');
-    if (verified.ok && verified.streamUrl) {
-      setSrc(verified.streamUrl);
-      setLoadingSrc(false);
-      return;
+      // fall through
     }
 
     try {
       const { data } = await uploadsAPI.getPlayUrl(video.id, 'video');
       const streamPath = data?.streamUrl || data?.playUrl || data?.url;
       if (streamPath && String(streamPath).startsWith('/api/')) {
-        const streamSrc = buildUploadStreamUrl(video.id, 'video');
+        const streamSrc = buildUploadStreamUrl(video.id, 'video', cacheBust);
         if (streamSrc) {
           setSrc(streamSrc);
           setLoadingSrc(false);
@@ -176,7 +179,7 @@ function VideoPreviewCard({ video, boxNo, onDelete, addToast, canDelete }) {
     setLoadError('');
     loadPlayUrl();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [video?.id, video?.playUrl, video?.url, video?.storageUrl]);
+  }, [video?.id, video?.playUrl, video?.url, video?.storageUrl, video?.uploadedAt, video?.updatedAt, video?.size, video?.originalName]);
 
   const refreshPlayUrl = () => loadPlayUrl(true);
 

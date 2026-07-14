@@ -198,7 +198,9 @@ async function queueScanPersistence({
       try {
         await client.query('BEGIN');
         // Serialize durable scan/draft writes for this consignment across instances.
-        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`packing:${consignmentId}`]);
+        // Postgres: advisory xact lock. Cockroach: row FOR UPDATE (no pg_advisory_xact_lock).
+        const { acquireTxSerializationLock } = require('../utils/dbDialect');
+        await acquireTxSerializationLock(client, `packing:${consignmentId}`);
         await writeScanEvent({ ...event, client });
         await flushDraftSave(consignmentId, session, userId, { client });
         await client.query('COMMIT');
@@ -541,7 +543,8 @@ router.post('/load', authenticateToken, async (req, res) => {
 
 router.post('/increment', authenticateToken, async (req, res) => {
   // Serialize concurrent scans per consignment in-process; durable writes use
-  // pg_advisory_xact_lock inside queueScanPersistence. Respond only after those writes commit.
+  // Durable scan writes serialize inside queueScanPersistence (advisory lock or FOR UPDATE).
+  // Respond only after those writes commit.
   const release = await acquireIncrementLock(req.body?.consignment_id);
   try {
     await handleIncrement(req, res);

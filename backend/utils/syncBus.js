@@ -34,7 +34,14 @@ async function ensurePgListener() {
   if (listenerStarted) return;
   try {
     const { pgEnabled, getPool } = require('../config/database');
+    const { isCockroach } = require('./dbDialect');
     if (!pgEnabled()) return;
+    // CockroachDB does not support LISTEN/NOTIFY — rely on local bus + Supabase Realtime.
+    if (isCockroach()) {
+      listenerStarted = true;
+      console.log('[SyncBus] Skipping Postgres LISTEN (Cockroach) — using local bus + Realtime');
+      return;
+    }
     listenerStarted = true;
     listenerClient = await getPool().connect();
     await listenerClient.query(`LISTEN ${CHANNEL}`);
@@ -80,7 +87,8 @@ function emitConsignmentChange(change) {
 
   try {
     const { pgEnabled, getPool } = require('../config/database');
-    if (!pgEnabled()) return;
+    const { isCockroach } = require('./dbDialect');
+    if (!pgEnabled() || isCockroach()) return;
     const json = JSON.stringify(payload);
     // NOTIFY payload limit ~8000 bytes — trim large fields if needed
     const safe = json.length > 7500
