@@ -41,21 +41,21 @@ export const CAMERA_CONSTRAINT_PROFILES = [
 ]
 
 /**
- * Bitrate caps (bits/sec). At 1.4 Mbps / 720p ≈ 10.5 MB per minute.
- * A 4-minute box ≈ ~42 MB; previously 5 Mbps 1080p ≈ 37 MB/min → 100MB+ easily.
+ * Bitrate caps (bits/sec). At ~1.15 Mbps / 720p ≈ 8.6 MB per minute.
+ * Keeps packing evidence clear while finishing R2 uploads quickly on factory links.
  */
 export function pickRecordingBitrate(width = 1280, height = 720) {
   const pixels = Number(width) * Number(height)
-  if (pixels >= 1800 * 900) return 2_000_000 // soft 1080p max
-  if (pixels >= 1100 * 600) return 1_400_000 // 720p target
-  return 900_000
+  if (pixels >= 1800 * 900) return 1_600_000 // soft 1080p max
+  if (pixels >= 1100 * 600) return 1_150_000 // 720p target (~7–12 MB/min)
+  return 750_000
 }
 
-/** Dynamic XHR timeout: base 3 min + 3s per MB, clamped 10–30 min */
+/** Dynamic XHR timeout: base 90s + 2.5s per MB, clamped 1–20 min */
 export function uploadTimeoutForBytes(byteLength = 0) {
   const mb = Math.max(0, Number(byteLength) || 0) / (1024 * 1024)
-  const ms = Math.round(180_000 + mb * 3_000)
-  return Math.min(30 * 60 * 1000, Math.max(10 * 60 * 1000, ms))
+  const ms = Math.round(90_000 + mb * 2_500)
+  return Math.min(20 * 60 * 1000, Math.max(60_000, ms))
 }
 
 export function formatMb(bytes) {

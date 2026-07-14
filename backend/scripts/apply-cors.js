@@ -17,14 +17,23 @@ const endpoint =
   (process.env.R2_ENDPOINT || '').trim() ||
   (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : '');
 
-const origins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://localhost:5000')
+const origins = (process.env.ALLOWED_ORIGINS
+  || 'https://consignment.youthnic.shop,https://consignment-youthnic-git-*.europe-west1.run.app,http://localhost:5173,http://localhost:5000')
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
 
+// R2 CORS does not support wildcard in the middle of a host; expand common production origins.
+const expandedOrigins = [...new Set([
+  ...origins,
+  'https://consignment.youthnic.shop',
+  'http://localhost:5173',
+  'http://localhost:5000',
+].filter((o) => o && !o.includes('*')))];
+
 const CORSRules = [
   {
-    AllowedOrigins: origins.length ? origins : ['http://localhost:5173'],
+    AllowedOrigins: expandedOrigins.length ? expandedOrigins : ['https://consignment.youthnic.shop'],
     AllowedMethods: ['GET', 'PUT', 'HEAD'],
     AllowedHeaders: ['*'],
     ExposeHeaders: ['ETag', 'Content-Length', 'Content-Type', 'Accept-Ranges', 'Content-Range'],

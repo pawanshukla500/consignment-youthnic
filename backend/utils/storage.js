@@ -14,6 +14,10 @@ const {
   HeadObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
 } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { requireR2, r2Configured, bucketName, getR2Status } = require('../config/r2');
@@ -343,6 +347,91 @@ async function generateSignedUploadUrl(storagePath, mimeType) {
   };
 }
 
+async function createMultipartUpload(storagePath, mimeType) {
+  const { client, bucket } = requireR2();
+  const result = await client.send(new CreateMultipartUploadCommand({
+    Bucket: bucket,
+    Key: storagePath,
+    ContentType: mimeType || 'application/octet-stream',
+  }));
+  if (!result.UploadId) {
+    throw new Error('R2 did not return a multipart upload id');
+  }
+  return {
+    uploadId: result.UploadId,
+    storagePath,
+    storageProvider: 'r2',
+    expiresIn: UPLOAD_URL_TTL_SECONDS,
+  };
+}
+
+async function generateSignedPartUrls(storagePath, uploadId, partNumbers = []) {
+  const { client, bucket } = requireR2();
+  const numbers = [...new Set(
+    (Array.isArray(partNumbers) ? partNumbers : [])
+      .map((n) => Number(n))
+      .filter((n) => Number.isInteger(n) && n >= 1 && n <= 10000)
+  )].sort((a, b) => a - b);
+
+  if (!storagePath || !uploadId || !numbers.length) {
+    throw new Error('storagePath, uploadId, and partNumbers are required');
+  }
+
+  const parts = await Promise.all(numbers.map(async (partNumber) => {
+    const uploadUrl = await getSignedUrl(
+      client,
+      new UploadPartCommand({
+        Bucket: bucket,
+        Key: storagePath,
+        UploadId: uploadId,
+        PartNumber: partNumber,
+      }),
+      { expiresIn: UPLOAD_URL_TTL_SECONDS }
+    );
+    return { partNumber, uploadUrl };
+  }));
+
+  return { parts, storagePath, uploadId, expiresIn: UPLOAD_URL_TTL_SECONDS };
+}
+
+async function completeMultipartUpload(storagePath, uploadId, parts = []) {
+  const { client, bucket } = requireR2();
+  const normalized = (Array.isArray(parts) ? parts : [])
+    .map((part) => ({
+      PartNumber: Number(part.partNumber ?? part.PartNumber),
+      ETag: String(part.etag || part.ETag || '').replace(/"/g, ''),
+    }))
+    .filter((part) => part.PartNumber >= 1 && part.ETag)
+    .sort((a, b) => a.PartNumber - b.PartNumber)
+    .map((part) => ({
+      PartNumber: part.PartNumber,
+      ETag: `"${part.ETag}"`,
+    }));
+
+  if (!normalized.length) {
+    throw new Error('At least one completed part with ETag is required');
+  }
+
+  await client.send(new CompleteMultipartUploadCommand({
+    Bucket: bucket,
+    Key: storagePath,
+    UploadId: uploadId,
+    MultipartUpload: { Parts: normalized },
+  }));
+
+  return { storagePath, uploadId, parts: normalized.length };
+}
+
+async function abortMultipartUpload(storagePath, uploadId) {
+  const { client, bucket } = requireR2();
+  await client.send(new AbortMultipartUploadCommand({
+    Bucket: bucket,
+    Key: storagePath,
+    UploadId: uploadId,
+  }));
+  return { ok: true };
+}
+
 async function resolveReadableUrl(record, options = {}) {
   const storagePath = resolveStoragePath(record);
   if (storagePath) {
@@ -386,6 +475,10 @@ module.exports = {
   deleteFile,
   checkStorageReachable,
   generateSignedUploadUrl,
+  createMultipartUpload,
+  generateSignedPartUrls,
+  completeMultipartUpload,
+  abortMultipartUpload,
   bucketName,
   r2Configured,
 };

@@ -145,9 +145,9 @@ export function initVideoUploadService() {
     }
   }
 
-  onlineHandler = () => processVideoUploadQueue({ wait: false })
+  onlineHandler = () => processVideoUploadQueue({ wait: false, forceNow: true })
   visibilityHandler = () => {
-    if (!document.hidden) processVideoUploadQueue({ wait: false })
+    if (!document.hidden) processVideoUploadQueue({ wait: false, forceNow: true })
   }
   authTokenHandler = (e) => {
     if (worker) {
