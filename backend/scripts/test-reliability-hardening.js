@@ -9,6 +9,7 @@ const path = require('path');
 const {
   isLocalOrPrivateHost,
   shouldUseSsl,
+  buildPoolConfig,
 } = require('../utils/dbConnection');
 const {
   validateMailgunConfig,
@@ -23,16 +24,29 @@ assert.strictEqual(isLocalOrPrivateHost('8.8.8.8'), false);
 
 const prevSsl = process.env.DB_SSL;
 const prevNode = process.env.NODE_ENV;
+const prevReject = process.env.DB_SSL_REJECT_UNAUTHORIZED;
 try {
   delete process.env.DB_SSL;
+  delete process.env.DB_SSL_REJECT_UNAUTHORIZED;
   process.env.NODE_ENV = 'production';
   assert.strictEqual(shouldUseSsl('postgresql://u:p@8.8.8.8:5432/db', '8.8.8.8'), true);
   assert.strictEqual(shouldUseSsl('postgresql://u:p@192.168.56.40:5432/db', '192.168.56.40'), false);
   process.env.DB_SSL = 'false';
   assert.strictEqual(shouldUseSsl('postgresql://u:p@8.8.8.8:5432/db', '8.8.8.8'), false);
+
+  // Managed Cockroach URLs must force verify-full (not require) to silence pg SECURITY WARNING.
+  process.env.DB_SSL = 'true';
+  const cockroachCfg = buildPoolConfig(
+    'postgresql://u:p@consignment-18271.jxf.gcp-europe-west1.cockroachlabs.cloud:26257/defaultdb?sslmode=require'
+  );
+  assert.ok(String(cockroachCfg.connectionString).includes('sslmode=verify-full'), 'Cockroach pool URL must use sslmode=verify-full');
+  assert.ok(!String(cockroachCfg.connectionString).includes('sslmode=require'), 'Cockroach pool URL must not keep sslmode=require');
+  assert.strictEqual(cockroachCfg.ssl.rejectUnauthorized, true, 'Cockroach should verify TLS certificates by default');
 } finally {
   if (prevSsl === undefined) delete process.env.DB_SSL;
   else process.env.DB_SSL = prevSsl;
+  if (prevReject === undefined) delete process.env.DB_SSL_REJECT_UNAUTHORIZED;
+  else process.env.DB_SSL_REJECT_UNAUTHORIZED = prevReject;
   if (prevNode === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = prevNode;
 }
