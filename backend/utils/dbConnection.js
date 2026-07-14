@@ -20,7 +20,7 @@ function redactDatabaseUrl(connectionString) {
     const host = parsed.hostname || 'unknown';
     const port = parsed.port || '5432';
     const db = parsed.pathname?.replace(/^\//, '') || 'unknown';
-    const ssl = parsed.searchParams.get('sslmode') || (process.env.DB_SSL === 'true' ? 'require' : 'prefer');
+    const ssl = parsed.searchParams.get('sslmode') || (process.env.DB_SSL === 'true' ? 'verify-full' : 'prefer');
     return `postgresql://${user}:***@${host}:${port}/${db}?sslmode=${ssl}`;
   } catch {
     return 'postgresql://[invalid-url]';
@@ -45,7 +45,7 @@ function validateDatabaseUrl(connectionString) {
       valid: false,
       code: 'MISSING_PROTOCOL',
       error: 'Database URL must start with postgresql:// or postgres://',
-      hint: 'Example: postgresql://user:password@host:5432/dbname?sslmode=require',
+      hint: 'Example: postgresql://user:password@host:5432/dbname?sslmode=verify-full',
       source: process.env.SUPABASE_DB_URL ? 'SUPABASE_DB_URL' : 'DATABASE_URL',
     };
   }
@@ -138,9 +138,15 @@ function shouldUseSsl(connectionString, hostname) {
   return false;
 }
 
-function buildSslOptions() {
-  const rejectUnauthorized = process.env.DB_SSL_REJECT_UNAUTHORIZED === 'true'
+function buildSslOptions(provider = 'postgresql') {
+  const explicit = String(process.env.DB_SSL_REJECT_UNAUTHORIZED || '').trim().toLowerCase();
+  const forceSkip = explicit === 'false' || explicit === '0' || explicit === 'off';
+  const forceVerify = explicit === 'true' || explicit === '1' || explicit === 'on'
     || Boolean(process.env.DB_CA_CERT);
+  // Managed cloud DBs present public CA certs — verify by default.
+  const managedCloud = provider === 'cockroach' || provider === 'neon' || provider === 'supabase';
+  const rejectUnauthorized = forceSkip ? false : (forceVerify || managedCloud);
+
   const options = { rejectUnauthorized };
   if (process.env.DB_CA_CERT) {
     try {
@@ -152,13 +158,33 @@ function buildSslOptions() {
   return options;
 }
 
+/**
+ * Normalize sslmode for node-pg.
+ * pg currently treats require/prefer/verify-ca as verify-full and emits a SECURITY WARNING
+ * unless sslmode=verify-full is explicit (or uselibpqcompat=true is set).
+ */
+function resolveSslMode(connectionString, useSsl) {
+  if (!useSsl) return 'disable';
+  try {
+    const parsed = new URL(connectionString);
+    const existing = String(parsed.searchParams.get('sslmode') || '').toLowerCase();
+    if (existing === 'verify-full' || existing === 'verify-ca') return existing;
+    // Keep current (secure) node-pg behavior and silence the deprecation warning.
+    return 'verify-full';
+  } catch {
+    return 'verify-full';
+  }
+}
+
 function stripOrSetSslMode(connectionString, mode) {
   try {
     const parsed = new URL(connectionString);
     parsed.searchParams.set('sslmode', mode);
-    // pg v8+ / pg-connection-string treats prefer/require as verify-full unless compat is on.
+    // Prefer explicit verify-full over libpq-compat weakenings.
+    parsed.searchParams.delete('uselibpqcompat');
     if (mode === 'disable') {
-      parsed.searchParams.delete('uselibpqcompat');
+      parsed.searchParams.delete('sslmode');
+      parsed.searchParams.set('sslmode', 'disable');
     }
     return parsed.toString();
   } catch {
@@ -181,9 +207,8 @@ function buildPoolConfig(connectionString) {
   }
 
   // Important: even with ssl:undefined, a URL sslmode=prefer/require still triggers SSL in pg.
-  const resolvedUrl = useSsl
-    ? stripOrSetSslMode(connectionString, 'require')
-    : stripOrSetSslMode(connectionString, 'disable');
+  const sslMode = resolveSslMode(connectionString, useSsl);
+  const resolvedUrl = stripOrSetSslMode(connectionString, sslMode);
 
   const poolMax = parseInt(process.env.DB_POOL_MAX, 10) || 20;
 
@@ -196,7 +221,7 @@ function buildPoolConfig(connectionString) {
     keepAlive: true,
     application_name: 'consignment-packing-api',
     statement_timeout: parseInt(process.env.DB_STATEMENT_TIMEOUT_MS, 10) || 60000,
-    ssl: useSsl ? buildSslOptions() : false,
+    ssl: useSsl ? buildSslOptions(validation.provider) : false,
   };
 }
 
@@ -208,4 +233,5 @@ module.exports = {
   detectProvider,
   isLocalOrPrivateHost,
   shouldUseSsl,
+  resolveSslMode,
 };

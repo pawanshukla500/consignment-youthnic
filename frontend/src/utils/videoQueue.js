@@ -172,6 +172,9 @@ export async function countOpenRecordingSessions() {
 // ── Upload queue ────────────────────────────────────────────────────────────
 
 export async function saveVideoToQueue(blob, metadata) {
+  // New recording for a box replaces any stuck pending/failed clips for that box.
+  await clearVideosForBox(metadata?.consignmentId, metadata?.boxNo)
+
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite')
@@ -182,6 +185,7 @@ export async function saveVideoToQueue(blob, metadata) {
       status: 'pending',
       retries: 0,
       createdAt: Date.now(),
+      lastError: null,
     }
     const req = store.add(entry)
     req.onsuccess = () => resolve(req.result)
@@ -278,7 +282,7 @@ export async function saveUploadedFileInfo(id, storageUrl, storagePath) {
   })
 }
 
-export async function incrementRetry(id, nextAttemptAt = null) {
+export async function incrementRetry(id, nextAttemptAt = null, lastError = null) {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite')
@@ -288,6 +292,7 @@ export async function incrementRetry(id, nextAttemptAt = null) {
       const data = getReq.result
       if (data) {
         data.retries += 1
+        if (lastError) data.lastError = String(lastError).slice(0, 300)
         if (data.retries >= MAX_UPLOAD_RETRIES) data.status = 'failed'
         else data.nextAttemptAt = nextAttemptAt || Date.now()
         store.put(data)
@@ -313,6 +318,110 @@ export async function resetFailedToPending() {
       store.put(entry)
     }
     tx.oncomplete = () => resolve(failed.length)
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+function boxKey(entry) {
+  return `${entry?.metadata?.consignmentId || ''}::${entry?.metadata?.boxNo || ''}`
+}
+
+/** Remove every unfinished video for one consign+box. */
+export async function clearVideosForBox(consignmentId, boxNo) {
+  if (!consignmentId || boxNo == null || boxNo === '') return 0
+  const outstanding = await getOutstandingVideos(consignmentId)
+  const sameBox = outstanding.filter((v) => String(v.metadata?.boxNo) === String(boxNo))
+  if (!sameBox.length) return 0
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    const store = tx.objectStore(STORE_NAME)
+    for (const entry of sameBox) store.delete(entry.id)
+    tx.oncomplete = () => resolve(sameBox.length)
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+/** Delete older pending/failed videos for the same consign+box, keep newest. */
+export async function pruneOlderVideosForBox(consignmentId, boxNo, keepId = null) {
+  if (!consignmentId || boxNo == null || boxNo === '') return 0
+  const outstanding = await getOutstandingVideos(consignmentId)
+  const sameBox = outstanding
+    .filter((v) => String(v.metadata?.boxNo) === String(boxNo))
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+  if (sameBox.length <= 1) return 0
+
+  const keep = keepId != null
+    ? sameBox.find((v) => v.id === keepId) || sameBox[0]
+    : sameBox[0]
+  const toDelete = sameBox.filter((v) => v.id !== keep?.id)
+  if (!toDelete.length) return 0
+
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    const store = tx.objectStore(STORE_NAME)
+    for (const entry of toDelete) store.delete(entry.id)
+    tx.oncomplete = () => resolve(toDelete.length)
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+/** Keep only the newest outstanding video per consignment+box. */
+export async function pruneDuplicateBoxVideos() {
+  const outstanding = await getOutstandingVideos()
+  const newestByBox = new Map()
+  for (const entry of outstanding) {
+    const key = boxKey(entry)
+    const prev = newestByBox.get(key)
+    if (!prev || (entry.createdAt || 0) > (prev.createdAt || 0)) {
+      newestByBox.set(key, entry)
+    }
+  }
+  const keepIds = new Set([...newestByBox.values()].map((v) => v.id))
+  const toDelete = outstanding.filter((v) => !keepIds.has(v.id))
+  if (!toDelete.length) return 0
+
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    const store = tx.objectStore(STORE_NAME)
+    for (const entry of toDelete) store.delete(entry.id)
+    tx.oncomplete = () => resolve(toDelete.length)
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+/** Permanently discard failed video uploads from this browser. */
+export async function clearFailedVideos() {
+  const failed = await getFailedVideos()
+  if (!failed.length) return 0
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    const store = tx.objectStore(STORE_NAME)
+    for (const entry of failed) store.delete(entry.id)
+    tx.oncomplete = () => resolve(failed.length)
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+/**
+ * Clear packing video IndexedDB cache.
+ * mode: 'failed' | 'all' | 'duplicates'
+ */
+export async function clearLocalVideoCache(mode = 'failed') {
+  if (mode === 'duplicates') return pruneDuplicateBoxVideos()
+  if (mode === 'failed') return clearFailedVideos()
+
+  const outstanding = await getOutstandingVideos()
+  if (!outstanding.length) return 0
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    const store = tx.objectStore(STORE_NAME)
+    for (const entry of outstanding) store.delete(entry.id)
+    tx.oncomplete = () => resolve(outstanding.length)
     tx.onerror = () => reject(tx.error)
   })
 }

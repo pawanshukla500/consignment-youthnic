@@ -95,11 +95,34 @@ export async function getFailedSyncJobCount() {
   return jobs.filter((job) => job.status === 'failed').length
 }
 
+/** Reset failed save-box jobs back to pending for another attempt. */
 export async function resetFailedSyncJobs() {
   const jobs = await getAllJobs()
   const failed = jobs.filter((job) => job.status === 'failed')
-  await Promise.all(failed.map((job) => putJob({ ...job, status: 'pending', retries: 0, updatedAt: Date.now() })))
+  for (const job of failed) {
+    await putJob({
+      ...job,
+      status: 'pending',
+      retries: 0,
+      updatedAt: Date.now(),
+    })
+  }
   return failed.length
+}
+
+/** Permanently discard failed save-box jobs from this browser. */
+export async function clearFailedSyncJobs() {
+  const jobs = await getAllJobs()
+  const failed = jobs.filter((job) => job.status === 'failed')
+  await Promise.all(failed.map((job) => deleteJob(job.id)))
+  return failed.length
+}
+
+/** Clear every local packing sync job (pending + failed). */
+export async function clearAllSyncJobs() {
+  const jobs = await getAllJobs()
+  await Promise.all(jobs.map((job) => deleteJob(job.id)))
+  return jobs.length
 }
 
 let draining = false

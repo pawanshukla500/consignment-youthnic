@@ -10,6 +10,7 @@ import {
   saveUploadedFileInfo,
   finalizeRecordingSession,
   unlockOutstandingForImmediateRetry,
+  pruneDuplicateBoxVideos,
 } from '../utils/videoQueue'
 
 let config = {
@@ -189,6 +190,16 @@ async function processVideoQueue(opts = {}) {
       const runOpts = queuedProcessOpts || opts
       queuedProcessOpts = null
 
+      // One newest clip per box — drops piled-up failed/retry duplicates.
+      try {
+        const pruned = await pruneDuplicateBoxVideos()
+        if (pruned > 0) {
+          console.log(`[Worker] Pruned ${pruned} duplicate box video(s) from local queue`)
+        }
+      } catch (err) {
+        console.warn('[Worker] Duplicate prune skipped:', err?.message || err)
+      }
+
       if (runOpts.retryFailed) {
         await resetFailedToPending()
       }
@@ -215,7 +226,7 @@ async function processVideoQueue(opts = {}) {
           await notify()
         } catch (e) {
           const nextAttemptAt = Date.now() + backoffMs(video.retries)
-          const isFailed = await incrementRetry(video.id, nextAttemptAt)
+          const isFailed = await incrementRetry(video.id, nextAttemptAt, e.message)
 
           postMessage({ type: 'ITEM_ERROR', payload: { id: video.id, error: e.message, isFailed } })
           postMessage({ type: 'CURRENT_UPLOAD', payload: null })
@@ -245,6 +256,8 @@ self.onmessage = async (e) => {
       try {
         const recovered = await recoverOrphanedRecordings()
         if (recovered.length) console.log(`[Worker] Recovered ${recovered.length} interrupted recordings`)
+        const pruned = await pruneDuplicateBoxVideos()
+        if (pruned > 0) console.log(`[Worker] Pruned ${pruned} duplicate box video(s) on init`)
         await resetFailedToPending()
       } catch (err) {
         console.warn('[Worker] Init recovery error:', err)

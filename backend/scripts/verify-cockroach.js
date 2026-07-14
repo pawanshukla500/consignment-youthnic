@@ -38,7 +38,7 @@ async function main() {
   const validation = validateDatabaseUrl(url);
   console.log('provider:', validation.provider, 'sslMode prefer from build:');
   const cfg = buildPoolConfig(url);
-  console.log('pool ssl enabled:', Boolean(cfg.ssl), 'url has sslmode=', String(cfg.connectionString).includes('sslmode=require') || String(cfg.connectionString).includes('verify'));
+  console.log('pool ssl enabled:', Boolean(cfg.ssl), 'url has sslmode=verify-full=', String(cfg.connectionString).includes('sslmode=verify-full'));
 
   await pool.end();
 }

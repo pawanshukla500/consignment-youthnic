@@ -103,6 +103,9 @@ export async function initPackingSyncService() {
   if (intervalId) return
 
   try {
+    const { pruneDuplicateBoxVideos } = await import('../utils/videoQueue')
+    const pruned = await pruneDuplicateBoxVideos().catch(() => 0)
+    if (pruned > 0) console.log(`[PackingSync] Pruned ${pruned} duplicate local video(s)`)
     const [scans, jobs] = await Promise.all([resetFailedScans(), resetFailedSyncJobs()])
     if (scans + jobs > 0) {
       console.log(`[PackingSync] Reset ${scans} failed scan(s), ${jobs} failed save-box job(s)`)
