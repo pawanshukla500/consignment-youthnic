@@ -28,7 +28,7 @@ env:
   # Docker image repo name (independent of Cloud Run service name).
   IMAGE_NAME: consignment-app
   # Default Cloud Run service; workflow also deploys to all known services below.
-  SERVICE_NAME: ${{ vars.CLOUD_RUN_SERVICE || 'consignment-pack' }}
+  SERVICE_NAME: ${{ vars.CLOUD_RUN_SERVICE || 'consignment-youthnic-git' }}
   REGION: ${{ vars.CLOUD_RUN_REGION || 'europe-west1' }}
 
 jobs:
@@ -138,8 +138,8 @@ jobs:
             echo "Custom domain $DOMAIN_HOST → Cloud Run service: $MAPPED_SERVICE"
             echo "DOMAIN_MAPPED_SERVICE=$MAPPED_SERVICE" >> "$GITHUB_ENV"
           else
-            echo "::warning::Could not read domain mapping for $DOMAIN_HOST — defaulting to consignment-pack"
-            echo "DOMAIN_MAPPED_SERVICE=consignment-pack" >> "$GITHUB_ENV"
+            echo "::warning::Could not read domain mapping for $DOMAIN_HOST — defaulting to consignment-youthnic-git"
+            echo "DOMAIN_MAPPED_SERVICE=consignment-youthnic-git" >> "$GITHUB_ENV"
           fi
           # Deploy only the primary / domain-mapped service to avoid paying for two apps.
           echo "DEPLOY_SERVICES=$SERVICE_NAME" >> "$GITHUB_ENV"
@@ -309,6 +309,7 @@ jobs:
             --max-instances=3 \
             --cpu-throttling \
             --execution-environment=gen2 \
+            --quiet \
             --set-env-vars="NODE_ENV=production" \
             --set-env-vars="ADMIN_EMAIL=returnorders@vbexports.co.in" \
             --set-env-vars="FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}" \
@@ -360,7 +361,7 @@ jobs:
           echo "PRIMARY_URL=$PRIMARY_URL" >> "$GITHUB_ENV"
 
           # Cap billing on any legacy duplicate service (do not keep a second warm app).
-          for extra in consignment-packing; do
+          for extra in consignment-pack consignment-packing; do
             if echo " $DEPLOYED_SVCS " | grep -q " ${extra} "; then
               continue
             fi

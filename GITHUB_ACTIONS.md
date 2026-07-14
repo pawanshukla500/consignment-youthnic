@@ -23,7 +23,8 @@ Deploy uses a **low-cost** profile so idle time is nearly free:
 | `max-instances` | `3` | Caps burst spend |
 | CPU / memory | `1` vCPU / `1Gi` | Enough for packing + uploads without 2× resources |
 | CPU throttling | on | Bill CPU mainly while handling requests |
-| Services deployed | **one** primary (`consignment-pack`) | Avoid paying for a second duplicate app |
+| Services deployed | **one** primary (`consignment-youthnic-git`) | Avoid paying for a second duplicate app |
+| `max-instances` | `3` (not 20) | Caps burst spend — lower than Cloud Run console defaults |
 
 **Tradeoff:** first request after idle can be a few seconds (cold start). Tue/Fri Org Head email runs in-process, so it only fires while an instance is warm — use [Cloud Scheduler](https://cloud.google.com/scheduler) to hit `/api/workflow/org-head/send-weekly-report` if you need that email even when the app is idle.
 
@@ -57,13 +58,13 @@ In [Google Cloud Console](https://console.cloud.google.com/) → **IAM & Admin**
 
 ### 2. Cloud Run + custom domain
 
-Custom domain **`consignment.youthnic.shop`** should map to Cloud Run service **`consignment-pack`**. The workflow deploys that primary service only and cost-caps any legacy `consignment-packing` duplicate.
+Custom domain **`consignment.youthnic.shop`** should map to Cloud Run service **`consignment-youthnic-git`**. The workflow deploys that primary service only and cost-caps any legacy `consignment-pack` / `consignment-packing` duplicates.
 
 Repository **Variables** (Settings → Secrets and variables → Actions → Variables):
 
 | Variable | Example | Purpose |
 |----------|---------|---------|
-| `CLOUD_RUN_SERVICE` | `consignment-pack` | Optional override |
+| `CLOUD_RUN_SERVICE` | `consignment-youthnic-git` | Optional override |
 | `CLOUD_RUN_REGION` | `europe-west1` | Deployment region |
 | `CUSTOM_DOMAIN` | `https://consignment.youthnic.shop` | Public app URL |
 
