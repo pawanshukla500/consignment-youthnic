@@ -28,9 +28,19 @@ function getLogoHttpUrl() {
 }
 
 function getLogoFilePath() {
-  if (fs.existsSync(LOGO_FILE)) return LOGO_FILE;
-  const alt = path.join(__dirname, '..', '..', 'frontend', 'public', 'brand-logo.png');
-  if (fs.existsSync(alt)) return alt;
+  const candidates = [
+    LOGO_FILE,
+    path.join(__dirname, '..', 'assets', 'brand-logo.png'),
+    path.join(__dirname, '..', '..', 'frontend', 'public', 'brand-logo.png'),
+    path.join(__dirname, '..', '..', 'frontend', 'src', 'assets', 'logo.png'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (candidate && fs.existsSync(candidate)) return candidate;
+    } catch {
+      // ignore
+    }
+  }
   return null;
 }
 
@@ -63,13 +73,16 @@ function detailRow(label, value) {
 }
 
 function logoBlock(httpUrl) {
-  // Prefer absolute HTTPS URL (works in Gmail/Outlook when hosted).
-  // CID inline attachment is also sent by Mailgun as a second source.
+  // Prefer CID inline attachment (bundled with the email). Keep HTTPS URL as fallback
+  // for clients that block CID but allow remote images.
   return `
-    <img src="${httpUrl}" alt="Youthnic Consignment Packing"
+    <img src="cid:${LOGO_CID}" alt="Youthnic Consignment Packing"
       width="56" height="56"
       style="display:block;margin:0 auto 12px;width:56px;height:56px;border-radius:12px;background:#fff;object-fit:contain;border:0" />
-    <img src="cid:${LOGO_CID}" alt="" width="1" height="1" style="display:none;width:0;height:0;max-height:0;overflow:hidden;border:0" />`;
+    <!--[if !mso]><!-->
+    <img src="${httpUrl}" alt="" width="1" height="1"
+      style="display:none;width:0;height:0;max-height:0;overflow:hidden;border:0" />
+    <!--<![endif]-->`;
 }
 
 function emailShell({ title, preheader = '', bodyHtml, accent = '#0f172a' }) {
