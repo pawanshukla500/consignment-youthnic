@@ -204,25 +204,26 @@ jobs:
           docker create --name verify-build "gcr.io/$PROJECT_ID/$IMAGE_NAME:${{ github.sha }}"
           docker cp verify-build:/app/frontend/dist ./dist-verify
           docker rm verify-build
-          FIREBASE_CHUNK=$(grep -rl 'firebaseConfigured' ./dist-verify/assets/ | head -1 || true)
-          if [ -z "$FIREBASE_CHUNK" ]; then
-            echo "::error::Could not find Firebase config chunk in built assets."
+          if [ ! -d ./dist-verify/assets ]; then
+            echo "::error::frontend/dist/assets missing from image"
+            ls -la ./dist-verify || true
             exit 1
           fi
-          echo "Firebase chunk: $FIREBASE_CHUNK"
-          if grep -q 'apiKey:void 0' "$FIREBASE_CHUNK"; then
-            echo "::error::Firebase chunk still has apiKey:void 0 — VITE_* build args did not reach Vite."
+          # Minifiers may rename exports — search for the baked apiKey / projectId literals.
+          if ! grep -rqE 'AIzaSy[A-Za-z0-9_-]{10,}' ./dist-verify/assets/; then
+            echo "::error::No Firebase apiKey (AIzaSy…) found in built assets — VITE_FIREBASE_* did not reach Vite."
+            ls -la ./dist-verify/assets/ | head -40
             exit 1
           fi
-          if ! grep -qE 'apiKey:[`"]AIza' "$FIREBASE_CHUNK"; then
-            echo "::error::Firebase chunk is missing apiKey (expected AIzaSy prefix in apiKey field)."
+          if [ -n "$EXPECTED_PROJECT" ] && ! grep -rqF "$EXPECTED_PROJECT" ./dist-verify/assets/; then
+            echo "::error::Built assets missing projectId $EXPECTED_PROJECT."
             exit 1
           fi
-          if ! grep -q "$EXPECTED_PROJECT" "$FIREBASE_CHUNK"; then
-            echo "::error::Firebase chunk missing projectId $EXPECTED_PROJECT."
+          if grep -rq 'apiKey:void 0' ./dist-verify/assets/; then
+            echo "::error::Found apiKey:void 0 — Firebase env was empty at build time."
             exit 1
           fi
-          echo "✅ Firebase config verified in $FIREBASE_CHUNK"
+          echo "✅ Firebase config verified in frontend build assets"
 
       - name: Push Docker image
         if: github.event.inputs.skip_build != 'true'

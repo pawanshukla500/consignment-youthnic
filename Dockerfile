@@ -65,7 +65,8 @@ COPY --from=frontend-builder /app/frontend/dist ../frontend/dist
 # Cloud Run auto-injects PORT=8080
 ENV NODE_ENV=production
 ENV PORT=8080
-ENV NODE_OPTIONS=--max-old-space-size=1536
+# Keep heap under Cloud Run 1Gi limit (leave room for native + buffers).
+ENV NODE_OPTIONS=--max-old-space-size=768
 
 EXPOSE 8080
 
