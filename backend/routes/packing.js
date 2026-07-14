@@ -198,7 +198,9 @@ async function queueScanPersistence({
       try {
         await client.query('BEGIN');
         // Serialize durable scan/draft writes for this consignment across instances.
-        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`packing:${consignmentId}`]);
+        // Postgres: advisory xact lock. Cockroach: row FOR UPDATE (no pg_advisory_xact_lock).
+        const { acquireTxSerializationLock } = require('../utils/dbDialect');
+        await acquireTxSerializationLock(client, `packing:${consignmentId}`);
         await writeScanEvent({ ...event, client });
         await flushDraftSave(consignmentId, session, userId, { client });
         await client.query('COMMIT');

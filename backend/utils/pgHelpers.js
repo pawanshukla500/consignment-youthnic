@@ -272,7 +272,7 @@ const pgHelpers = {
               WHEN (days_until <= 4 AND packing_percent < 80) OR (days_until <= 3 AND packing_percent < 100) THEN -500
               WHEN days_until <= 7 OR (days_until <= 5 AND packing_percent < 50) THEN 50
               ELSE 500
-            END + COALESCE(days_until, 0) + (100 - packing_percent) * 0.05 AS criticality_sort
+            END::float + COALESCE(days_until, 0)::float + (100.0 - packing_percent::float) * 0.05 AS criticality_sort
           FROM enriched
         )
         SELECT data FROM scored
@@ -298,8 +298,8 @@ const pgHelpers = {
       `;
     }
 
-    sql += ` OFFSET $${n++} LIMIT $${n++}`;
-    params.push(offset, limit);
+    sql += ` OFFSET $${n++}::int LIMIT $${n++}::int`;
+    params.push(Math.max(0, Math.trunc(Number(offset)) || 0), Math.max(1, Math.trunc(Number(limit)) || 50));
     const { rows } = await getPool().query(sql, params);
     return { items: rows.map((r) => r.data), total };
   },
@@ -365,9 +365,13 @@ const pgHelpers = {
       WHERE collection = 'productivity'
       ${rangeClause ? `AND ${ts} IS NOT NULL ${rangeClause}` : ''}
       ORDER BY ${ts} DESC NULLS LAST
-      OFFSET $${n++} LIMIT $${n++}
+      OFFSET $${n++}::int LIMIT $${n++}::int
     `;
-    const activityParams = [...params, offset, limit];
+    const activityParams = [
+      ...params,
+      Math.max(0, Math.trunc(Number(offset)) || 0),
+      Math.max(1, Math.trunc(Number(limit)) || 50),
+    ];
 
     const pool = getPool();
     const [statsResult, countResult, activityResult] = await Promise.all([
