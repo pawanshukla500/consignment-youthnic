@@ -1,0 +1,11 @@
+# Legacy Firebase Storage rules — unused.
+# App media is stored in Cloudflare R2. Firebase is Auth-only.
+# Kept so accidental `firebase deploy --only storage` does not open a public bucket.
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

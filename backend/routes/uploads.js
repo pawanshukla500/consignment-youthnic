@@ -1,0 +1,643 @@
+const express = require('express');
+const router = express.Router();
+const { authenticateToken } = require('../middleware/auth');
+const { generateId, now, addAuditLog, firestoreHelpers } = require('../utils/helpers');
+const {
+  getStoragePath,
+  resolveStoragePath,
+  resolveVideoStoragePath,
+  resolvePublicUrl,
+  enrichFileRecord,
+  finalizeClientStorageUpload,
+  getStorageFileMeta,
+  createStorageReadStream,
+  deleteFile,
+  generateSignedUploadUrl
+} = require('../utils/storage');
+const { requestUserHasPermission, requirePermission, requireAnyPermission, DELETE_VIDEOS } = require('../utils/permissions');
+const { isStoragePathForConsignment } = require('../utils/storagePathValidation');
+const { checkConsignmentVideos } = require('../utils/videoHealthCheck');
+const { buildDurableShareUrl, verifyShareToken } = require('../utils/shareLinks');
+
+function buildStreamPath(fileId, type = 'video') {
+  return `/api/uploads/stream/${encodeURIComponent(fileId)}?type=${encodeURIComponent(type)}`;
+}
+
+async function streamFileRecord(req, res, record, fileType, options = {}) {
+  const storagePath = await resolveRecordStoragePath(record, fileType);
+  if (!storagePath) {
+    return res.status(404).json({ error: 'File is not available in storage.' });
+  }
+
+  const collectionName = fileType === 'video' || record.type === 'video' ? 'videos' : 'documents';
+  if (record.id) {
+    await maybeBackfillStoragePath(collectionName, record.id, record, storagePath);
+  }
+
+  const fileMeta = await getStorageFileMeta(storagePath);
+  if (!fileMeta) {
+    return res.status(404).json({ error: 'File is not available in storage.' });
+  }
+
+  const contentType = fileMeta.metadata.contentType || record.mimeType || 'application/octet-stream';
+  const fileSize = fileMeta.size;
+  const rangeHeader = req.headers.range;
+  const publicShare = options.publicShare === true;
+
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Cache-Control', publicShare ? 'public, max-age=86400' : 'private, no-store');
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `inline; filename="${String(record.originalName || 'video').replace(/[^\w.\-]+/g, '_')}"`);
+
+  if (rangeHeader && fileSize) {
+    const parts = rangeHeader.replace(/bytes=/, '').split('-');
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= fileSize) {
+      res.setHeader('Content-Range', `bytes */${fileSize}`);
+      return res.status(416).json({ error: 'Invalid range.' });
+    }
+    const chunkSize = end - start + 1;
+    res.writeHead(206, {
+      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+      'Content-Length': chunkSize,
+    });
+    await pipeStorageStream(res, storagePath, { start, end });
+    return;
+  }
+
+  if (fileSize) res.setHeader('Content-Length', fileSize);
+  await pipeStorageStream(res, storagePath, null);
+}
+
+async function resolveRecordStoragePath(record, type) {
+  if (!record) return null;
+  if (type === 'video' || record.type === 'video') {
+    return resolveVideoStoragePath(record);
+  }
+  const path = resolveStoragePath(record);
+  if (!path) return null;
+  const meta = await getStorageFileMeta(path);
+  return meta ? path : null;
+}
+
+async function maybeBackfillStoragePath(collectionName, fileId, record, storagePath) {
+  if (!storagePath || resolveStoragePath(record) === storagePath) return;
+  try {
+    await firestoreHelpers.setDocument(collectionName, fileId, {
+      ...record,
+      storagePath,
+      firebasePath: storagePath,
+      updatedAt: now(),
+    });
+  } catch (e) {
+    console.warn('[Upload] Failed to backfill storagePath:', fileId, e.message);
+  }
+}
+
+async function pipeStorageStream(res, storagePath, range) {
+  const stream = await createStorageReadStream(storagePath, range);
+  stream.on('error', (err) => {
+    console.error('[Upload] Stream read error:', storagePath, err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to read file from storage.' });
+    } else {
+      res.end();
+    }
+  });
+  res.on('close', () => {
+    if (!stream.destroyed) stream.destroy();
+  });
+  stream.pipe(res);
+}
+
+function buildFileRecord(fields) {
+  const storagePath = fields.storagePath || '';
+  const storageUrl = fields.storageUrl || '';
+  return {
+    id: fields.id,
+    consignmentId: fields.consignmentId || '',
+    boxNo: fields.boxNo || '',
+    type: fields.type || 'document',
+    originalName: fields.originalName || 'unnamed',
+    mimeType: fields.mimeType || '',
+    size: parseInt(fields.size) || 0,
+    description: fields.description || '',
+    storagePath,
+    storageUrl,
+    storageProvider: fields.storageProvider || 'r2',
+    // Legacy aliases for backward compatibility with older DB rows
+    firebasePath: storagePath,
+    firebaseUrl: storageUrl,
+    uploadedAt: fields.uploadedAt || now(),
+    uploadedBy: fields.uploadedBy,
+    uploadedByName: fields.uploadedByName || '',
+    clientUploadId: fields.clientUploadId || '',
+    uploadQueueId: fields.uploadQueueId || fields.clientUploadId || ''
+  };
+}
+
+// Helper to ensure 1 box has exactly 1 video. Deactivates/deletes old DB rows first;
+// storage object deletion happens only after DB removal succeeds (safe replacement order).
+async function ensureSingleVideoPerBox(consignmentId, boxNo, skipId = null) {
+  if (!consignmentId || !boxNo) return;
+  const existingVideos = await firestoreHelpers.queryCollection('videos', 'consignmentId', '==', consignmentId);
+  const matchBoxNo = String(boxNo);
+  const videosToDelete = existingVideos.filter(
+    (v) => String(v.boxNo) === matchBoxNo
+      && v.id !== skipId
+      && v.active !== false
+      && v.type !== 'removal_video'
+      && v.purpose !== 'quantity_removal'
+  );
+  if (videosToDelete.length === 0) return;
+
+  const storagePathsToDelete = [];
+
+  for (const oldVideo of videosToDelete) {
+    // 1) Mark inactive / remove DB record first (source of truth)
+    await firestoreHelpers.setDocument('videos', oldVideo.id, {
+      active: false,
+      replacedAt: now(),
+      updatedAt: now(),
+    });
+    await firestoreHelpers.deleteDocument('videos', oldVideo.id);
+
+    const consignment = await firestoreHelpers.getDocument('consignments', consignmentId);
+    if (consignment?.videoIds) {
+      const filteredVideoIds = (consignment.videoIds || []).filter((id) => id !== oldVideo.id);
+      await firestoreHelpers.setDocument('consignments', consignmentId, {
+        videoIds: filteredVideoIds,
+        updatedAt: now(),
+      });
+    }
+
+    const path = resolveStoragePath(oldVideo);
+    if (path) {
+      const pathStillUsed = existingVideos.some(
+        (v) => v.id !== oldVideo.id && v.id !== skipId && resolveStoragePath(v) === path
+      );
+      if (!pathStillUsed) storagePathsToDelete.push(path);
+    }
+  }
+
+  // 2) Delete old storage objects after DB commit (best-effort, non-blocking for client)
+  for (const path of storagePathsToDelete) {
+    try {
+      await deleteFile(path, { allowMissing: true, throwOnError: false });
+      console.log(`[Upload] Deleted replaced storage video: ${path}`);
+    } catch (error) {
+      console.warn('[Upload] Storage cleanup after video replace failed:', error.message);
+    }
+  }
+}
+
+async function findExistingVideoMetadata(consignmentId, boxNo, storagePath, clientUploadId) {
+  if (!consignmentId || !boxNo) return null;
+  const existingVideos = await firestoreHelpers.queryCollection('videos', 'consignmentId', '==', consignmentId);
+  const normalizedBoxNo = String(boxNo);
+  const normalizedPath = storagePath ? String(storagePath) : '';
+  const normalizedClientUploadId = clientUploadId ? String(clientUploadId) : '';
+  return existingVideos.find((video) => {
+    if (String(video.boxNo) !== normalizedBoxNo) return false;
+    if (normalizedClientUploadId && String(video.clientUploadId || video.uploadQueueId || '') === normalizedClientUploadId) return true;
+    if (normalizedPath && resolveStoragePath(video) === normalizedPath) return true;
+    return false;
+  }) || null;
+}
+
+// Generate R2 (S3) presigned upload URL for direct-to-cloud file uploads
+router.post('/generate-signed-url', authenticateToken, requirePermission('packing', 'register uploads'), async (req, res) => {
+  try {
+    const { storagePath, mimeType, consignmentId } = req.body;
+    if (!storagePath || !mimeType || !consignmentId) {
+      return res.status(400).json({ error: 'storagePath, mimeType, and consignmentId are required.' });
+    }
+
+    if (!isStoragePathForConsignment(storagePath, consignmentId)) {
+      return res.status(403).json({
+        error: 'Storage path does not belong to this consignment.',
+        code: 'STORAGE_PATH_MISMATCH',
+      });
+    }
+
+    const result = await generateSignedUploadUrl(storagePath, mimeType);
+    res.json(result);
+  } catch (error) {
+    console.error('Error generating signed upload URL:', error);
+    res.status(500).json({ error: 'Failed to generate signed upload URL.', message: error.message });
+  }
+});
+
+// Save file metadata after a direct client upload to Cloudflare R2
+router.post('/metadata', authenticateToken, requirePermission('packing', 'register uploads'), async (req, res) => {
+  try {
+    const {
+      consignmentId,
+      type,
+      originalName,
+      firebaseUrl,
+      firebasePath,
+      storageUrl,
+      storagePath,
+      size,
+      mimeType,
+      boxNo,
+      description,
+      clientUploadId,
+      uploadQueueId,
+      adjustmentId,
+      purpose,
+    } = req.body;
+
+    const url = storageUrl || firebaseUrl;
+    const path = storagePath || firebasePath;
+    const fileType = type || 'document';
+    const isRemovalVideo = fileType === 'removal_video' || purpose === 'quantity_removal';
+
+    if (!consignmentId || !url) {
+      return res.status(400).json({ error: 'consignmentId and storage URL are required.' });
+    }
+    if ((fileType === 'video' || isRemovalVideo) && !boxNo) {
+      return res.status(400).json({ error: 'boxNo is required for video uploads (one video per box).' });
+    }
+    if ((fileType === 'video' || isRemovalVideo) && !path) {
+      return res.status(400).json({ error: 'storagePath is required for video metadata.' });
+    }
+    if (isRemovalVideo && !adjustmentId) {
+      return res.status(400).json({ error: 'adjustmentId is required for removal videos.' });
+    }
+    if (path && !isStoragePathForConsignment(path, consignmentId)) {
+      return res.status(403).json({
+        error: 'Storage path does not belong to this consignment.',
+        code: 'STORAGE_PATH_MISMATCH',
+      });
+    }
+
+    const consignment = await firestoreHelpers.getDocument('consignments', consignmentId);
+    if (!consignment) {
+      return res.status(404).json({ error: 'Consignment not found.' });
+    }
+
+    let resolvedUrl = url;
+    let resolvedPath = path || '';
+    if (path) {
+      const finalized = await finalizeClientStorageUpload(path);
+      if (!finalized) {
+        return res.status(400).json({
+          error: 'Uploaded file was not found in storage. Please retry the upload.',
+          code: 'STORAGE_OBJECT_MISSING',
+        });
+      }
+      resolvedUrl = finalized.storageUrl;
+      resolvedPath = finalized.storagePath;
+    }
+
+    if ((fileType === 'video' || isRemovalVideo) && boxNo) {
+      const existing = await findExistingVideoMetadata(consignmentId, boxNo, resolvedPath, clientUploadId || uploadQueueId);
+      if (existing) {
+        const enrichedExisting = await enrichFileRecord(existing);
+        return res.status(200).json({ file: enrichedExisting, deduped: true });
+      }
+    }
+
+    const fileId = generateId();
+    const fileRecord = buildFileRecord({
+      id: fileId,
+      consignmentId,
+      boxNo,
+      type: isRemovalVideo ? 'removal_video' : (type || 'document'),
+      originalName,
+      storageUrl: resolvedUrl,
+      storagePath: resolvedPath,
+      storageProvider: 'r2',
+      mimeType,
+      size,
+      description: description || (isRemovalVideo
+        ? `Box ${boxNo} quantity removal video`
+        : (fileType === 'video' ? `Box ${boxNo} packing video` : '')),
+      clientUploadId: clientUploadId || uploadQueueId || '',
+      uploadQueueId: uploadQueueId || clientUploadId || '',
+      uploadedBy: req.user.id,
+      uploadedByName: req.user.name || req.user.email
+    });
+    if (isRemovalVideo) {
+      fileRecord.purpose = 'quantity_removal';
+      fileRecord.adjustmentId = adjustmentId;
+      fileRecord.active = true;
+    } else if (fileType === 'video') {
+      fileRecord.active = true;
+    }
+    if (fileType === 'video' || isRemovalVideo) {
+      fileRecord.storageVerified = Boolean(resolvedPath);
+      fileRecord.storageVerifiedAt = resolvedPath ? now() : null;
+    }
+
+    const collectionName = (fileType === 'video' || isRemovalVideo) ? 'videos' : 'documents';
+    // Use fileType (not raw type) so videoIds vs documentIds stay consistent
+    await firestoreHelpers.setDocument(collectionName, fileId, fileRecord);
+
+    if (consignment) {
+      const idField = (fileType === 'video' || isRemovalVideo) ? 'videoIds' : 'documentIds';
+      const ids = new Set(consignment[idField] || []);
+      ids.add(fileId);
+      await firestoreHelpers.setDocument('consignments', consignmentId, {
+        ...consignment,
+        [idField]: Array.from(ids),
+        updatedAt: now()
+      });
+    }
+
+    if (fileType === 'video' && !isRemovalVideo && boxNo) {
+      try {
+        await ensureSingleVideoPerBox(consignmentId, boxNo, fileId);
+        const boxId = `${consignmentId}_box_${boxNo}`;
+        await firestoreHelpers.setDocument('boxes', boxId, {
+          videoStatus: 'metadata_saved',
+          videoId: fileId,
+          videoUpdatedAt: now(),
+        });
+        await firestoreHelpers.setDocument('consignments', consignmentId, {
+          boxVideoStatuses: {
+            ...(consignment?.boxVideoStatuses || {}),
+            [String(boxNo)]: {
+              status: 'metadata_saved',
+              videoId: fileId,
+              updatedAt: now(),
+            },
+          },
+          updatedAt: now(),
+        });
+      } catch (replaceError) {
+        console.warn('[Upload] Old video cleanup failed for box', boxNo, replaceError.message);
+      }
+    }
+
+    await addAuditLog('upload', type || 'file', fileId, req.user.id, {
+      consignmentId,
+      boxNo,
+      originalName
+    });
+
+    const enriched = await enrichFileRecord(fileRecord);
+    res.status(201).json({ file: enriched });
+  } catch (error) {
+    console.error('Error saving file metadata:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to save file metadata.' });
+  }
+});
+
+router.post('/video-status', authenticateToken, requirePermission('packing', 'update video status'), async (req, res) => {
+  try {
+    const { consignmentId, boxNo, status, queueId, error } = req.body || {};
+    const allowed = new Set(['recording', 'queued', 'uploading', 'uploaded', 'metadata_saved', 'failed']);
+    if (!consignmentId || !boxNo || !allowed.has(status)) {
+      return res.status(400).json({ error: 'consignmentId, boxNo, and a valid status are required.' });
+    }
+
+    const timestamp = now();
+    const normalizedBoxNo = String(boxNo);
+    const consignment = await firestoreHelpers.getDocument('consignments', consignmentId);
+    if (!consignment) return res.status(404).json({ error: 'Consignment not found.' });
+
+    const statusRecord = {
+      status,
+      queueId: queueId || null,
+      error: error ? String(error).slice(0, 500) : null,
+      updatedAt: timestamp,
+      updatedBy: req.user.id,
+    };
+
+    await firestoreHelpers.setDocument('consignments', consignmentId, {
+      boxVideoStatuses: {
+        ...(consignment.boxVideoStatuses || {}),
+        [normalizedBoxNo]: statusRecord,
+      },
+      updatedAt: timestamp,
+    });
+
+    const boxId = `${consignmentId}_box_${normalizedBoxNo}`;
+    const existingBox = await firestoreHelpers.getDocument('boxes', boxId);
+    if (existingBox) {
+      await firestoreHelpers.setDocument('boxes', boxId, {
+        videoStatus: status,
+        videoQueueId: queueId || existingBox.videoQueueId || null,
+        videoError: status === 'failed' ? statusRecord.error : null,
+        videoUpdatedAt: timestamp,
+      });
+    }
+
+    res.json({ ok: true, status: statusRecord });
+  } catch (error) {
+    console.error('Error updating video status:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to update video status.' });
+  }
+});
+
+
+router.get('/share/:fileId', authenticateToken, requireAnyPermission(['consignments', 'packing'], 'share uploads'), async (req, res) => {
+  try {
+    const { fileId } = req.params;
+    const { type } = req.query;
+    const fileType = type || 'video';
+    const collectionName = fileType === 'video' ? 'videos' : 'documents';
+    const record = await firestoreHelpers.getDocument(collectionName, fileId);
+    if (!record) {
+      return res.status(404).json({ error: 'File not found.' });
+    }
+
+    const durable = buildDurableShareUrl(req, fileId, fileType || record.type || 'document');
+    res.json({
+      shareUrl: durable.shareUrl,
+      url: durable.shareUrl,
+      playUrl: durable.shareUrl,
+      path: durable.path,
+      requiresAuth: false,
+      expires: null,
+      permanent: true,
+      consignmentId: record.consignmentId,
+      boxNo: record.boxNo || null,
+      type: record.type || fileType || 'document',
+      originalName: record.originalName,
+    });
+  } catch (error) {
+    console.error('Error generating share link:', error);
+    res.status(error.statusCode || 500).json({ error: 'Failed to generate share link.', message: error.message });
+  }
+});
+
+/** Durable public share playback — HMAC token, no login, no expiry (file delete → 404). */
+router.get('/s/:token', async (req, res) => {
+  try {
+    let parsed;
+    try {
+      parsed = verifyShareToken(req.params.token);
+    } catch (error) {
+      return res.status(error.statusCode || 503).json({ error: error.message || 'Share links are not configured.' });
+    }
+    if (!parsed) {
+      return res.status(403).json({ error: 'Invalid share link.' });
+    }
+
+    const collectionName = parsed.type === 'video' ? 'videos' : 'documents';
+    const record = await firestoreHelpers.getDocument(collectionName, parsed.fileId);
+    if (!record || record.active === false) {
+      return res.status(404).json({ error: 'File not found.' });
+    }
+
+    await streamFileRecord(req, res, { ...record, id: parsed.fileId }, parsed.type, { publicShare: true });
+  } catch (error) {
+    console.error('Error streaming shared file:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to stream shared file.', message: error.message });
+    }
+  }
+});
+
+/** Fresh play URL for video preview and download (uses authenticated stream proxy). */
+router.get('/play/:fileId', authenticateToken, requireAnyPermission(['consignments', 'packing'], 'play uploads'), async (req, res) => {
+  try {
+    const { fileId } = req.params;
+    const { type } = req.query;
+    const fileType = type || 'video';
+    const collectionName = fileType === 'video' ? 'videos' : 'documents';
+    const record = await firestoreHelpers.getDocument(collectionName, fileId);
+    if (!record) {
+      return res.status(404).json({ error: 'File not found.' });
+    }
+
+    const storagePath = await resolveRecordStoragePath(record, fileType);
+    if (!storagePath) {
+      return res.status(404).json({ error: 'File is not available in storage.' });
+    }
+
+    const streamPath = buildStreamPath(fileId, fileType);
+    res.json({
+      url: streamPath,
+      playUrl: streamPath,
+      streamUrl: streamPath,
+      mimeType: record.mimeType || null,
+      originalName: record.originalName || null,
+    });
+  } catch (error) {
+    console.error('Error resolving play URL:', error);
+    res.status(500).json({ error: 'Failed to resolve play URL.', message: error.message });
+  }
+});
+
+/** Authenticated video/file stream — pipes from Cloudflare R2. */
+router.get('/stream/:fileId', authenticateToken, requireAnyPermission(['consignments', 'packing'], 'stream uploads'), async (req, res) => {
+  try {
+    const { fileId } = req.params;
+    const { type } = req.query;
+    const fileType = type || 'video';
+    const collectionName = fileType === 'video' ? 'videos' : 'documents';
+    const record = await firestoreHelpers.getDocument(collectionName, fileId);
+    if (!record) {
+      return res.status(404).json({ error: 'File not found.' });
+    }
+
+    await streamFileRecord(req, res, { ...record, id: fileId }, fileType);
+  } catch (error) {
+    console.error('Error streaming file:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to stream file.', message: error.message });
+    }
+  }
+});
+
+router.get('/health/:consignmentId', authenticateToken, requireAnyPermission(['consignments', 'packing'], 'check upload health'), async (req, res) => {
+  try {
+    const result = await checkConsignmentVideos(req.params.consignmentId);
+    const allOk = result.missing.length === 0 && result.orphaned.length === 0;
+    res.status(allOk ? 200 : 207).json({ healthy: allOk, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/:consignmentId', authenticateToken, requireAnyPermission(['consignments', 'packing'], 'list uploads'), async (req, res) => {
+  try {
+    const { consignmentId } = req.params;
+    const { type } = req.query;
+
+    let files = [];
+
+    if (type === 'video' || !type) {
+      const videos = await firestoreHelpers.queryCollection('videos', 'consignmentId', '==', consignmentId);
+      const enrichedVideos = await Promise.all(
+        videos.map((v) => enrichFileRecord({ ...v, type: 'video' }))
+      );
+      files = files.concat(enrichedVideos);
+    }
+
+    if (type === 'document' || !type) {
+      const docs = await firestoreHelpers.queryCollection('documents', 'consignmentId', '==', consignmentId);
+      const enrichedDocs = await Promise.all(
+        docs.map((d) => enrichFileRecord({ ...d, type: 'document' }))
+      );
+      files = files.concat(enrichedDocs);
+    }
+
+    files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+    res.json({ files });
+  } catch (error) {
+    console.error('Error fetching files:', error);
+    res.status(500).json({ error: 'Failed to fetch files.', message: error.message });
+  }
+});
+
+router.delete('/:fileId', authenticateToken, async (req, res) => {
+  try {
+    const { fileId } = req.params;
+    const { type } = req.query;
+
+    const collectionName = type === 'video' ? 'videos' : 'documents';
+    const fileRecord = await firestoreHelpers.getDocument(collectionName, fileId);
+
+    if (!fileRecord) {
+      return res.status(404).json({ error: 'File not found.' });
+    }
+
+    const isVideo = collectionName === 'videos' || fileRecord.type === 'video';
+    if (isVideo) {
+      if (!(await requestUserHasPermission(req, DELETE_VIDEOS))) {
+        return res.status(403).json({ error: 'You do not have permission to delete videos.' });
+      }
+    } else if (!(await requestUserHasPermission(req, 'consignments'))) {
+      return res.status(403).json({ error: 'You do not have permission to delete documents.' });
+    }
+
+    const storagePath = resolveStoragePath(fileRecord);
+    if (storagePath) {
+      await deleteFile(storagePath, { allowMissing: true, throwOnError: true });
+    } else if (isVideo && resolvePublicUrl(fileRecord)) {
+      return res.status(409).json({
+        error: 'Video storage path is missing. Refusing to delete the database record until storage can be verified.',
+      });
+    }
+
+    if (fileRecord.consignmentId) {
+      const consignment = await firestoreHelpers.getDocument('consignments', fileRecord.consignmentId);
+      if (consignment) {
+        const idField = type === 'video' ? 'videoIds' : 'documentIds';
+        await firestoreHelpers.setDocument('consignments', fileRecord.consignmentId, {
+          ...consignment,
+          [idField]: (consignment[idField] || []).filter(id => id !== fileId),
+          updatedAt: now()
+        });
+      }
+    }
+
+    await firestoreHelpers.deleteDocument(collectionName, fileId);
+    await addAuditLog('delete', type || 'file', fileId, req.user.id, { consignmentId: fileRecord.consignmentId });
+
+    res.json({ message: 'File deleted successfully.' });
+  } catch (error) {
+    console.error('Error deleting file:', error);
+    res.status(500).json({ error: 'Failed to delete file.', message: error.message });
+  }
+});
+
+
+module.exports = router;

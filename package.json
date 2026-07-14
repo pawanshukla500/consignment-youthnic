@@ -1,0 +1,18 @@
+{
+  "name": "consignment-packing-app",
+  "version": "1.0.0",
+  "description": "Modern full-stack consignment packing station application with Firebase",
+  "scripts": {
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "start": "cd backend && npm start",
+    "deploy": "npm run build && firebase deploy --only hosting",
+    "deploy:backend": "gcloud run deploy consignment-packing --source . --region=europe-west1 --allow-unauthenticated"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

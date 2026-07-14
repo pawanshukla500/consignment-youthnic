@@ -1,0 +1,26 @@
+# dataconnect/connector/queries.gql
+
+# Get a single user profile
+query GetUser($id: String!) {
+  user(id: $id) {
+    id
+    email
+    name
+    role
+    permissions
+    isActive
+  }
+}
+
+# List recent consignments
+query ListConsignments($limit: Int!) {
+  consignments(limit: $limit) {
+    id
+    internalShipmentNo
+    shipmentNo
+    status
+    totalRequiredQty
+    totalPackedQty
+    updatedAt
+  }
+}

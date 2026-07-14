@@ -1,0 +1,30 @@
+node_modules
+backend/node_modules
+frontend/node_modules
+frontend/dist
+
+# NEVER include service account keys in Docker image
+backend/serviceAccountKey.json
+*firebase-adminsdk*.json
+*-adminsdk-*.json
+
+# Dev-only env files (production uses Cloud Run env vars)
+.env
+.env.local
+backend/.env
+# CI writes frontend/.env.production but Docker also receives VITE_* via --build-arg
+!frontend/.env.production
+
+*.log
+.git
+.vscode
+.idea
+.DS_Store
+uploads
+temp
+tmp
+coverage
+run.bat
+README.md
+DEPLOYMENT.md
+AGENTS.md

@@ -1,0 +1,636 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Store, Plus, Search, Trash2, Loader2, Edit2, X, Check, Warehouse, Truck, Clock, RefreshCw } from 'lucide-react';
+import { marketplacesAPI } from '../services/api';
+import { useToast } from '../context/ToastContext';
+import { useDebounce } from '../hooks/useDebounce';
+import Modal from '../components/Modal';
+import ConfirmModal from '../components/ConfirmModal';
+import { normalizeWarehouses, computeRequiredDispatchDate } from '../utils/dispatchPlanning';
+import { formatDispatchDate } from '../utils/priority';
+
+const emptyWarehouse = () => ({ name: '', transitDays: 0, address: '', gst: '' });
+
+function WarehouseEditor({ warehouses, onChange, disabled }) {
+  const [draft, setDraft] = useState(emptyWarehouse());
+
+  const add = () => {
+    const name = draft.name.trim();
+    if (!name) return;
+    if (warehouses.some((w) => w.name.toLowerCase() === name.toLowerCase())) return;
+    onChange([...warehouses, {
+      name,
+      transitDays: Math.max(0, parseInt(draft.transitDays, 10) || 0),
+      address: draft.address.trim(),
+      gst: draft.gst.trim()
+    }]);
+    setDraft(emptyWarehouse());
+  };
+
+  const updateField = (idx, field, value) => {
+    const next = warehouses.map((w, i) =>
+      i === idx ? { ...w, [field]: value } : w
+    );
+    onChange(next);
+  };
+
+  const remove = (idx) => onChange(warehouses.filter((_, i) => i !== idx));
+
+  return (
+    <div className="space-y-4 border border-slate-100 rounded-xl p-4 bg-slate-50/50">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div>
+          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Warehouse Name</label>
+          <input
+            type="text"
+            value={draft.name}
+            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+            disabled={disabled}
+            placeholder="e.g. DEL1, BOM3"
+            className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50"
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Transit Days</label>
+          <input
+            type="number"
+            min="0"
+            value={draft.transitDays}
+            onChange={(e) => setDraft({ ...draft, transitDays: e.target.value })}
+            disabled={disabled}
+            placeholder="e.g. 5"
+            className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50"
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">GST Number</label>
+          <input
+            type="text"
+            value={draft.gst}
+            onChange={(e) => setDraft({ ...draft, gst: e.target.value })}
+            disabled={disabled}
+            placeholder="e.g. 07AAAAA1111A1Z1"
+            className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50"
+          />
+        </div>
+      </div>
+      <div>
+        <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Complete Address</label>
+        <textarea
+          value={draft.address}
+          onChange={(e) => setDraft({ ...draft, address: e.target.value })}
+          disabled={disabled}
+          placeholder="Enter full warehouse address details for billing & compliance..."
+          rows="2"
+          className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50 resize-none"
+        />
+      </div>
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={add}
+          disabled={disabled || !draft.name.trim()}
+          className="px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-sm shadow-primary-100"
+        >
+          <Plus className="w-3.5 h-3.5" /> Add Warehouse
+        </button>
+      </div>
+
+      {warehouses.length > 0 && (
+        <div className="space-y-3 pt-3 border-t border-slate-100 max-h-72 overflow-y-auto pr-1">
+          {warehouses.map((w, idx) => (
+            <div key={idx} className="bg-white border border-slate-200 rounded-xl p-3 relative group shadow-sm">
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <div className="flex items-center gap-2">
+                  <Warehouse className="w-4 h-4 text-primary-600 shrink-0" />
+                  <span className="font-bold text-slate-900 text-sm">{w.name}</span>
+                </div>
+                {!disabled && (
+                  <button type="button" onClick={() => remove(idx)} className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg">
+                    <X className="w-4.5 h-4.5" />
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-4 text-xs mb-2 bg-slate-50/50 p-2 rounded-lg border border-slate-100">
+                <div>
+                  <span className="text-slate-400 block text-[9px] uppercase font-semibold">Transit Time</span>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <input
+                      type="number"
+                      min="0"
+                      value={w.transitDays}
+                      onChange={(e) => updateField(idx, 'transitDays', Math.max(0, parseInt(e.target.value, 10) || 0))}
+                      disabled={disabled}
+                      className="w-14 px-1.5 py-0.5 border border-slate-200 rounded text-center font-bold text-slate-800 focus:outline-none"
+                    />
+                    <span className="text-slate-500">days</span>
+                  </div>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[9px] uppercase font-semibold">GST Number</span>
+                  <input
+                    type="text"
+                    value={w.gst || ''}
+                    onChange={(e) => updateField(idx, 'gst', e.target.value)}
+                    disabled={disabled}
+                    placeholder="None"
+                    className="w-full mt-0.5 px-2 py-0.5 border border-slate-200 rounded text-slate-800 focus:outline-none text-xs"
+                  />
+                </div>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[9px] uppercase font-semibold mb-0.5">Complete Address</span>
+                <textarea
+                  value={w.address || ''}
+                  onChange={(e) => updateField(idx, 'address', e.target.value)}
+                  disabled={disabled}
+                  placeholder="Address details"
+                  rows="2"
+                  className="w-full px-2 py-1 border border-slate-200 rounded text-xs text-slate-700 resize-none focus:outline-none"
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function Marketplaces() {
+  const { addToast } = useToast();
+  const [marketplaces, setMarketplaces] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [search, setSearch] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [editForm, setEditForm] = useState({ name: '', billTo: '', warehouses: [] });
+  const debouncedSearch = useDebounce(search, 400);
+  const didInitialLoad = useRef(false);
+
+  const [formErrors, setFormErrors] = useState({});
+
+  const validateForm = () => {
+    const errors = {};
+    if (!form.name.trim()) errors.name = 'Marketplace name is required';
+    if (!form.billTo.trim()) errors.billTo = 'Bill To details are required';
+    if (form.warehouses.length === 0) errors.warehouses = 'Add at least one warehouse';
+    if (form.warehouses.some((w) => !w.name.trim())) errors.warehouses = 'All warehouses need a name';
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const [form, setForm] = useState({ name: '', billTo: '', warehouses: [] });
+
+  const resetCreateForm = () => {
+    setForm({ name: '', billTo: '', warehouses: [] });
+    setFormErrors({});
+  };
+
+  const openCreate = () => {
+    resetCreateForm();
+    setShowCreate(true);
+  };
+
+  const fetchData = useCallback(async ({ silent = false } = {}) => {
+    try {
+      if (silent) setRefreshing(true);
+      else setLoading(true);
+      const res = await marketplacesAPI.getAll();
+      let data = (res.data.marketplaces || []).map((m) => ({
+        ...m,
+        warehouses: normalizeWarehouses(m.warehouses),
+      }));
+      if (debouncedSearch) {
+        const s = debouncedSearch.toLowerCase();
+        data = data.filter(
+          (m) =>
+            m.name?.toLowerCase().includes(s) ||
+            m.warehouses?.some((w) => w.name.toLowerCase().includes(s))
+        );
+      }
+      setMarketplaces(data);
+    } catch {
+      addToast('Failed to load marketplaces', 'error');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [debouncedSearch, addToast]);
+
+  useEffect(() => {
+    fetchData({ silent: didInitialLoad.current });
+    didInitialLoad.current = true;
+  }, [fetchData]);
+
+  const stats = {
+    total: marketplaces.length,
+    warehouses: marketplaces.reduce((n, m) => n + (m.warehouses?.length || 0), 0),
+    withTransit: marketplaces.reduce(
+      (n, m) => n + (m.warehouses || []).filter((w) => w.transitDays > 0).length,
+      0
+    ),
+  };
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    if (!validateForm()) return;
+    setIsSubmitting(true);
+    try {
+      await marketplacesAPI.create({ name: form.name.trim(), billTo: form.billTo.trim(), warehouses: form.warehouses });
+      addToast('Marketplace created', 'success');
+      setShowCreate(false);
+      resetCreateForm();
+      fetchData({ silent: true });
+    } catch (error) {
+      addToast(error.response?.data?.error || 'Failed to create', 'error');
+    }
+    setIsSubmitting(false);
+  };
+
+  const handleDelete = async () => {
+    if (!selected) return;
+    setIsSubmitting(true);
+    try {
+      await marketplacesAPI.delete(selected.id);
+      addToast('Marketplace deleted', 'success');
+      setShowDelete(false);
+      setSelected(null);
+      fetchData({ silent: true });
+    } catch (error) {
+      addToast(error.response?.data?.error || 'Failed to delete', 'error');
+    }
+    setIsSubmitting(false);
+  };
+
+  const startEdit = (m) => {
+    setEditing(m.id);
+    setEditForm({ name: m.name, billTo: m.billTo || '', warehouses: normalizeWarehouses(m.warehouses) });
+  };
+
+  const cancelEdit = () => {
+    setEditing(null);
+    setEditForm({ name: '', billTo: '', warehouses: [] });
+  };
+
+  const saveEdit = async (id) => {
+    if (!editForm.name.trim()) return;
+    setIsSubmitting(true);
+    try {
+      await marketplacesAPI.update(id, { name: editForm.name.trim(), billTo: editForm.billTo.trim(), warehouses: editForm.warehouses });
+      addToast('Marketplace updated', 'success');
+      setEditing(null);
+      fetchData({ silent: true });
+    } catch (error) {
+      addToast(error.response?.data?.error || 'Failed to update', 'error');
+    }
+    setIsSubmitting(false);
+  };
+
+  return (
+    <div className="animate-fade-in">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5">
+        <div className="flex items-center gap-2 text-sm text-slate-500">
+          {refreshing && <RefreshCw className="w-4 h-4 animate-spin text-primary-500" />}
+          <span>{loading ? 'Loading…' : `${marketplaces.length} marketplace${marketplaces.length !== 1 ? 's' : ''}`}</span>
+        </div>
+        <button
+          type="button"
+          onClick={openCreate}
+          className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium shadow-sm"
+        >
+          <Plus className="w-4 h-4" />
+          New Marketplace
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+        {[
+          { label: 'Marketplaces', value: stats.total, className: 'text-slate-900' },
+          { label: 'Warehouses', value: stats.warehouses, className: 'text-primary-600' },
+          { label: 'Transit configured', value: stats.withTransit, className: 'text-emerald-600' },
+        ].map(({ label, value, className }) => (
+          <div key={label} className="bg-white rounded-xl border border-slate-100 px-4 py-3 shadow-sm">
+            <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">{label}</p>
+            <p className={`text-2xl font-bold mt-0.5 ${className}`}>{loading ? '—' : value}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-primary-50 border border-primary-100 rounded-xl px-4 py-3 mb-6 flex gap-3">
+        <Clock className="w-5 h-5 text-primary-600 shrink-0 mt-0.5" />
+        <div className="text-sm text-primary-900">
+          <p className="font-semibold">Dispatch planning</p>
+          <p className="text-primary-700 mt-0.5">
+            Set transit time (days) per warehouse. Required dispatch = appointment date − transit days.
+            Consignments use this for priority (Critical / Warning / Normal).
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-6">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search marketplaces or warehouses..."
+            className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none"
+          />
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden relative">
+        {refreshing && (
+          <div className="absolute inset-x-0 top-0 h-0.5 bg-primary-100 overflow-hidden z-20">
+            <div className="h-full w-1/3 bg-primary-500 animate-pulse" />
+          </div>
+        )}
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-slate-50">
+              <tr>
+                <th className="text-left text-xs font-semibold text-slate-500 uppercase px-6 py-4">Marketplace</th>
+                <th className="text-left text-xs font-semibold text-slate-500 uppercase px-6 py-4">Warehouses &amp; Transit</th>
+                <th className="text-right text-xs font-semibold text-slate-500 uppercase px-6 py-4 w-32">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {loading ? (
+                <tr>
+                  <td colSpan="3" className="py-12 text-center">
+                    <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary-600" />
+                  </td>
+                </tr>
+              ) : marketplaces.length > 0 ? (
+                marketplaces.map((m) => (
+                  <tr key={m.id} className="hover:bg-slate-50/80 align-top">
+                    <td className="px-6 py-4">
+                      {editing === m.id ? (
+                        <div className="space-y-2">
+                          <div>
+                            <label className="block text-[9px] uppercase font-bold text-slate-400 mb-0.5">Panel Name</label>
+                            <input
+                              value={editForm.name}
+                              onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                              className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-primary-500 outline-none"
+                              placeholder="Panel Name"
+                              autoFocus
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[9px] uppercase font-bold text-slate-400 mb-0.5">Bill To</label>
+                            <textarea
+                              value={editForm.billTo}
+                              onChange={(e) => setEditForm({ ...editForm, billTo: e.target.value })}
+                              className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-primary-500 outline-none resize-none"
+                              placeholder="e.g. VB Exports Ltd, Main St"
+                              rows="2"
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-start gap-2">
+                          <div className="p-2 bg-primary-50 rounded-lg shrink-0 mt-0.5">
+                            <Store className="w-4 h-4 text-primary-600" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">{m.name}</p>
+                            {m.billTo && (
+                              <p className="text-xs text-slate-600 mt-1 font-medium bg-slate-100 px-1.5 py-0.5 rounded w-fit">
+                                Bill To: {m.billTo}
+                              </p>
+                            )}
+                            <p className="text-[10px] text-slate-400 mt-1">{m.warehouses?.length || 0} warehouse(s)</p>
+                          </div>
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      {editing === m.id ? (
+                        <WarehouseEditor
+                          warehouses={editForm.warehouses}
+                          onChange={(warehouses) => setEditForm({ ...editForm, warehouses })}
+                        />
+                      ) : m.warehouses?.length > 0 ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {m.warehouses.map((w) => (
+                            <div
+                              key={w.name}
+                              className="bg-slate-50 border border-slate-150 rounded-xl p-3 text-xs shadow-sm flex flex-col justify-between"
+                            >
+                              <div className="flex items-start justify-between gap-2 mb-1.5">
+                                <span className="flex items-center gap-1.5 font-bold text-slate-800">
+                                  <Warehouse className="w-3.5 h-3.5 text-primary-600 shrink-0" />
+                                  {w.name}
+                                </span>
+                                <span className="flex items-center gap-1 text-[10px] text-slate-600 bg-white px-1.5 py-0.5 rounded-full border border-slate-200 shrink-0">
+                                  <Truck className="w-3 h-3 text-slate-400" />
+                                  {w.transitDays}d
+                                </span>
+                              </div>
+                              {w.gst && (
+                                <div className="text-[10px] text-slate-500 font-mono mt-1">
+                                  GST: <span className="font-bold text-slate-700">{w.gst}</span>
+                                </div>
+                              )}
+                              {w.address && (
+                                <div className="text-[10px] text-slate-600 bg-white border border-slate-100 rounded-lg p-1.5 mt-1.5 line-clamp-2" title={w.address}>
+                                  {w.address}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-sm text-slate-400">No warehouses — edit to add transit config</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center justify-end gap-1">
+                        {editing === m.id ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => saveEdit(m.id)}
+                              disabled={isSubmitting}
+                              className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg"
+                              title="Save"
+                            >
+                              <Check className="w-4 h-4" />
+                            </button>
+                            <button type="button" onClick={cancelEdit} className="p-2 text-slate-400 hover:bg-slate-100 rounded-lg" title="Cancel">
+                              <X className="w-4 h-4" />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => startEdit(m)}
+                              className="p-2 text-slate-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg"
+                              title="Edit"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelected(m);
+                                setShowDelete(true);
+                              }}
+                              className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                              title="Delete"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan="3" className="py-12 text-center text-slate-400">
+                    <Store className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                    <p>No marketplaces found</p>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <Modal
+        open={showCreate}
+        onClose={() => !isSubmitting && (setShowCreate(false), resetCreateForm())}
+        title="New Marketplace"
+        subtitle="Configure portal name and warehouse transit times for dispatch planning"
+        size="lg"
+        footer={
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => { setShowCreate(false); resetCreateForm(); }}
+              className="px-5 py-2.5 border border-slate-200 rounded-lg text-slate-700 hover:bg-slate-50"
+              disabled={isSubmitting}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="create-marketplace-form"
+              disabled={isSubmitting}
+              className="px-5 py-2.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 flex items-center justify-center gap-2 font-medium"
+            >
+              {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+              Create Marketplace
+            </button>
+          </div>
+        }
+      >
+        <form id="create-marketplace-form" onSubmit={handleCreate} className="p-5 sm:p-6 space-y-6">
+          <div className="rounded-xl bg-gradient-to-br from-primary-50 to-primary-50 border border-primary-100 p-4 flex gap-3">
+            <div className="p-2 bg-white rounded-lg shadow-sm h-fit">
+              <Store className="w-5 h-5 text-primary-600" />
+            </div>
+            <div className="text-sm text-slate-700">
+              <p className="font-semibold text-slate-900">Dispatch planning</p>
+              <p className="mt-1 text-slate-600">
+                Required dispatch = appointment date − transit days.
+                Example: 5-day transit with appointment <strong>10 Jul</strong> → pack and dispatch by <strong>5 Jul</strong>.
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-slate-700 mb-2">
+              Panel Name <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              value={form.name}
+              onChange={(e) => { setForm({ ...form, name: e.target.value }); setFormErrors((p) => ({ ...p, name: '' })); }}
+              className={`w-full px-4 py-3 border rounded-xl text-sm focus:ring-2 focus:ring-primary-500 outline-none ${
+                formErrors.name ? 'border-red-300 bg-red-50/50' : 'border-slate-200'
+              }`}
+              placeholder="e.g. Amazon India, Flipkart, Myntra"
+              autoFocus
+            />
+            {formErrors.name && <p className="text-xs text-red-600 mt-1.5">{formErrors.name}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-slate-700 mb-2">
+              Bill To <span className="text-red-500">*</span>
+            </label>
+            <textarea
+              value={form.billTo}
+              onChange={(e) => { setForm({ ...form, billTo: e.target.value }); setFormErrors((p) => ({ ...p, billTo: '' })); }}
+              className={`w-full px-4 py-3 border rounded-xl text-sm focus:ring-2 focus:ring-primary-500 outline-none ${
+                formErrors.billTo ? 'border-red-300 bg-red-50/50' : 'border-slate-200'
+              }`}
+              placeholder="Enter billing legal entity name and complete registered office address details..."
+              rows="3"
+            />
+            {formErrors.billTo && <p className="text-xs text-red-600 mt-1.5">{formErrors.billTo}</p>}
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm font-semibold text-slate-700">
+                Warehouses &amp; in-transit days <span className="text-red-500">*</span>
+              </label>
+              <span className="text-xs text-slate-400">{form.warehouses.length} configured</span>
+            </div>
+            <WarehouseEditor
+              warehouses={form.warehouses}
+              onChange={(warehouses) => { setForm({ ...form, warehouses }); setFormErrors((p) => ({ ...p, warehouses: '' })); }}
+            />
+            {formErrors.warehouses && <p className="text-xs text-red-600 mt-1.5">{formErrors.warehouses}</p>}
+          </div>
+
+          {form.warehouses.length > 0 && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">Preview — dispatch deadline</p>
+              <div className="space-y-2">
+                {form.warehouses.map((w) => {
+                  const sampleAppt = '2026-07-10';
+                  const dispatch = computeRequiredDispatchDate(sampleAppt, w.transitDays);
+                  return (
+                    <div key={w.name} className="flex flex-wrap items-center gap-2 text-sm">
+                      <span className="font-medium text-slate-800">{w.name}</span>
+                      <span className="text-slate-400">·</span>
+                      <span className="text-slate-600">{w.transitDays || 0}d transit</span>
+                      <span className="text-slate-400">→</span>
+                      <span className="text-primary-700 font-medium">
+                        Dispatch by {dispatch ? formatDispatchDate(dispatch) : '—'} (if appt. 10 Jul)
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </form>
+      </Modal>
+
+      <ConfirmModal
+        show={showDelete}
+        onCancel={() => !isSubmitting && setShowDelete(false)}
+        onConfirm={handleDelete}
+        title="Delete Marketplace"
+        message={selected ? `Delete "${selected.name}"? This cannot be undone. Marketplaces linked to consignments cannot be deleted.` : ''}
+        confirmLabel="Delete"
+        variant="danger"
+        loading={isSubmitting}
+      />
+    </div>
+  );
+}

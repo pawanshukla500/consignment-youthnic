@@ -1,0 +1,400 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# GitHub Actions — Consignment Packing → Cloud Run (europe-west1)
+#
+# On push to main (or manual dispatch):
+#   1. Sync GitHub Secrets → GCP Secret Manager
+#   2. Build Docker image with frontend Firebase/Supabase config
+#   3. Deploy to Cloud Run with all env vars + mounted secrets
+#   4. Verify /api/health and /api/auth/status
+# ═══════════════════════════════════════════════════════════════════════════
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_build:
+        description: 'Skip Docker build (redeploy existing :latest image only)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  # Docker image repo name (independent of Cloud Run service name).
+  IMAGE_NAME: consignment-app
+  # Default Cloud Run service; workflow also deploys to all known services below.
+  SERVICE_NAME: ${{ vars.CLOUD_RUN_SERVICE || 'consignment-pack' }}
+  REGION: ${{ vars.CLOUD_RUN_REGION || 'europe-west1' }}
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create frontend .env.production
+        env:
+          POSTHOG_DASHBOARD_URL: ${{ vars.VITE_POSTHOG_DASHBOARD_URL }}
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
+          VITE_FIREBASE_MEASUREMENT_ID: ${{ secrets.VITE_FIREBASE_MEASUREMENT_ID }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          BETTERSTACK_DASHBOARD_URL: ${{ vars.VITE_BETTERSTACK_DASHBOARD_URL }}
+        run: |
+          # Do NOT use a YAML-indented heredoc — leading spaces break Vite env parsing.
+          {
+            echo 'VITE_API_URL='
+            echo "VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY}"
+            echo "VITE_FIREBASE_AUTH_DOMAIN=${VITE_FIREBASE_AUTH_DOMAIN}"
+            echo "VITE_FIREBASE_PROJECT_ID=${VITE_FIREBASE_PROJECT_ID}"
+            echo "VITE_FIREBASE_MESSAGING_SENDER_ID=${VITE_FIREBASE_MESSAGING_SENDER_ID}"
+            echo "VITE_FIREBASE_APP_ID=${VITE_FIREBASE_APP_ID}"
+            echo "VITE_FIREBASE_MEASUREMENT_ID=${VITE_FIREBASE_MEASUREMENT_ID}"
+            echo "VITE_SUPABASE_URL=${VITE_SUPABASE_URL}"
+            echo "VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}"
+            echo "VITE_POSTHOG_KEY=${VITE_POSTHOG_KEY}"
+            echo 'VITE_POSTHOG_HOST=https://us.i.posthog.com'
+            echo "VITE_POSTHOG_DASHBOARD_URL=${POSTHOG_DASHBOARD_URL:-https://us.posthog.com/embedded/aUBKw6XLlFMPLf2WJbRbmEzbfSpIyQ}"
+            echo "VITE_BETTERSTACK_DASHBOARD_URL=${BETTERSTACK_DASHBOARD_URL:-}"
+          } > frontend/.env.production
+          if grep -qE '^[[:space:]]+VITE_' frontend/.env.production; then
+            echo "::error::frontend/.env.production has leading whitespace — Vite will ignore these keys."
+            cat -A frontend/.env.production
+            exit 1
+          fi
+          if ! grep -qE '^VITE_FIREBASE_API_KEY=.{10,}' frontend/.env.production; then
+            echo "::error::VITE_FIREBASE_API_KEY is missing or too short in .env.production"
+            exit 1
+          fi
+          echo "✅ frontend/.env.production written ($(wc -l < frontend/.env.production) lines)"
+
+      - name: Validate Firebase frontend secrets
+        env:
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
+        run: |
+          missing=()
+          for key in VITE_FIREBASE_API_KEY VITE_FIREBASE_AUTH_DOMAIN VITE_FIREBASE_PROJECT_ID \
+                     VITE_FIREBASE_MESSAGING_SENDER_ID VITE_FIREBASE_APP_ID; do
+            val="${!key}"
+            if [ -z "$val" ]; then
+              missing+=("$key")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing GitHub Actions secrets (Settings → Secrets → Actions):"
+            printf '  - %s\n' "${missing[@]}"
+            echo ""
+            echo "Login will NOT work until these are set. Get values from Firebase Console → Project settings → Your apps → Web app."
+            exit 1
+          fi
+          echo "✅ All required VITE_FIREBASE_* secrets are present"
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Resolve custom domain → Cloud Run service
+        env:
+          CUSTOM_DOMAIN: ${{ vars.CUSTOM_DOMAIN || 'https://consignment.youthnic.shop' }}
+        run: |
+          DOMAIN_HOST="${CUSTOM_DOMAIN#https://}"
+          DOMAIN_HOST="${DOMAIN_HOST%%/*}"
+          MAPPED_SERVICE=""
+          for gcloud_cmd in "gcloud beta run domain-mappings describe" "gcloud alpha run domain-mappings describe" "gcloud run domain-mappings describe"; do
+            if $gcloud_cmd --domain="$DOMAIN_HOST" --region="$REGION" >/dev/null 2>&1; then
+              MAPPED_SERVICE=$($gcloud_cmd --domain="$DOMAIN_HOST" --region="$REGION" --format='value(spec.routeName)')
+              echo "Resolved via: $gcloud_cmd"
+              break
+            fi
+          done
+          if [ -n "$MAPPED_SERVICE" ]; then
+            echo "Custom domain $DOMAIN_HOST → Cloud Run service: $MAPPED_SERVICE"
+            echo "DOMAIN_MAPPED_SERVICE=$MAPPED_SERVICE" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Could not read domain mapping for $DOMAIN_HOST — defaulting to consignment-pack"
+            echo "DOMAIN_MAPPED_SERVICE=consignment-pack" >> "$GITHUB_ENV"
+          fi
+          # Always deploy both services (domain may map to consignment-pack while CI used to target consignment-packing).
+          echo "DEPLOY_SERVICES=consignment-pack consignment-packing" >> "$GITHUB_ENV"
+
+      - name: Sync secrets to GCP Secret Manager
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
+          MAILGUN_DOMAIN: ${{ secrets.MAILGUN_DOMAIN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          BOOTSTRAP_SECRET: ${{ secrets.BOOTSTRAP_SECRET }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SHARE_LINK_SECRET: ${{ secrets.SHARE_LINK_SECRET }}
+        run: bash scripts/sync-secrets-to-gcp.sh
+
+      - name: Configure Docker
+        if: github.event.inputs.skip_build != 'true'
+        run: gcloud auth configure-docker --quiet
+
+      - name: Build Docker image
+        if: github.event.inputs.skip_build != 'true'
+        env:
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
+          VITE_FIREBASE_MEASUREMENT_ID: ${{ secrets.VITE_FIREBASE_MEASUREMENT_ID }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          POSTHOG_DASHBOARD_URL: ${{ vars.VITE_POSTHOG_DASHBOARD_URL }}
+          BETTERSTACK_DASHBOARD_URL: ${{ vars.VITE_BETTERSTACK_DASHBOARD_URL }}
+        run: |
+          docker build \
+            --build-arg VITE_API_URL= \
+            --build-arg VITE_FIREBASE_API_KEY="${VITE_FIREBASE_API_KEY}" \
+            --build-arg VITE_FIREBASE_AUTH_DOMAIN="${VITE_FIREBASE_AUTH_DOMAIN}" \
+            --build-arg VITE_FIREBASE_PROJECT_ID="${VITE_FIREBASE_PROJECT_ID}" \
+            --build-arg VITE_FIREBASE_MESSAGING_SENDER_ID="${VITE_FIREBASE_MESSAGING_SENDER_ID}" \
+            --build-arg VITE_FIREBASE_APP_ID="${VITE_FIREBASE_APP_ID}" \
+            --build-arg VITE_FIREBASE_MEASUREMENT_ID="${VITE_FIREBASE_MEASUREMENT_ID}" \
+            --build-arg VITE_SUPABASE_URL="${VITE_SUPABASE_URL}" \
+            --build-arg VITE_SUPABASE_ANON_KEY="${VITE_SUPABASE_ANON_KEY}" \
+            --build-arg VITE_POSTHOG_KEY="${VITE_POSTHOG_KEY}" \
+            --build-arg VITE_POSTHOG_DASHBOARD_URL="${POSTHOG_DASHBOARD_URL:-https://us.posthog.com/embedded/aUBKw6XLlFMPLf2WJbRbmEzbfSpIyQ}" \
+            --build-arg VITE_BETTERSTACK_DASHBOARD_URL="${BETTERSTACK_DASHBOARD_URL:-}" \
+            -t gcr.io/$PROJECT_ID/$IMAGE_NAME:${{ github.sha }} \
+            -t gcr.io/$PROJECT_ID/$IMAGE_NAME:latest \
+            .
+
+      - name: Verify Firebase config baked into frontend build
+        if: github.event.inputs.skip_build != 'true'
+        env:
+          EXPECTED_PROJECT: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+        run: |
+          docker create --name verify-build "gcr.io/$PROJECT_ID/$IMAGE_NAME:${{ github.sha }}"
+          docker cp verify-build:/app/frontend/dist ./dist-verify
+          docker rm verify-build
+          FIREBASE_CHUNK=$(grep -rl 'firebaseConfigured' ./dist-verify/assets/ | head -1 || true)
+          if [ -z "$FIREBASE_CHUNK" ]; then
+            echo "::error::Could not find Firebase config chunk in built assets."
+            exit 1
+          fi
+          echo "Firebase chunk: $FIREBASE_CHUNK"
+          if grep -q 'apiKey:void 0' "$FIREBASE_CHUNK"; then
+            echo "::error::Firebase chunk still has apiKey:void 0 — VITE_* build args did not reach Vite."
+            exit 1
+          fi
+          if ! grep -qE 'apiKey:[`"]AIza' "$FIREBASE_CHUNK"; then
+            echo "::error::Firebase chunk is missing apiKey (expected AIzaSy prefix in apiKey field)."
+            exit 1
+          fi
+          if ! grep -q "$EXPECTED_PROJECT" "$FIREBASE_CHUNK"; then
+            echo "::error::Firebase chunk missing projectId $EXPECTED_PROJECT."
+            exit 1
+          fi
+          echo "✅ Firebase config verified in $FIREBASE_CHUNK"
+
+      - name: Push Docker image
+        if: github.event.inputs.skip_build != 'true'
+        run: |
+          docker push gcr.io/$PROJECT_ID/$IMAGE_NAME:${{ github.sha }}
+          docker push gcr.io/$PROJECT_ID/$IMAGE_NAME:latest
+          DIGEST=$(gcloud container images describe "gcr.io/$PROJECT_ID/$IMAGE_NAME:${{ github.sha }}" --format='get(image_summary.digest)')
+          echo "IMAGE_DIGEST=$DIGEST" >> "$GITHUB_ENV"
+          echo "Pushed image digest: $DIGEST"
+
+      - name: Deploy to Cloud Run
+        env:
+          CUSTOM_DOMAIN: ${{ vars.CUSTOM_DOMAIN || 'https://consignment.youthnic.shop' }}
+          POSTHOG_DASHBOARD_URL: ${{ vars.VITE_POSTHOG_DASHBOARD_URL }}
+          BETTERSTACK_DASHBOARD_URL: ${{ vars.VITE_BETTERSTACK_DASHBOARD_URL }}
+          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          if [ "${{ github.event.inputs.skip_build }}" = "true" ]; then
+            IMAGE_REF="gcr.io/$PROJECT_ID/$IMAGE_NAME:latest"
+          else
+            IMAGE_REF="gcr.io/$PROJECT_ID/$IMAGE_NAME@${IMAGE_DIGEST}"
+          fi
+          echo "Image: $IMAGE_REF"
+          SECRET_FLAGS=()
+          for pair in \
+            "JWT_SECRET=JWT_SECRET:latest" \
+            "MAILGUN_API_KEY=MAILGUN_API_KEY:latest" \
+            "MAILGUN_DOMAIN=MAILGUN_DOMAIN:latest" \
+            "DATABASE_URL=DATABASE_URL:latest" \
+            "SUPABASE_JWT_SECRET=SUPABASE_JWT_SECRET:latest" \
+            "FIREBASE_SERVICE_ACCOUNT_JSON=FIREBASE_SERVICE_ACCOUNT_JSON:latest" \
+            "R2_ACCOUNT_ID=R2_ACCOUNT_ID:latest" \
+            "R2_ACCESS_KEY_ID=R2_ACCESS_KEY_ID:latest" \
+            "R2_SECRET_ACCESS_KEY=R2_SECRET_ACCESS_KEY:latest" \
+            "SHARE_LINK_SECRET=SHARE_LINK_SECRET:latest" \
+            "BOOTSTRAP_SECRET=BOOTSTRAP_SECRET:latest"; do
+            name="${pair%%=*}"
+            if gcloud secrets describe "$name" >/dev/null 2>&1; then
+              SECRET_FLAGS+=(--update-secrets="$pair")
+              echo "Mounting secret: $name"
+            else
+              echo "Skipping secret (not in Secret Manager): $name"
+            fi
+          done
+
+          # Deploy domain-mapped service first, then every service in DEPLOY_SERVICES.
+          DEPLOY_TARGETS="$DOMAIN_MAPPED_SERVICE $DEPLOY_SERVICES $SERVICE_NAME"
+          DEPLOYED_SVCS=""
+          ALL_ORIGINS="${CUSTOM_DOMAIN}"
+          for candidate in $DEPLOY_TARGETS; do
+            [ -n "$candidate" ] || continue
+            if gcloud run services describe "$candidate" --region="$REGION" >/dev/null 2>&1; then
+              url=$(gcloud run services describe "$candidate" --region="$REGION" --format='value(status.url)')
+              if [ -n "$url" ] && ! echo ",$ALL_ORIGINS," | grep -q ",$url,"; then
+                ALL_ORIGINS="${ALL_ORIGINS},${url}"
+              fi
+            fi
+          done
+          echo "ALLOWED_ORIGINS for all services: $ALL_ORIGINS"
+
+          for svc in $DEPLOY_TARGETS; do
+            [ -n "$svc" ] || continue
+            if echo " $DEPLOYED_SVCS " | grep -q " ${svc} "; then
+              continue
+            fi
+            if ! gcloud run services describe "$svc" --region="$REGION" >/dev/null 2>&1; then
+              echo "Skipping $svc (service does not exist)"
+              continue
+            fi
+            echo "Deploying to Cloud Run service: $svc (region: $REGION)"
+
+          gcloud run deploy "$svc" \
+            --image="$IMAGE_REF" \
+            --platform=managed \
+            --region=$REGION \
+            --allow-unauthenticated \
+            --port=8080 \
+            --memory=2Gi \
+            --cpu=2 \
+            --concurrency=60 \
+            --timeout=300 \
+            --min-instances=1 \
+            --max-instances=10 \
+            --cpu-boost \
+            --set-env-vars="NODE_ENV=production" \
+            --set-env-vars="ADMIN_EMAIL=returnorders@vbexports.co.in" \
+            --set-env-vars="FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}" \
+            --set-env-vars="FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}" \
+            --set-env-vars="R2_BUCKET=consigmentapp" \
+            --set-env-vars="DB_USE_POSTGRES=true" \
+            --set-env-vars="DB_SSL=true" \
+            --set-env-vars="DB_POOL_MAX=25" \
+            --set-env-vars="SUPABASE_URL=${SUPABASE_URL}" \
+            --set-env-vars="SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}" \
+            --set-env-vars="MAIL_FROM_EMAIL=consignment@youthnic.shop" \
+            --set-env-vars="MAIL_FROM_NAME=Youthnic Packing Station" \
+            --set-env-vars="MAIL_USER_DOMAIN=youthnic.shop" \
+            --set-env-vars="APP_URL=${CUSTOM_DOMAIN}" \
+            --set-env-vars="LOGTAIL_SOURCE_TOKEN=${{ secrets.LOGTAIL_SOURCE_TOKEN }}" \
+            --set-env-vars="LOGTAIL_INGEST_HOST=s2531760.eu-fsn-3.betterstackdata.com" \
+            --set-env-vars="POSTHOG_DASHBOARD_URL=${POSTHOG_DASHBOARD_URL:-https://us.posthog.com/embedded/aUBKw6XLlFMPLf2WJbRbmEzbfSpIyQ}" \
+            --set-env-vars="BETTERSTACK_DASHBOARD_URL=${BETTERSTACK_DASHBOARD_URL:-}" \
+            "${SECRET_FLAGS[@]}"
+
+          DEPLOYED_URL=$(gcloud run services describe "$svc" --region=$REGION --format='value(status.url)')
+          echo "Deployed $svc → $DEPLOYED_URL"
+
+          gcloud run services update "$svc" \
+            --region=$REGION \
+            --remove-env-vars="ADMIN_PASSWORD"
+
+          gcloud run services update "$svc" \
+            --region=$REGION \
+            --update-env-vars="^##^ALLOWED_ORIGINS=${ALL_ORIGINS}"
+
+          gcloud run services update-traffic "$svc" \
+            --region=$REGION \
+            --to-latest
+
+          DEPLOYED_SVCS="${DEPLOYED_SVCS} ${svc}"
+          done
+
+      - name: Verify deployment health
+        env:
+          CUSTOM_DOMAIN: ${{ vars.CUSTOM_DOMAIN || 'https://consignment.youthnic.shop' }}
+        run: |
+          SERVICE_URL=$(gcloud run services describe "$DOMAIN_MAPPED_SERVICE" --region=$REGION --format='value(status.url)')
+          echo "Domain-mapped service: $DOMAIN_MAPPED_SERVICE"
+          echo "Service URL: $SERVICE_URL"
+          curl -sS "${SERVICE_URL}/api/health" | tee /tmp/health.json
+          DB_STATUS=$(jq -r '.database // "unknown"' /tmp/health.json)
+          echo "Database status: $DB_STATUS"
+          if [ "$DB_STATUS" = "misconfigured" ] || [ "$DB_STATUS" = "unavailable" ]; then
+            echo "::warning::PostgreSQL is not healthy. Check DATABASE_URL GitHub secret and Secret Manager."
+          fi
+          curl -fsS "${SERVICE_URL}/api/auth/status" | tee /tmp/auth-status.json
+          echo "✅ Health and auth status checks passed"
+
+          # Verify the public custom domain serves a Firebase chunk with a real apiKey.
+          verify_firebase_chunk() {
+            local base_url="$1"
+            local label="$2"
+            local html
+            html=$(curl -fsS "${base_url}/")
+            local chunk="" broken=""
+            for c in $(echo "$html" | grep -oE 'chunk-[A-Za-z0-9_-]+\.js' | sort -u); do
+              local body
+              body=$(curl -fsS "${base_url}/assets/${c}")
+              if echo "$body" | grep -q 'firebaseConfigured'; then
+                if echo "$body" | grep -qE 'apiKey:[`"]AIza'; then
+                  chunk="$c"
+                  break
+                fi
+                broken="${broken:-$c}"
+              fi
+            done
+            if [ -z "$chunk" ]; then
+              echo "::error::${label}: no Firebase chunk with apiKey on ${base_url} (broken chunk: ${broken:-unknown})"
+              return 1
+            fi
+            echo "✅ ${label}: ${base_url} → ${chunk} (apiKey OK)"
+          }
+
+          verify_firebase_chunk "${CUSTOM_DOMAIN}" "Custom domain"
+          PACK_URL=$(gcloud run services describe consignment-pack --region=$REGION --format='value(status.url)' 2>/dev/null || true)
+          if [ -n "$PACK_URL" ]; then
+            verify_firebase_chunk "${PACK_URL}" "consignment-pack"
+          fi
+
+      - name: Show service URL
+        run: |
+          echo "✅ Deployed successfully!"
+          echo "Domain-mapped service: $DOMAIN_MAPPED_SERVICE"
+          gcloud run services describe "$DOMAIN_MAPPED_SERVICE" --region=$REGION --format='value(status.url)'

@@ -1,0 +1,13 @@
+# For details see: https://supabase.com/docs/guides/cli/config
+project_id = "rakaiatzcpnmgltrpryh"
+
+[api]
+enabled = true
+
+[db]
+port = 54322
+major_version = 15
+
+[storage]
+enabled = true
+file_size_limit = "500MiB"

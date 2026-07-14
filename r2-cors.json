@@ -1,0 +1,16 @@
+# Cloudflare R2 CORS for browser direct uploads (videos / images / documents)
+# Apply via: cd backend && node scripts/apply-cors.js
+# Or paste into Cloudflare Dashboard → R2 → consigmentapp → Settings → CORS policy
+[
+  {
+    "AllowedOrigins": [
+      "http://localhost:5173",
+      "http://localhost:5000",
+      "https://consignment.youthnic.shop"
+    ],
+    "AllowedMethods": ["GET", "PUT", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag", "Content-Length", "Content-Type", "Accept-Ranges", "Content-Range"],
+    "MaxAgeSeconds": 3600
+  }
+]

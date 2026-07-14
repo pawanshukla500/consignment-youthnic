@@ -1,0 +1,22 @@
+# dataconnect/connector/mutations.gql
+
+# Upsert a user profile
+mutation UpsertUser(
+  $id: String!
+  $email: String!
+  $name: String
+  $role: String!
+  $permissions: Any!
+  $isActive: Boolean!
+) {
+  user_upsert(
+    data: {
+      id: $id
+      email: $email
+      name: $name
+      role: $role
+      permissions: $permissions
+      isActive: $isActive
+    }
+  )
+}

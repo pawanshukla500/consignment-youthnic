@@ -1,0 +1,12 @@
+specVersion: "v1alpha"
+serviceId: "consignment-packing-app-2-service"
+location: "europe-west1"
+schema:
+  source: "schema"
+  datasource:
+    postgresql:
+      database: "consignment-packing-app-2-database"
+      cloudSql:
+        instanceId: "consignment-packing-app-2-instance"
+connectorDirs:
+  - "connector"

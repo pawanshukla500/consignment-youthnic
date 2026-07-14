@@ -1,0 +1,209 @@
+# dataconnect/schema/schema.gql
+
+# 1. Compatibility Bridge Table (mirrors JSONB documents table)
+type Document @table(name: "documents", key: ["collection", "id"]) {
+  collection: String!
+  id: String!
+  data: Any! @default(value: "{}")
+  createdAt: Timestamp! @default(expr: "request.time")
+  updatedAt: Timestamp! @default(expr: "request.time")
+}
+
+# 2. Consignments Table
+type Consignment @table(name: "consignments", key: ["id"]) {
+  id: String!
+  internalShipmentNo: String!
+  shipmentNo: String
+  name: String
+  description: String
+  marketplaceId: String
+  warehouse: String
+  status: String! @default(value: "pending")
+  shipmentStatus: String
+  expectedDate: Date
+  poExpiryDate: Date
+  appointmentDate: Date
+  scheduledDispatchDate: Date
+  actualDispatchDate: Date
+  dateOfInward: Date
+  forwardInvoiceNo: String
+  docketCompany: String
+  docketNo: String
+  marketplaceTicketId: String
+  totalRequiredQty: Int! @default(value: 0)
+  totalPackedQty: Int! @default(value: 0)
+  unitsShipped: Int! @default(value: 0)
+  unitsReceived: Int! @default(value: 0)
+  unitsInwarded: Int! @default(value: 0)
+  qaFailExcessQty: Int! @default(value: 0)
+  sourceDocument: Any! @default(value: "{}")
+  createdBy: String
+  createdAt: Timestamp! @default(expr: "request.time")
+  updatedAt: Timestamp! @default(expr: "request.time")
+}
+
+# 3. Master SKUs Table
+type Sku @table(name: "skus", key: ["id"]) {
+  id: String!
+  consignment: Consignment! @ref
+  barcode: String
+  marketplaceSku: String
+  internalSku: String
+  marketplaceId: String
+  requiredQty: Int! @default(value: 0)
+  packedQty: Int! @default(value: 0)
+  status: String! @default(value: "pending")
+  sourceDocument: Any! @default(value: "{}")
+  createdAt: Timestamp! @default(expr: "request.time")
+  updatedAt: Timestamp! @default(expr: "request.time")
+}
+
+# 4. Boxes Table
+type Box @table(name: "boxes", key: ["id"]) {
+  id: String!
+  consignment: Consignment! @ref
+  boxNo: String!
+  totalQty: Int! @default(value: 0)
+  sourceDocument: Any! @default(value: "{}")
+  createdBy: String
+  createdAt: Timestamp! @default(expr: "request.time")
+  updatedAt: Timestamp! @default(expr: "request.time")
+}
+
+# 5. Box Items Table
+type BoxItem @table(name: "box_items", key: ["id"]) {
+  id: UUID! @default(expr: "uuidV4()")
+  box: Box! @ref
+  consignment: Consignment! @ref
+  sku: Sku @ref
+  barcode: String
+  marketplaceSku: String
+  internalSku: String
+  qty: Int!
+  createdAt: Timestamp! @default(expr: "request.time")
+  updatedAt: Timestamp! @default(expr: "request.time")
+}
+
+# 6. Videos Table
+type Video @table(name: "videos", key: ["id"]) {
+  id: String!
+  consignment: Consignment! @ref
+  box: Box @ref
+  boxNo: String
+  originalName: String
+  fileName: String
+  mimeType: String
+  sizeBytes: Int! @default(value: 0)
+  storageProvider: String! @default(value: "firebase")
+  storagePath: String
+  url: String
+  uploadedBy: String
+  uploadedAt: Timestamp
+  createdAt: Timestamp! @default(expr: "request.time")
+  updatedAt: Timestamp! @default(expr: "request.time")
+}
+
+# 7. Shipment Documents Table
+type ShipmentDocument @table(name: "shipment_documents", key: ["id"]) {
+  id: String!
+  consignment: Consignment @ref
+  type: String
+  originalName: String
+  fileName: String
+  mimeType: String
+  sizeBytes: Int! @default(value: 0)
+  storageProvider: String! @default(value: "firebase")
+  storagePath: String
+  url: String
+  uploadedBy: String
+  uploadedAt: Timestamp
+  metadata: Any! @default(value: "{}")
+  createdAt: Timestamp! @default(expr: "request.time")
+  updatedAt: Timestamp! @default(expr: "request.time")
+}
+
+# 8. Users Table
+type User @table(name: "users", key: ["id"]) {
+  id: String!
+  firebaseUid: String @unique
+  email: String! @unique
+  name: String
+  role: String! @default(value: "packer")
+  warehouseId: String
+  permissions: Any! @default(value: "[]")
+  passwordHash: String
+  isActive: Boolean! @default(value: true)
+  lastLoginAt: Timestamp
+  sourceDocument: Any! @default(value: "{}")
+  createdAt: Timestamp! @default(expr: "request.time")
+  updatedAt: Timestamp! @default(expr: "request.time")
+}
+
+# 9. Marketplaces Table
+type Marketplace @table(name: "marketplaces", key: ["id"]) {
+  id: String!
+  name: String!
+  code: String
+  transitDays: Int! @default(value: 0)
+  isActive: Boolean! @default(value: true)
+  sourceDocument: Any! @default(value: "{}")
+  createdAt: Timestamp! @default(expr: "request.time")
+  updatedAt: Timestamp! @default(expr: "request.time")
+}
+
+# 10. Audit Logs Table
+type AuditLog @table(name: "audit_logs", key: ["id"]) {
+  id: String!
+  action: String!
+  entityType: String!
+  entityId: String
+  userId: String
+  details: Any! @default(value: "{}")
+  createdAt: Timestamp! @default(expr: "request.time")
+}
+
+# 11. Productivity Events Table
+type ProductivityEvent @table(name: "productivity_events", key: ["id"]) {
+  id: String!
+  consignment: Consignment @ref
+  box: Box @ref
+  boxNo: String
+  eventType: String!
+  itemsCount: Int! @default(value: 0)
+  userId: String
+  details: Any! @default(value: "{}")
+  createdAt: Timestamp! @default(expr: "request.time")
+}
+
+# 12. Packing Sync Jobs Table
+type PackingSyncJob @table(name: "packing_sync_jobs", key: ["id"]) {
+  id: String!
+  consignment: Consignment @ref
+  jobType: String!
+  status: String! @default(value: "pending")
+  payload: Any! @default(value: "{}")
+  attempts: Int! @default(value: 0)
+  lastError: String
+  createdBy: String
+  createdAt: Timestamp! @default(expr: "request.time")
+  updatedAt: Timestamp! @default(expr: "request.time")
+}
+
+# 13. Scan Events Table
+type ScanEvent @table(name: "scan_events", key: ["id"]) {
+  id: String!
+  consignment: Consignment! @ref
+  box: Box @ref
+  boxNo: String
+  sku: Sku @ref
+  barcode: String
+  marketplaceSku: String
+  internalSku: String
+  qtyDelta: Int! @default(value: 1)
+  result: String! @default(value: "accepted")
+  stationId: String
+  userId: String
+  clientCreatedAt: Timestamp
+  payload: Any! @default(value: "{}")
+  createdAt: Timestamp! @default(expr: "request.time")
+}

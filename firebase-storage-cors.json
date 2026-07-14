@@ -1,0 +1,20 @@
+[
+  {
+    "origin": [
+      "https://consignment.youthnic.shop",
+      "https://consignment.youthnic-studio.shop",
+      "http://localhost:5173",
+      "http://localhost:3000"
+    ],
+    "method": ["GET", "POST", "PUT", "DELETE", "HEAD"],
+    "maxAgeSeconds": 3600,
+    "responseHeader": [
+      "Content-Type",
+      "Content-MD5",
+      "Content-Length",
+      "Content-Disposition",
+      "Authorization",
+      "X-Requested-With"
+    ]
+  }
+]

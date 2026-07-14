@@ -1,0 +1,28 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# DEPRECATED — do not use for automatic deploys
+#
+# Canonical deploy path: GitHub Actions (.github/workflows/deploy.yml)
+#
+# This Cloud Build config intentionally fails so a legacy push-to-main trigger
+# cannot overwrite production with a frontend built without VITE_FIREBASE_* args
+# (which produces apiKey:`` in the browser and breaks login).
+#
+# In GCP Console → Cloud Build → Triggers: disable or delete the trigger
+# that runs this file on push to main.
+#
+# For manual Cloud Build deploys, use GitHub Actions → Deploy to Cloud Run instead.
+# ═══════════════════════════════════════════════════════════════════════════
+steps:
+  - name: 'ubuntu'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "ERROR: cloudbuild.yaml auto-deploy is disabled."
+        echo "Use GitHub Actions (.github/workflows/deploy.yml) to deploy."
+        echo "Disable the Cloud Build trigger on push to main in GCP Console."
+        exit 1
+
+timeout: '60s'
+options:
+  logging: CLOUD_LOGGING_ONLY
