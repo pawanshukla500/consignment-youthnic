@@ -5,8 +5,8 @@
 const path = require('path');
 const fs = require('fs');
 
-const APP_NAME = 'Consignment Packing App';
-const BRAND = 'Youthnic Packing Station';
+const APP_NAME = 'Consignment App';
+const BRAND = 'Consignment App';
 const LOGO_CID = 'email-logo.png';
 const LOGO_FILE = path.join(__dirname, '..', 'assets', 'email-logo.png');
 
@@ -107,8 +107,8 @@ function emailShell({ title, preheader = '', bodyHtml, accent = '#0f172a' }) {
           <tr>
             <td style="background:${accent};padding:28px 28px 22px;text-align:center">
               ${logoBlock(httpUrl)}
-              <p style="margin:0;font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.3px">Youthnic</p>
-              <p style="margin:6px 0 0;font-size:11px;color:rgba(255,255,255,0.75);letter-spacing:1.4px;text-transform:uppercase">${escapeHtml(APP_NAME)}</p>
+              <p style="margin:0;font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.3px">Consignment App</p>
+              <p style="margin:6px 0 0;font-size:11px;color:rgba(255,255,255,0.75);letter-spacing:1.4px;text-transform:uppercase">Youthnic Packing</p>
             </td>
           </tr>
           <tr>
@@ -205,7 +205,7 @@ function buildPasswordResetEmail({ name, email, resetUrl, fromEmail }) {
 
   return {
     subject,
-    html: emailShell({ title: subject, preheader: 'Reset your Youthnic Packing Station password', bodyHtml }),
+    html: emailShell({ title: subject, preheader: 'Reset your Consignment App password', bodyHtml }),
     text: `Hi ${firstName},\n\nReset your ${BRAND} password for ${email}:\n${resetUrl}\n\nThis link expires in 1 hour.\n\n© ${new Date().getFullYear()} Youthnic Exports Pvt. Ltd.`,
   };
 }

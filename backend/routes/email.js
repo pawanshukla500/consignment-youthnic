@@ -52,19 +52,19 @@ function buildWelcomeEmail({ name, email, role, setupUrl }) {
 
   const html = `<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Welcome to Youthnic</title></head>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Welcome to Consignment App</title></head>
 <body style="margin:0;padding:0;background:#f1f5f9;font-family:Inter,Arial,sans-serif">
   <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
     <tr><td align="center" style="padding:32px 16px">
       <table width="560" cellpadding="0" cellspacing="0" role="presentation" style="max-width:560px;width:100%">
         <tr><td style="background:#0f172a;border-radius:16px 16px 0 0;padding:32px;text-align:center">
-          <p style="margin:0;font-size:28px;font-weight:800;color:#fff;letter-spacing:-0.5px">Youthnic</p>
-          <p style="margin:6px 0 0;font-size:13px;color:rgba(255,255,255,.65);letter-spacing:1px;text-transform:uppercase">Packing Station</p>
+          <p style="margin:0;font-size:28px;font-weight:800;color:#fff;letter-spacing:-0.5px">Consignment App</p>
+          <p style="margin:6px 0 0;font-size:13px;color:rgba(255,255,255,.65);letter-spacing:1px;text-transform:uppercase">Youthnic Packing</p>
         </td></tr>
         <tr><td style="background:#fff;padding:36px 40px">
           <p style="margin:0 0 8px;font-size:22px;font-weight:700;color:#0f172a">Welcome, ${firstName}</p>
           <p style="margin:0 0 28px;font-size:14px;color:#64748b;line-height:1.6">
-            Your account has been created on the <strong>Youthnic Packing Station</strong>.
+            Your account has been created on the <strong>Consignment App</strong>.
             Use the secure link below to set your own password, then sign in with <strong>${safeEmail}</strong>.
           </p>
           <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
@@ -100,7 +100,7 @@ function buildWelcomeEmail({ name, email, role, setupUrl }) {
 </body>
 </html>`;
 
-  const text = `Welcome to Youthnic Packing Station, ${String(name || '').split(' ')[0] || 'there'}!
+  const text = `Welcome to Consignment App, ${String(name || '').split(' ')[0] || 'there'}!
 
 Your account (${email}) has been created with role: ${permLabel}.
 
@@ -188,7 +188,7 @@ router.post('/welcome', authenticateToken, requireRole('admin'), async (req, res
     await sendViaMailgun({
       to: normalized,
       toName: name,
-      subject: 'Welcome to Youthnic Packing Station — Set your password',
+      subject: 'Welcome to Consignment App — Set your password',
       html,
       text,
     });
