@@ -141,8 +141,8 @@ jobs:
             echo "::warning::Could not read domain mapping for $DOMAIN_HOST — defaulting to consignment-pack"
             echo "DOMAIN_MAPPED_SERVICE=consignment-pack" >> "$GITHUB_ENV"
           fi
-          # Always deploy both services (domain may map to consignment-pack while CI used to target consignment-packing).
-          echo "DEPLOY_SERVICES=consignment-pack consignment-packing" >> "$GITHUB_ENV"
+          # Deploy only the primary / domain-mapped service to avoid paying for two apps.
+          echo "DEPLOY_SERVICES=$SERVICE_NAME" >> "$GITHUB_ENV"
 
       - name: Sync secrets to GCP Secret Manager
         env:
@@ -295,19 +295,22 @@ jobs:
             fi
             echo "Deploying to Cloud Run service: $svc (region: $REGION)"
 
+          # Cost profile: scale-to-zero, 1 vCPU / 1Gi, small max — avoid always-on billing.
+          # Tradeoff: cold start after idle (~few seconds). In-process Tue/Fri email needs traffic or Cloud Scheduler.
           gcloud run deploy "$svc" \
             --image="$IMAGE_REF" \
             --platform=managed \
             --region=$REGION \
             --allow-unauthenticated \
             --port=8080 \
-            --memory=2Gi \
-            --cpu=2 \
-            --concurrency=60 \
+            --memory=1Gi \
+            --cpu=1 \
+            --concurrency=80 \
             --timeout=300 \
-            --min-instances=1 \
-            --max-instances=10 \
-            --cpu-boost \
+            --min-instances=0 \
+            --max-instances=3 \
+            --cpu-throttling \
+            --execution-environment=gen2 \
             --set-env-vars="NODE_ENV=production" \
             --set-env-vars="ADMIN_EMAIL=returnorders@vbexports.co.in" \
             --set-env-vars="FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}" \
@@ -315,7 +318,7 @@ jobs:
             --set-env-vars="R2_BUCKET=consigmentapp" \
             --set-env-vars="DB_USE_POSTGRES=true" \
             --set-env-vars="DB_SSL=true" \
-            --set-env-vars="DB_POOL_MAX=25" \
+            --set-env-vars="DB_POOL_MAX=10" \
             --set-env-vars="SUPABASE_URL=${SUPABASE_URL}" \
             --set-env-vars="SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}" \
             --set-env-vars="MAIL_FROM_EMAIL=consignment@youthnic.shop" \
@@ -344,6 +347,24 @@ jobs:
             --to-latest
 
           DEPLOYED_SVCS="${DEPLOYED_SVCS} ${svc}"
+          done
+
+          # Cap billing on any legacy duplicate service (do not keep a second warm app).
+          for extra in consignment-packing; do
+            if echo " $DEPLOYED_SVCS " | grep -q " ${extra} "; then
+              continue
+            fi
+            if gcloud run services describe "$extra" --region="$REGION" >/dev/null 2>&1; then
+              echo "Cost-cap legacy service $extra → min=0, max=1, 512Mi, 1 CPU"
+              gcloud run services update "$extra" \
+                --region="$REGION" \
+                --min-instances=0 \
+                --max-instances=1 \
+                --cpu=1 \
+                --memory=512Mi \
+                --cpu-throttling \
+                --quiet || true
+            fi
           done
 
       - name: Verify deployment health

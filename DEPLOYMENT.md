@@ -146,7 +146,7 @@ gcloud run deploy consignment-packing ^
 
 > Note: On Windows CMD use `^` for line continuation. On PowerShell use `` ` ``.
 
-> **Production resources (recommended):** `2Gi` memory, `2` vCPU, `min-instances=1` (always warm — no cold starts), `cpu-boost` (faster startup), `concurrency=60`. These settings are configured in `cloudbuild.yaml` and `.github/workflows/deploy.yml`.
+> **Cost profile (default in GitHub Actions):** `1Gi` memory, `1` vCPU, `min-instances=0` (scale to zero), `max-instances=3`, CPU throttling on. First request after idle may cold-start. Do **not** set `min-instances=1` unless you accept always-on billing.
 
 After deployment, note the Cloud Run URL: `https://consignment-packing-XXXXXXXX-el.a.run.app`
 

@@ -13,6 +13,25 @@ Public app URL target: **`https://consignment.youthnic.shop`**
 
 ---
 
+## Cost profile (Cloud Run)
+
+Deploy uses a **low-cost** profile so idle time is nearly free:
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `min-instances` | `0` | Scale to zero when idle (biggest savings vs always-on) |
+| `max-instances` | `3` | Caps burst spend |
+| CPU / memory | `1` vCPU / `1Gi` | Enough for packing + uploads without 2× resources |
+| CPU throttling | on | Bill CPU mainly while handling requests |
+| Services deployed | **one** primary (`consignment-pack`) | Avoid paying for a second duplicate app |
+
+**Tradeoff:** first request after idle can be a few seconds (cold start). Tue/Fri Org Head email runs in-process, so it only fires while an instance is warm — use [Cloud Scheduler](https://cloud.google.com/scheduler) to hit `/api/workflow/org-head/send-weekly-report` if you need that email even when the app is idle.
+
+To delete a leftover duplicate service entirely (optional):  
+`gcloud run services delete consignment-packing --region=europe-west1`
+
+---
+
 ## Critical rules
 
 - **Never commit** `backend/.env`, `frontend/.env`, `frontend/.env.production`, or `serviceAccountKey.json`
@@ -38,7 +57,7 @@ In [Google Cloud Console](https://console.cloud.google.com/) → **IAM & Admin**
 
 ### 2. Cloud Run + custom domain
 
-Custom domain **`consignment.youthnic.shop`** should map to Cloud Run service **`consignment-pack`** (workflow also keeps `consignment-packing` in sync).
+Custom domain **`consignment.youthnic.shop`** should map to Cloud Run service **`consignment-pack`**. The workflow deploys that primary service only and cost-caps any legacy `consignment-packing` duplicate.
 
 Repository **Variables** (Settings → Secrets and variables → Actions → Variables):
 
