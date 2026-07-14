@@ -273,6 +273,13 @@ PY
               echo "::error::Put a cloud Postgres URL in GitHub → Settings → Secrets → DATABASE_URL (Cloud SQL or other hosted Postgres), then re-run."
               exit 1
             fi
+            # TCP probe from GitHub runner (public internet) to catch ISP firewall blocks early.
+            echo "Probing TCP ${DB_HOST}:5432 from GitHub Actions..."
+            if ! timeout 15 bash -c "echo >/dev/tcp/${DB_HOST}/5432"; then
+              echo "::error::Cannot open TCP ${DB_HOST}:5432 from the internet (GitHub runner). Port forward/firewall may only work for some networks, or BSNL may block cloud providers."
+              exit 1
+            fi
+            echo "✅ TCP ${DB_HOST}:5432 reachable from public internet"
           else
             echo "::error::Secret DATABASE_URL missing in Secret Manager"
             exit 1
@@ -331,7 +338,8 @@ PY
             ENV_CSV="${ENV_CSV}##FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}"
             ENV_CSV="${ENV_CSV}##R2_BUCKET=consigmentapp"
             ENV_CSV="${ENV_CSV}##DB_USE_POSTGRES=true"
-            ENV_CSV="${ENV_CSV}##DB_SSL=true"
+            # Local/lease-line Postgres usually has no TLS. Forced SSL → connection fails → 503.
+            ENV_CSV="${ENV_CSV}##DB_SSL=false"
             ENV_CSV="${ENV_CSV}##DB_POOL_MAX=10"
             ENV_CSV="${ENV_CSV}##SUPABASE_URL=${SUPABASE_URL}"
             ENV_CSV="${ENV_CSV}##SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}"
