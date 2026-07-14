@@ -429,17 +429,19 @@ export async function clearLocalVideoCache(mode = 'failed') {
 /** Make every unfinished queue item eligible for an immediate upload attempt. */
 export async function unlockOutstandingForImmediateRetry() {
   const outstanding = await getOutstandingVideos()
-  if (!outstanding.length) return 0
+  // Only wake pending/backoff items. Failed stays failed until resetFailedToPending().
+  const wake = outstanding.filter((entry) => entry.status === 'pending')
+  if (!wake.length) return 0
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite')
     const store = tx.objectStore(STORE_NAME)
-    for (const entry of outstanding) {
+    for (const entry of wake) {
       entry.status = 'pending'
       entry.nextAttemptAt = null
       store.put(entry)
     }
-    tx.oncomplete = () => resolve(outstanding.length)
+    tx.oncomplete = () => resolve(wake.length)
     tx.onerror = () => reject(tx.error)
   })
 }

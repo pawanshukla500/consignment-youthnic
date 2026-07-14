@@ -13,6 +13,11 @@ import {
   pruneDuplicateBoxVideos,
 } from '../utils/videoQueue'
 
+const PART_SIZE = 8 * 1024 * 1024 // 8 MiB — R2/S3 min part is 5 MiB (except last)
+const PARALLEL_PARTS = 4
+const MULTIPART_THRESHOLD = 8 * 1024 * 1024
+const QUEUE_POLL_MS = 2500
+
 let config = {
   apiUrl: '',
   token: '',
@@ -51,8 +56,15 @@ async function apiFetch(endpoint, options = {}) {
   return res.json()
 }
 
+/** Fast early retries; cap at 12s so Pending Sync does not stall for minutes. */
 function backoffMs(retries) {
-  return Math.min(60_000, 3000 * Math.pow(1.8, retries))
+  return Math.min(12_000, 400 * Math.pow(1.55, Math.max(0, retries)))
+}
+
+function uploadTimeoutForBytes(byteLength = 0) {
+  const mb = Math.max(0, Number(byteLength) || 0) / (1024 * 1024)
+  const ms = Math.round(90_000 + mb * 2_500)
+  return Math.min(20 * 60 * 1000, Math.max(60_000, ms))
 }
 
 function buildVideoStoragePath(metadata, fileName, entryId) {
@@ -64,82 +76,249 @@ function buildVideoStoragePath(metadata, fileName, entryId) {
   return `consignments/${safeCid}/boxes/box_${box}/video_${rev}${ext}`
 }
 
+function putBlob(uploadUrl, blob, {
+  contentType = null,
+  timeoutMs,
+  onProgress,
+} = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    let settled = false
+
+    const fail = (err) => {
+      if (settled) return
+      settled = true
+      try { xhr.abort() } catch { /* ignore */ }
+      reject(err)
+    }
+
+    const timer = setTimeout(() => {
+      fail(new Error(`R2 upload timed out after ${Math.round(timeoutMs / 1000)}s`))
+    }, timeoutMs)
+
+    xhr.open('PUT', uploadUrl, true)
+    if (contentType) xhr.setRequestHeader('Content-Type', contentType)
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total)
+    }
+
+    xhr.onload = () => {
+      clearTimeout(timer)
+      if (settled) return
+      settled = true
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const etag = xhr.getResponseHeader('ETag') || xhr.getResponseHeader('etag') || ''
+        resolve({ etag, status: xhr.status })
+      } else {
+        reject(new Error(`R2 upload failed with status ${xhr.status}`))
+      }
+    }
+
+    xhr.onerror = () => {
+      clearTimeout(timer)
+      // status 0 / network often = CORS or blocked direct R2 PUT
+      fail(new Error('Network error during file upload. Check R2 CORS allows this site origin for PUT.'))
+    }
+
+    xhr.onabort = () => {
+      clearTimeout(timer)
+      fail(new Error('Upload aborted.'))
+    }
+
+    xhr.send(blob)
+  })
+}
+
+async function mapPool(items, concurrency, worker) {
+  const results = new Array(items.length)
+  let next = 0
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next
+      next += 1
+      results[index] = await worker(items[index], index)
+    }
+  })
+  await Promise.all(runners)
+  return results
+}
+
+async function uploadSinglePut(file, metadata, entryId, timeoutMs) {
+  const storagePath = buildVideoStoragePath(metadata, file.name, entryId)
+  let lastUploadError = null
+  let uploadPath = null
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const storagePathReq = await apiFetch('/uploads/generate-signed-url', {
+        method: 'POST',
+        body: JSON.stringify({
+          storagePath,
+          mimeType: file.type,
+          consignmentId: metadata.consignmentId,
+        }),
+      })
+      if (!storagePathReq.uploadUrl) {
+        throw new Error('Failed to obtain upload authorization from server.')
+      }
+      uploadPath = storagePathReq.storagePath || storagePath
+
+      await putBlob(storagePathReq.uploadUrl, file, {
+        contentType: file.type,
+        timeoutMs,
+        onProgress: (loaded, total) => {
+          const percent = Math.round((loaded / total) * 100)
+          postMessage({ type: 'ITEM_PROGRESS', payload: { id: entryId, progress: percent } })
+        },
+      })
+      lastUploadError = null
+      break
+    } catch (err) {
+      lastUploadError = err
+      uploadPath = null
+      const retryable = /network|timeout|status 5\d\d|authorization|cors/i.test(err.message || '')
+      if (!retryable || attempt === 2) break
+      await new Promise((r) => setTimeout(r, 600 * (attempt + 1)))
+    }
+  }
+
+  if (lastUploadError) throw lastUploadError
+  return uploadPath
+}
+
+async function uploadMultipart(file, metadata, entryId, timeoutMs) {
+  const storagePath = buildVideoStoragePath(metadata, file.name, entryId)
+  const created = await apiFetch('/uploads/multipart/create', {
+    method: 'POST',
+    body: JSON.stringify({
+      storagePath,
+      mimeType: file.type,
+      consignmentId: metadata.consignmentId,
+    }),
+  })
+  const uploadId = created.uploadId
+  const finalPath = created.storagePath || storagePath
+  if (!uploadId) throw new Error('Failed to start multipart upload')
+
+  const partCount = Math.ceil(file.size / PART_SIZE)
+  const partNumbers = Array.from({ length: partCount }, (_, i) => i + 1)
+
+  let signed
+  try {
+    signed = await apiFetch('/uploads/multipart/sign-parts', {
+      method: 'POST',
+      body: JSON.stringify({
+        storagePath: finalPath,
+        uploadId,
+        consignmentId: metadata.consignmentId,
+        partNumbers,
+      }),
+    })
+  } catch (err) {
+    try {
+      await apiFetch('/uploads/multipart/abort', {
+        method: 'POST',
+        body: JSON.stringify({
+          storagePath: finalPath,
+          uploadId,
+          consignmentId: metadata.consignmentId,
+        }),
+      })
+    } catch { /* ignore */ }
+    throw err
+  }
+
+  const urlByPart = new Map((signed.parts || []).map((p) => [Number(p.partNumber), p.uploadUrl]))
+  const loadedByPart = new Array(partCount).fill(0)
+  const reportProgress = () => {
+    const loaded = loadedByPart.reduce((sum, n) => sum + n, 0)
+    const percent = Math.max(0, Math.min(99, Math.round((loaded / file.size) * 100)))
+    postMessage({ type: 'ITEM_PROGRESS', payload: { id: entryId, progress: percent } })
+  }
+
+  try {
+    const completed = await mapPool(partNumbers, PARALLEL_PARTS, async (partNumber) => {
+      const uploadUrl = urlByPart.get(partNumber)
+      if (!uploadUrl) throw new Error(`Missing signed URL for part ${partNumber}`)
+      const start = (partNumber - 1) * PART_SIZE
+      const end = Math.min(file.size, start + PART_SIZE)
+      const blob = file.slice(start, end)
+      const partTimeout = Math.max(45_000, Math.round(timeoutMs * (blob.size / file.size) * PARALLEL_PARTS))
+
+      let lastErr = null
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const result = await putBlob(uploadUrl, blob, {
+            timeoutMs: partTimeout,
+            onProgress: (loaded) => {
+              loadedByPart[partNumber - 1] = loaded
+              reportProgress()
+            },
+          })
+          const etag = String(result.etag || '').replace(/"/g, '')
+          if (!etag) throw new Error(`Missing ETag for part ${partNumber} (R2 CORS must expose ETag)`)
+          loadedByPart[partNumber - 1] = blob.size
+          reportProgress()
+          return { partNumber, etag }
+        } catch (err) {
+          lastErr = err
+          loadedByPart[partNumber - 1] = 0
+          reportProgress()
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)))
+        }
+      }
+      throw lastErr || new Error(`Part ${partNumber} failed`)
+    })
+
+    await apiFetch('/uploads/multipart/complete', {
+      method: 'POST',
+      body: JSON.stringify({
+        storagePath: finalPath,
+        uploadId,
+        consignmentId: metadata.consignmentId,
+        parts: completed,
+      }),
+    })
+
+    postMessage({ type: 'ITEM_PROGRESS', payload: { id: entryId, progress: 100 } })
+    return finalPath
+  } catch (err) {
+    try {
+      await apiFetch('/uploads/multipart/abort', {
+        method: 'POST',
+        body: JSON.stringify({
+          storagePath: finalPath,
+          uploadId,
+          consignmentId: metadata.consignmentId,
+        }),
+      })
+    } catch { /* ignore */ }
+    throw err
+  }
+}
+
 async function uploadOneVideo(entry) {
   const { blob, metadata } = entry
   const file = new File([blob], metadata.fileName, { type: metadata.mimeType || 'video/webm' })
   const fileMb = file.size / (1024 * 1024)
-  // Scale timeout with size (50–100MB needs longer than a fixed 10 min on slow links)
-  const timeoutMs = Math.min(30 * 60 * 1000, Math.max(10 * 60 * 1000, Math.round(180_000 + fileMb * 3_000)))
+  const timeoutMs = uploadTimeoutForBytes(file.size)
 
   let uploadPath = entry.storagePath
 
   if (!uploadPath) {
-    let lastUploadError = null
-    for (let attempt = 0; attempt < 3; attempt++) {
+    console.log(`[Worker] Uploading Box #${metadata.boxNo} (${fileMb.toFixed(1)} MB) via ${file.size >= MULTIPART_THRESHOLD ? 'multipart' : 'single PUT'}`)
+    if (file.size >= MULTIPART_THRESHOLD) {
       try {
-        // Fresh signed URL every attempt (avoids expired URL retries looking like "network error")
-        const storagePathReq = await apiFetch('/uploads/generate-signed-url', {
-          method: 'POST',
-          body: JSON.stringify({
-            storagePath: buildVideoStoragePath(metadata, file.name, entry.id),
-            mimeType: file.type,
-            consignmentId: metadata.consignmentId,
-          }),
-        })
-
-        if (!storagePathReq.uploadUrl) {
-          throw new Error('Failed to obtain upload authorization from server.')
-        }
-
-        const signedUploadUrl = storagePathReq.uploadUrl
-        uploadPath = storagePathReq.storagePath
-
-        await new Promise((resolve, reject) => {
-          const xhr = new XMLHttpRequest()
-          let settled = false
-          const timer = setTimeout(() => {
-            if (settled) return
-            settled = true
-            try { xhr.abort() } catch { /* ignore */ }
-            reject(new Error(`R2 upload timed out after ${Math.round(timeoutMs / 1000)}s (${fileMb.toFixed(1)} MB)`))
-          }, timeoutMs)
-
-          xhr.open('PUT', signedUploadUrl, true)
-          xhr.setRequestHeader('Content-Type', file.type)
-
-          xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-              const percent = Math.round((e.loaded / e.total) * 100)
-              postMessage({ type: 'ITEM_PROGRESS', payload: { id: entry.id, progress: percent } })
-            }
-          }
-
-          xhr.onload = () => {
-            clearTimeout(timer)
-            if (settled) return
-            settled = true
-            if (xhr.status >= 200 && xhr.status < 300) resolve()
-            else reject(new Error(`R2 upload failed with status ${xhr.status}`))
-          }
-          xhr.onerror = () => {
-            clearTimeout(timer)
-            if (settled) return
-            settled = true
-            reject(new Error('Network error during file upload.'))
-          }
-          xhr.send(file)
-        })
-        lastUploadError = null
-        break
+        uploadPath = await uploadMultipart(file, metadata, entry.id, timeoutMs)
       } catch (err) {
-        lastUploadError = err
-        uploadPath = null
-        const retryable = /network|timeout|status 5\d\d|authorization/i.test(err.message || '')
-        if (!retryable || attempt === 2) break
-        await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)))
+        // Missing ExposeHeaders ETag / CORS often breaks multipart — fall back to one PUT.
+        console.warn('[Worker] Multipart failed, falling back to single PUT:', err.message)
+        uploadPath = await uploadSinglePut(file, metadata, entry.id, timeoutMs)
       }
+    } else {
+      uploadPath = await uploadSinglePut(file, metadata, entry.id, timeoutMs)
     }
-    if (lastUploadError) throw lastUploadError
 
     await saveUploadedFileInfo(entry.id, 'r2://uploaded', uploadPath)
   }
@@ -170,7 +349,7 @@ async function uploadOneVideo(entry) {
     } catch (e) {
       lastMetaError = e
       if (attempt < 4) {
-        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)))
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)))
       }
     }
   }
@@ -179,7 +358,12 @@ async function uploadOneVideo(entry) {
 
 async function processVideoQueue(opts = {}) {
   if (running) {
-    queuedProcessOpts = { ...(queuedProcessOpts || {}), ...opts, retryFailed: Boolean(opts.retryFailed || queuedProcessOpts?.retryFailed) }
+    queuedProcessOpts = {
+      ...(queuedProcessOpts || {}),
+      ...opts,
+      retryFailed: Boolean(opts.retryFailed || queuedProcessOpts?.retryFailed),
+      forceNow: Boolean(opts.forceNow || queuedProcessOpts?.forceNow),
+    }
     return
   }
   running = true
@@ -190,7 +374,6 @@ async function processVideoQueue(opts = {}) {
       const runOpts = queuedProcessOpts || opts
       queuedProcessOpts = null
 
-      // One newest clip per box — drops piled-up failed/retry duplicates.
       try {
         const pruned = await pruneDuplicateBoxVideos()
         if (pruned > 0) {
@@ -204,9 +387,8 @@ async function processVideoQueue(opts = {}) {
         await resetFailedToPending()
       }
 
-      if (runOpts.forceNow) {
-        await unlockOutstandingForImmediateRetry()
-      }
+      // Always clear short backoffs so Pending Sync drains promptly.
+      await unlockOutstandingForImmediateRetry()
 
       const pending = await getPendingVideos()
       await notify()
@@ -225,16 +407,13 @@ async function processVideoQueue(opts = {}) {
           postMessage({ type: 'CURRENT_UPLOAD', payload: null })
           await notify()
         } catch (e) {
-          const nextAttemptAt = Date.now() + backoffMs(video.retries)
+          const nextAttemptAt = Date.now() + backoffMs(video.retries || 0)
           const isFailed = await incrementRetry(video.id, nextAttemptAt, e.message)
 
           postMessage({ type: 'ITEM_ERROR', payload: { id: video.id, error: e.message, isFailed } })
           postMessage({ type: 'CURRENT_UPLOAD', payload: null })
           await notify()
-
-          if (!isFailed) {
-            await new Promise((r) => setTimeout(r, Math.min(5000, backoffMs(video.retries))))
-          }
+          // Do not sleep here — continue other videos; poller retries soon.
         }
       }
     } while (queuedProcessOpts)
@@ -264,10 +443,10 @@ self.onmessage = async (e) => {
       }
 
       await notify()
-      await processVideoQueue()
+      await processVideoQueue({ forceNow: true })
 
       if (!intervalId) {
-        intervalId = setInterval(() => { void processVideoQueue() }, 12_000)
+        intervalId = setInterval(() => { void processVideoQueue({ forceNow: true }) }, QUEUE_POLL_MS)
       }
       break
 
@@ -281,7 +460,7 @@ self.onmessage = async (e) => {
         const result = await finalizeRecordingSession(payload.sessionId)
         postMessage({ type: 'FINALIZE_DONE', payload: { requestId, ok: true, result } })
         await notify()
-        await processVideoQueue()
+        await processVideoQueue({ forceNow: true })
       } catch (err) {
         console.error('[Worker] Finalize error:', err)
         postMessage({
@@ -296,7 +475,7 @@ self.onmessage = async (e) => {
       const requestId = payload?.requestId
       const status = await processVideoQueue({
         retryFailed: payload?.retryFailed,
-        forceNow: payload?.forceNow,
+        forceNow: true,
       })
       if (requestId) {
         postMessage({

@@ -12,7 +12,11 @@ const {
   getStorageFileMeta,
   createStorageReadStream,
   deleteFile,
-  generateSignedUploadUrl
+  generateSignedUploadUrl,
+  createMultipartUpload,
+  generateSignedPartUrls,
+  completeMultipartUpload,
+  abortMultipartUpload,
 } = require('../utils/storage');
 const { requestUserHasPermission, requirePermission, requireAnyPermission, DELETE_VIDEOS } = require('../utils/permissions');
 const { isStoragePathForConsignment } = require('../utils/storagePathValidation');
@@ -232,6 +236,88 @@ router.post('/generate-signed-url', authenticateToken, requirePermission('packin
   } catch (error) {
     console.error('Error generating signed upload URL:', error);
     res.status(500).json({ error: 'Failed to generate signed upload URL.', message: error.message });
+  }
+});
+
+/** Start multipart upload — used for large packing videos so parts can upload in parallel. */
+router.post('/multipart/create', authenticateToken, requirePermission('packing', 'register uploads'), async (req, res) => {
+  try {
+    const { storagePath, mimeType, consignmentId } = req.body;
+    if (!storagePath || !mimeType || !consignmentId) {
+      return res.status(400).json({ error: 'storagePath, mimeType, and consignmentId are required.' });
+    }
+    if (!isStoragePathForConsignment(storagePath, consignmentId)) {
+      return res.status(403).json({
+        error: 'Storage path does not belong to this consignment.',
+        code: 'STORAGE_PATH_MISMATCH',
+      });
+    }
+    const result = await createMultipartUpload(storagePath, mimeType);
+    res.json(result);
+  } catch (error) {
+    console.error('Error creating multipart upload:', error);
+    res.status(500).json({ error: 'Failed to create multipart upload.', message: error.message });
+  }
+});
+
+/** Batch-sign UploadPart URLs so the browser can PUT chunks in parallel. */
+router.post('/multipart/sign-parts', authenticateToken, requirePermission('packing', 'register uploads'), async (req, res) => {
+  try {
+    const { storagePath, uploadId, consignmentId, partNumbers } = req.body;
+    if (!storagePath || !uploadId || !consignmentId) {
+      return res.status(400).json({ error: 'storagePath, uploadId, and consignmentId are required.' });
+    }
+    if (!isStoragePathForConsignment(storagePath, consignmentId)) {
+      return res.status(403).json({
+        error: 'Storage path does not belong to this consignment.',
+        code: 'STORAGE_PATH_MISMATCH',
+      });
+    }
+    const result = await generateSignedPartUrls(storagePath, uploadId, partNumbers);
+    res.json(result);
+  } catch (error) {
+    console.error('Error signing multipart parts:', error);
+    res.status(500).json({ error: 'Failed to sign multipart parts.', message: error.message });
+  }
+});
+
+router.post('/multipart/complete', authenticateToken, requirePermission('packing', 'register uploads'), async (req, res) => {
+  try {
+    const { storagePath, uploadId, consignmentId, parts } = req.body;
+    if (!storagePath || !uploadId || !consignmentId) {
+      return res.status(400).json({ error: 'storagePath, uploadId, and consignmentId are required.' });
+    }
+    if (!isStoragePathForConsignment(storagePath, consignmentId)) {
+      return res.status(403).json({
+        error: 'Storage path does not belong to this consignment.',
+        code: 'STORAGE_PATH_MISMATCH',
+      });
+    }
+    const result = await completeMultipartUpload(storagePath, uploadId, parts);
+    res.json(result);
+  } catch (error) {
+    console.error('Error completing multipart upload:', error);
+    res.status(500).json({ error: 'Failed to complete multipart upload.', message: error.message });
+  }
+});
+
+router.post('/multipart/abort', authenticateToken, requirePermission('packing', 'register uploads'), async (req, res) => {
+  try {
+    const { storagePath, uploadId, consignmentId } = req.body;
+    if (!storagePath || !uploadId || !consignmentId) {
+      return res.status(400).json({ error: 'storagePath, uploadId, and consignmentId are required.' });
+    }
+    if (!isStoragePathForConsignment(storagePath, consignmentId)) {
+      return res.status(403).json({
+        error: 'Storage path does not belong to this consignment.',
+        code: 'STORAGE_PATH_MISMATCH',
+      });
+    }
+    const result = await abortMultipartUpload(storagePath, uploadId);
+    res.json(result);
+  } catch (error) {
+    console.error('Error aborting multipart upload:', error);
+    res.status(500).json({ error: 'Failed to abort multipart upload.', message: error.message });
   }
 });
 

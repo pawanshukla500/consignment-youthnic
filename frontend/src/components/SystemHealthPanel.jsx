@@ -108,6 +108,20 @@ export default function SystemHealthPanel() {
     }
   }
 
+  const uploadPendingVideosNow = async () => {
+    setRetrying(true)
+    try {
+      await pruneDuplicateBoxVideos().catch(() => 0)
+      await resetFailedToPending().catch(() => 0)
+      await processVideoUploadQueue({ retryFailed: true, forceNow: true, wait: false })
+      await load()
+    } catch (error) {
+      console.error('[SystemHealth] force video upload failed', error)
+    } finally {
+      setRetrying(false)
+    }
+  }
+
   const clearFailedLocalCaches = async () => {
     if (!window.confirm('Discard all failed local sync jobs (scans, boxes, videos) from this browser? Cloud data is not deleted.')) {
       return
@@ -240,7 +254,7 @@ export default function SystemHealthPanel() {
             <div className="flex justify-between gap-2"><dt className="text-slate-500">Pending videos</dt><dd className="font-bold text-slate-900">{localSync.pendingVideos}</dd></div>
             <div className="flex justify-between gap-2"><dt className="text-slate-500">Pending boxes</dt><dd className="font-bold text-slate-900">{localSync.pendingSaveJobs}</dd></div>
             <div className="flex justify-between gap-2"><dt className="text-slate-500">Failed scans / boxes / videos</dt><dd className={`font-bold ${localSync.failedJobs ? 'text-red-600' : 'text-emerald-600'}`}>{localSync.failedScans || 0} / {localSync.failedSaveJobs || 0} / {localSync.failedVideos || 0}</dd></div>
-            <p className="text-[10px] text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2">Counts are from this browser IndexedDB. Failed jobs usually come from offline periods or interrupted video uploads. Use Clear to discard stale local retries that keep showing as 0/N uploaded.</p>
+            <p className="text-[10px] text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2">Counts are from this browser IndexedDB. Pending videos upload directly to Cloudflare R2 in parallel chunks. Use Upload now if a clip is stuck after a network blip.</p>
             <div className="flex flex-col gap-1.5 pt-1">
               {(localSync.failedJobs > 0 || localSync.pendingVideos > 0 || localSync.pendingScans > 0 || localSync.pendingSaveJobs > 0) && (
                 <button
@@ -251,6 +265,17 @@ export default function SystemHealthPanel() {
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${retrying ? 'animate-spin' : ''}`} />
                   {retrying ? 'Retrying…' : 'Retry failed sync jobs'}
+                </button>
+              )}
+              {localSync.pendingVideos > 0 && (
+                <button
+                  type="button"
+                  onClick={uploadPendingVideosNow}
+                  disabled={retrying || clearing}
+                  className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-60"
+                >
+                  <UploadCloud className={`w-3.5 h-3.5 ${retrying ? 'animate-pulse' : ''}`} />
+                  {retrying ? 'Uploading…' : 'Upload pending videos now'}
                 </button>
               )}
               {(localSync.failedJobs > 0 || localSync.pendingVideos > 0) && (
