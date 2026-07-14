@@ -248,7 +248,37 @@ jobs:
             IMAGE_REF="gcr.io/$PROJECT_ID/$IMAGE_NAME@${IMAGE_DIGEST}"
           fi
           echo "Image: $IMAGE_REF"
-          SECRET_FLAGS=()
+
+          # Fail fast if DATABASE_URL is a LAN/private address — Cloud Run cannot reach it (causes 503).
+          if gcloud secrets describe DATABASE_URL >/dev/null 2>&1; then
+            DB_URL=$(gcloud secrets versions access latest --secret=DATABASE_URL)
+            DB_HOST=$(DB_URL="$DB_URL" python3 - <<'PY'
+import os, urllib.parse
+u = os.environ.get("DB_URL", "")
+try:
+    print(urllib.parse.urlparse(u).hostname or "")
+except Exception:
+    print("")
+PY
+)
+            echo "DATABASE_URL host: ${DB_HOST:-unknown}"
+            case "$DB_HOST" in
+              localhost|127.0.0.1|::1|0.0.0.0|"")
+                echo "::error::DATABASE_URL host is local/empty ($DB_HOST). Cloud Run needs a public Postgres (Cloud SQL / hosted). Update GitHub secret DATABASE_URL."
+                exit 1
+                ;;
+            esac
+            if echo "$DB_HOST" | grep -Eq '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)'; then
+              echo "::error::DATABASE_URL points at private LAN IP ($DB_HOST). Cloud Run cannot reach your office/home Postgres — that is why /api/health returns 503."
+              echo "::error::Put a cloud Postgres URL in GitHub → Settings → Secrets → DATABASE_URL (Cloud SQL or other hosted Postgres), then re-run."
+              exit 1
+            fi
+          else
+            echo "::error::Secret DATABASE_URL missing in Secret Manager"
+            exit 1
+          fi
+
+          SECRET_CSV=""
           for pair in \
             "JWT_SECRET=JWT_SECRET:latest" \
             "MAILGUN_API_KEY=MAILGUN_API_KEY:latest" \
@@ -263,14 +293,14 @@ jobs:
             "BOOTSTRAP_SECRET=BOOTSTRAP_SECRET:latest"; do
             name="${pair%%=*}"
             if gcloud secrets describe "$name" >/dev/null 2>&1; then
-              SECRET_FLAGS+=(--update-secrets="$pair")
+              if [ -n "$SECRET_CSV" ]; then SECRET_CSV="${SECRET_CSV},"; fi
+              SECRET_CSV="${SECRET_CSV}${pair}"
               echo "Mounting secret: $name"
             else
               echo "Skipping secret (not in Secret Manager): $name"
             fi
           done
 
-          # Deploy domain-mapped service first, then every service in DEPLOY_SERVICES.
           DEPLOY_TARGETS="$DOMAIN_MAPPED_SERVICE $DEPLOY_SERVICES $SERVICE_NAME"
           DEPLOYED_SVCS=""
           ALL_ORIGINS="${CUSTOM_DOMAIN}"
@@ -290,102 +320,68 @@ jobs:
             if echo " $DEPLOYED_SVCS " | grep -q " ${svc} "; then
               continue
             fi
-            # gcloud run deploy creates the service if it does not exist yet.
             echo "Deploying to Cloud Run service: $svc (region: $REGION)"
 
-          # Cost profile: scale-to-zero, 1 vCPU / 1Gi, small max — avoid always-on billing.
-          # Tradeoff: cold start after idle (~few seconds). In-process Tue/Fri email needs traffic or Cloud Scheduler.
-          gcloud run deploy "$svc" \
-            --image="$IMAGE_REF" \
-            --platform=managed \
-            --region=$REGION \
-            --allow-unauthenticated \
-            --port=8080 \
-            --memory=1Gi \
-            --cpu=1 \
-            --concurrency=80 \
-            --timeout=300 \
-            --min-instances=0 \
-            --max-instances=3 \
-            --cpu-throttling \
-            --execution-environment=gen2 \
-            --quiet \
-            --set-env-vars="NODE_ENV=production" \
-            --set-env-vars="ADMIN_EMAIL=returnorders@vbexports.co.in" \
-            --set-env-vars="FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}" \
-            --set-env-vars="FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}" \
-            --set-env-vars="R2_BUCKET=consigmentapp" \
-            --set-env-vars="DB_USE_POSTGRES=true" \
-            --set-env-vars="DB_SSL=true" \
-            --set-env-vars="DB_POOL_MAX=10" \
-            --set-env-vars="SUPABASE_URL=${SUPABASE_URL}" \
-            --set-env-vars="SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}" \
-            --set-env-vars="MAIL_FROM_EMAIL=consignment@youthnic.shop" \
-            --set-env-vars="MAIL_FROM_NAME=Youthnic Packing Station" \
-            --set-env-vars="MAIL_USER_DOMAIN=youthnic.shop" \
-            --set-env-vars="APP_URL=${CUSTOM_DOMAIN}" \
-            --set-env-vars="ALLOWED_ORIGINS=${CUSTOM_DOMAIN}" \
-            --set-env-vars="LOGTAIL_SOURCE_TOKEN=${{ secrets.LOGTAIL_SOURCE_TOKEN }}" \
-            --set-env-vars="LOGTAIL_INGEST_HOST=s2531760.eu-fsn-3.betterstackdata.com" \
-            --set-env-vars="POSTHOG_DASHBOARD_URL=${POSTHOG_DASHBOARD_URL:-https://us.posthog.com/embedded/aUBKw6XLlFMPLf2WJbRbmEzbfSpIyQ}" \
-            --set-env-vars="BETTERSTACK_DASHBOARD_URL=${BETTERSTACK_DASHBOARD_URL:-}" \
-            --remove-env-vars="ADMIN_PASSWORD" \
-            "${SECRET_FLAGS[@]}" || \
-          gcloud run deploy "$svc" \
-            --image="$IMAGE_REF" \
-            --platform=managed \
-            --region=$REGION \
-            --allow-unauthenticated \
-            --port=8080 \
-            --memory=1Gi \
-            --cpu=1 \
-            --concurrency=80 \
-            --timeout=300 \
-            --min-instances=0 \
-            --max-instances=3 \
-            --cpu-throttling \
-            --execution-environment=gen2 \
-            --quiet \
-            --set-env-vars="NODE_ENV=production" \
-            --set-env-vars="ADMIN_EMAIL=returnorders@vbexports.co.in" \
-            --set-env-vars="FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}" \
-            --set-env-vars="FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}" \
-            --set-env-vars="R2_BUCKET=consigmentapp" \
-            --set-env-vars="DB_USE_POSTGRES=true" \
-            --set-env-vars="DB_SSL=true" \
-            --set-env-vars="DB_POOL_MAX=10" \
-            --set-env-vars="SUPABASE_URL=${SUPABASE_URL}" \
-            --set-env-vars="SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}" \
-            --set-env-vars="MAIL_FROM_EMAIL=consignment@youthnic.shop" \
-            --set-env-vars="MAIL_FROM_NAME=Youthnic Packing Station" \
-            --set-env-vars="MAIL_USER_DOMAIN=youthnic.shop" \
-            --set-env-vars="APP_URL=${CUSTOM_DOMAIN}" \
-            --set-env-vars="ALLOWED_ORIGINS=${CUSTOM_DOMAIN}" \
-            --set-env-vars="LOGTAIL_SOURCE_TOKEN=${{ secrets.LOGTAIL_SOURCE_TOKEN }}" \
-            --set-env-vars="LOGTAIL_INGEST_HOST=s2531760.eu-fsn-3.betterstackdata.com" \
-            --set-env-vars="POSTHOG_DASHBOARD_URL=${POSTHOG_DASHBOARD_URL:-https://us.posthog.com/embedded/aUBKw6XLlFMPLf2WJbRbmEzbfSpIyQ}" \
-            --set-env-vars="BETTERSTACK_DASHBOARD_URL=${BETTERSTACK_DASHBOARD_URL:-}" \
-            "${SECRET_FLAGS[@]}"
+            # Cost profile: min=0, max=3, 1 vCPU / 1Gi
+            # Do NOT mix --set-env-vars with --remove-env-vars (gcloud rejects).
+            # Prefer --update-env-vars so existing secret mounts are preserved.
+            ENV_CSV="NODE_ENV=production"
+            ENV_CSV="${ENV_CSV}##ADMIN_EMAIL=returnorders@vbexports.co.in"
+            ENV_CSV="${ENV_CSV}##FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}"
+            ENV_CSV="${ENV_CSV}##FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}"
+            ENV_CSV="${ENV_CSV}##R2_BUCKET=consigmentapp"
+            ENV_CSV="${ENV_CSV}##DB_USE_POSTGRES=true"
+            ENV_CSV="${ENV_CSV}##DB_SSL=true"
+            ENV_CSV="${ENV_CSV}##DB_POOL_MAX=10"
+            ENV_CSV="${ENV_CSV}##SUPABASE_URL=${SUPABASE_URL}"
+            ENV_CSV="${ENV_CSV}##SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}"
+            ENV_CSV="${ENV_CSV}##MAIL_FROM_EMAIL=consignment@youthnic.shop"
+            ENV_CSV="${ENV_CSV}##MAIL_FROM_NAME=Youthnic Packing Station"
+            ENV_CSV="${ENV_CSV}##MAIL_USER_DOMAIN=youthnic.shop"
+            ENV_CSV="${ENV_CSV}##APP_URL=${CUSTOM_DOMAIN}"
+            ENV_CSV="${ENV_CSV}##ALLOWED_ORIGINS=${ALL_ORIGINS}"
+            ENV_CSV="${ENV_CSV}##LOGTAIL_INGEST_HOST=s2531760.eu-fsn-3.betterstackdata.com"
+            ENV_CSV="${ENV_CSV}##POSTHOG_DASHBOARD_URL=${POSTHOG_DASHBOARD_URL:-https://us.posthog.com/embedded/aUBKw6XLlFMPLf2WJbRbmEzbfSpIyQ}"
+            if [ -n "${BETTERSTACK_DASHBOARD_URL:-}" ]; then
+              ENV_CSV="${ENV_CSV}##BETTERSTACK_DASHBOARD_URL=${BETTERSTACK_DASHBOARD_URL}"
+            fi
+            if [ -n "${{ secrets.LOGTAIL_SOURCE_TOKEN }}" ]; then
+              ENV_CSV="${ENV_CSV}##LOGTAIL_SOURCE_TOKEN=${{ secrets.LOGTAIL_SOURCE_TOKEN }}"
+            fi
 
-          DEPLOYED_URL=$(gcloud run services describe "$svc" --region=$REGION --format='value(status.url)')
-          echo "Deployed $svc → $DEPLOYED_URL"
-          if [ -n "$DEPLOYED_URL" ] && ! echo ",$ALL_ORIGINS," | grep -q ",$DEPLOYED_URL,"; then
-            ALL_ORIGINS="${ALL_ORIGINS},${DEPLOYED_URL}"
-          fi
+            gcloud run deploy "$svc" \
+              --image="$IMAGE_REF" \
+              --platform=managed \
+              --region=$REGION \
+              --allow-unauthenticated \
+              --port=8080 \
+              --memory=1Gi \
+              --cpu=1 \
+              --concurrency=80 \
+              --timeout=300 \
+              --min-instances=0 \
+              --max-instances=3 \
+              --cpu-throttling \
+              --execution-environment=gen2 \
+              --quiet \
+              --update-env-vars="^##^${ENV_CSV}" \
+              --update-secrets="$SECRET_CSV"
 
-          gcloud run services update "$svc" \
-            --region=$REGION \
-            --update-env-vars="^##^ALLOWED_ORIGINS=${ALL_ORIGINS}" \
-            --quiet || true
+            gcloud run services update "$svc" \
+              --region=$REGION \
+              --remove-env-vars="ADMIN_PASSWORD" \
+              --quiet || true
 
-          gcloud run services update-traffic "$svc" \
-            --region=$REGION \
-            --to-latest \
-            --quiet || true
+            gcloud run services update-traffic "$svc" \
+              --region=$REGION \
+              --to-latest \
+              --quiet || true
 
-          DEPLOYED_SVCS="${DEPLOYED_SVCS} ${svc}"
-          PRIMARY_SERVICE="$svc"
-          PRIMARY_URL="$DEPLOYED_URL"
+            DEPLOYED_URL=$(gcloud run services describe "$svc" --region=$REGION --format='value(status.url)')
+            echo "Deployed $svc → $DEPLOYED_URL"
+            DEPLOYED_SVCS="${DEPLOYED_SVCS} ${svc}"
+            PRIMARY_SERVICE="$svc"
+            PRIMARY_URL="$DEPLOYED_URL"
           done
 
           if [ -z "${PRIMARY_SERVICE:-}" ]; then
@@ -395,7 +391,6 @@ jobs:
           echo "PRIMARY_SERVICE=$PRIMARY_SERVICE" >> "$GITHUB_ENV"
           echo "PRIMARY_URL=$PRIMARY_URL" >> "$GITHUB_ENV"
 
-          # Cap billing on any legacy duplicate service (do not keep a second warm app).
           for extra in consignment-pack consignment-packing; do
             if echo " $DEPLOYED_SVCS " | grep -q " ${extra} "; then
               continue

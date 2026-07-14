@@ -85,7 +85,7 @@ Repository **Variables** (Settings → Secrets and variables → Actions → Var
 | `GCP_PROJECT_ID` | GCP project ID |
 | `GCP_SA_KEY` | Full JSON key for the deploy service account |
 | `JWT_SECRET` | Strong random string (32+ chars) for app JWT signing |
-| `DATABASE_URL` | Operational Postgres URL (Cloud SQL / your DB — **not** free-tier Supabase DB) |
+| `DATABASE_URL` | **Must be reachable from the public internet** (Cloud SQL / hosted Postgres). A LAN IP like `192.168.x.x` will crash Cloud Run with **503**. |
 | `MAILGUN_API_KEY` | Mailgun API key |
 | `MAILGUN_DOMAIN` | e.g. `youthnic.shop` |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Full Firebase Admin SDK JSON |
