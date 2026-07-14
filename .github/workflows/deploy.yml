@@ -275,11 +275,21 @@ PY
             fi
             # TCP probe from GitHub runner (public internet) to catch ISP firewall blocks early.
             echo "Probing TCP ${DB_HOST}:5432 from GitHub Actions..."
-            if ! timeout 15 bash -c "echo >/dev/tcp/${DB_HOST}/5432"; then
+            if ! DB_HOST="$DB_HOST" python3 - <<'PY'
+import os, socket, sys
+host = os.environ.get("DB_HOST", "")
+try:
+    with socket.create_connection((host, 5432), timeout=15):
+        print(f"OK {host}:5432")
+except Exception as e:
+    print(f"FAIL {host}:5432 -> {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+            then
               echo "::error::Cannot open TCP ${DB_HOST}:5432 from the internet (GitHub runner). Port forward/firewall may only work for some networks, or BSNL may block cloud providers."
               exit 1
             fi
-            echo "✅ TCP ${DB_HOST}:5432 reachable from public internet"
+            echo "TCP ${DB_HOST}:5432 reachable from public internet"
           else
             echo "::error::Secret DATABASE_URL missing in Secret Manager"
             exit 1
