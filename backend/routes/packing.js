@@ -543,7 +543,8 @@ router.post('/load', authenticateToken, async (req, res) => {
 
 router.post('/increment', authenticateToken, async (req, res) => {
   // Serialize concurrent scans per consignment in-process; durable writes use
-  // pg_advisory_xact_lock inside queueScanPersistence. Respond only after those writes commit.
+  // Durable scan writes serialize inside queueScanPersistence (advisory lock or FOR UPDATE).
+  // Respond only after those writes commit.
   const release = await acquireIncrementLock(req.body?.consignment_id);
   try {
     await handleIncrement(req, res);
