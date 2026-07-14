@@ -54,10 +54,17 @@ function verifyShareToken(token) {
 
 function buildDurableShareUrl(req, fileId, type = 'video') {
   const token = createShareToken(fileId, type);
+  const apiBase = getPublicApiBase(req);
+  const appBase = String(process.env.APP_URL || apiBase).trim().replace(/\/$/, '') || apiBase;
+  const encoded = encodeURIComponent(token);
   return {
     token,
-    shareUrl: `${getPublicApiBase(req)}/api/uploads/s/${encodeURIComponent(token)}`,
-    path: `/api/uploads/s/${encodeURIComponent(token)}`,
+    // Human-friendly dispute page (preferred for sharing with marketplaces / customers)
+    shareUrl: `${appBase}/share/video/${encoded}`,
+    // Raw stream from Cloudflare R2 via backend (no login)
+    streamUrl: `${apiBase}/api/uploads/s/${encoded}`,
+    path: `/share/video/${encoded}`,
+    streamPath: `/api/uploads/s/${encoded}`,
   };
 }
 
