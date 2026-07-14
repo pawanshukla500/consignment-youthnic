@@ -241,190 +241,17 @@ jobs:
           BETTERSTACK_DASHBOARD_URL: ${{ vars.VITE_BETTERSTACK_DASHBOARD_URL }}
           SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          LOGTAIL_SOURCE_TOKEN: ${{ secrets.LOGTAIL_SOURCE_TOKEN }}
         run: |
           if [ "${{ github.event.inputs.skip_build }}" = "true" ]; then
-            IMAGE_REF="gcr.io/$PROJECT_ID/$IMAGE_NAME:latest"
+            export IMAGE_REF="gcr.io/$PROJECT_ID/$IMAGE_NAME:latest"
           else
-            IMAGE_REF="gcr.io/$PROJECT_ID/$IMAGE_NAME@${IMAGE_DIGEST}"
+            export IMAGE_REF="gcr.io/$PROJECT_ID/$IMAGE_NAME@${IMAGE_DIGEST}"
           fi
-          echo "Image: $IMAGE_REF"
-
-          # Fail fast if DATABASE_URL is a LAN/private address — Cloud Run cannot reach it (causes 503).
-          if gcloud secrets describe DATABASE_URL >/dev/null 2>&1; then
-            DB_URL=$(gcloud secrets versions access latest --secret=DATABASE_URL)
-            DB_HOST=$(DB_URL="$DB_URL" python3 - <<'PY'
-import os, urllib.parse
-u = os.environ.get("DB_URL", "")
-try:
-    print(urllib.parse.urlparse(u).hostname or "")
-except Exception:
-    print("")
-PY
-)
-            echo "DATABASE_URL host: ${DB_HOST:-unknown}"
-            case "$DB_HOST" in
-              localhost|127.0.0.1|::1|0.0.0.0|"")
-                echo "::error::DATABASE_URL host is local/empty ($DB_HOST). Cloud Run needs a public Postgres (Cloud SQL / hosted). Update GitHub secret DATABASE_URL."
-                exit 1
-                ;;
-            esac
-            if echo "$DB_HOST" | grep -Eq '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)'; then
-              echo "::error::DATABASE_URL points at private LAN IP ($DB_HOST). Cloud Run cannot reach your office/home Postgres — that is why /api/health returns 503."
-              echo "::error::Put a cloud Postgres URL in GitHub → Settings → Secrets → DATABASE_URL (Cloud SQL or other hosted Postgres), then re-run."
-              exit 1
-            fi
-            # TCP probe from GitHub runner (public internet) to catch ISP firewall blocks early.
-            echo "Probing TCP ${DB_HOST}:5432 from GitHub Actions..."
-            if ! DB_HOST="$DB_HOST" python3 - <<'PY'
-import os, socket, sys
-host = os.environ.get("DB_HOST", "")
-try:
-    with socket.create_connection((host, 5432), timeout=15):
-        print(f"OK {host}:5432")
-except Exception as e:
-    print(f"FAIL {host}:5432 -> {e}", file=sys.stderr)
-    sys.exit(1)
-PY
-            then
-              echo "::error::Cannot open TCP ${DB_HOST}:5432 from the internet (GitHub runner). Port forward/firewall may only work for some networks, or BSNL may block cloud providers."
-              exit 1
-            fi
-            echo "TCP ${DB_HOST}:5432 reachable from public internet"
-          else
-            echo "::error::Secret DATABASE_URL missing in Secret Manager"
-            exit 1
-          fi
-
-          SECRET_CSV=""
-          for pair in \
-            "JWT_SECRET=JWT_SECRET:latest" \
-            "MAILGUN_API_KEY=MAILGUN_API_KEY:latest" \
-            "MAILGUN_DOMAIN=MAILGUN_DOMAIN:latest" \
-            "DATABASE_URL=DATABASE_URL:latest" \
-            "SUPABASE_JWT_SECRET=SUPABASE_JWT_SECRET:latest" \
-            "FIREBASE_SERVICE_ACCOUNT_JSON=FIREBASE_SERVICE_ACCOUNT_JSON:latest" \
-            "R2_ACCOUNT_ID=R2_ACCOUNT_ID:latest" \
-            "R2_ACCESS_KEY_ID=R2_ACCESS_KEY_ID:latest" \
-            "R2_SECRET_ACCESS_KEY=R2_SECRET_ACCESS_KEY:latest" \
-            "SHARE_LINK_SECRET=SHARE_LINK_SECRET:latest" \
-            "BOOTSTRAP_SECRET=BOOTSTRAP_SECRET:latest"; do
-            name="${pair%%=*}"
-            if gcloud secrets describe "$name" >/dev/null 2>&1; then
-              if [ -n "$SECRET_CSV" ]; then SECRET_CSV="${SECRET_CSV},"; fi
-              SECRET_CSV="${SECRET_CSV}${pair}"
-              echo "Mounting secret: $name"
-            else
-              echo "Skipping secret (not in Secret Manager): $name"
-            fi
-          done
-
-          DEPLOY_TARGETS="$DOMAIN_MAPPED_SERVICE $DEPLOY_SERVICES $SERVICE_NAME"
-          DEPLOYED_SVCS=""
-          ALL_ORIGINS="${CUSTOM_DOMAIN}"
-          for candidate in $DEPLOY_TARGETS; do
-            [ -n "$candidate" ] || continue
-            if gcloud run services describe "$candidate" --region="$REGION" >/dev/null 2>&1; then
-              url=$(gcloud run services describe "$candidate" --region="$REGION" --format='value(status.url)')
-              if [ -n "$url" ] && ! echo ",$ALL_ORIGINS," | grep -q ",$url,"; then
-                ALL_ORIGINS="${ALL_ORIGINS},${url}"
-              fi
-            fi
-          done
-          echo "ALLOWED_ORIGINS for all services: $ALL_ORIGINS"
-
-          for svc in $DEPLOY_TARGETS; do
-            [ -n "$svc" ] || continue
-            if echo " $DEPLOYED_SVCS " | grep -q " ${svc} "; then
-              continue
-            fi
-            echo "Deploying to Cloud Run service: $svc (region: $REGION)"
-
-            # Cost profile: min=0, max=3, 1 vCPU / 1Gi
-            # Do NOT mix --set-env-vars with --remove-env-vars (gcloud rejects).
-            # Prefer --update-env-vars so existing secret mounts are preserved.
-            ENV_CSV="NODE_ENV=production"
-            ENV_CSV="${ENV_CSV}##ADMIN_EMAIL=returnorders@vbexports.co.in"
-            ENV_CSV="${ENV_CSV}##FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}"
-            ENV_CSV="${ENV_CSV}##FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}"
-            ENV_CSV="${ENV_CSV}##R2_BUCKET=consigmentapp"
-            ENV_CSV="${ENV_CSV}##DB_USE_POSTGRES=true"
-            # Local/lease-line Postgres usually has no TLS. Forced SSL → connection fails → 503.
-            ENV_CSV="${ENV_CSV}##DB_SSL=false"
-            ENV_CSV="${ENV_CSV}##DB_POOL_MAX=10"
-            ENV_CSV="${ENV_CSV}##SUPABASE_URL=${SUPABASE_URL}"
-            ENV_CSV="${ENV_CSV}##SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}"
-            ENV_CSV="${ENV_CSV}##MAIL_FROM_EMAIL=consignment@youthnic.shop"
-            ENV_CSV="${ENV_CSV}##MAIL_FROM_NAME=Youthnic Packing Station"
-            ENV_CSV="${ENV_CSV}##MAIL_USER_DOMAIN=youthnic.shop"
-            ENV_CSV="${ENV_CSV}##APP_URL=${CUSTOM_DOMAIN}"
-            ENV_CSV="${ENV_CSV}##ALLOWED_ORIGINS=${ALL_ORIGINS}"
-            ENV_CSV="${ENV_CSV}##LOGTAIL_INGEST_HOST=s2531760.eu-fsn-3.betterstackdata.com"
-            ENV_CSV="${ENV_CSV}##POSTHOG_DASHBOARD_URL=${POSTHOG_DASHBOARD_URL:-https://us.posthog.com/embedded/aUBKw6XLlFMPLf2WJbRbmEzbfSpIyQ}"
-            if [ -n "${BETTERSTACK_DASHBOARD_URL:-}" ]; then
-              ENV_CSV="${ENV_CSV}##BETTERSTACK_DASHBOARD_URL=${BETTERSTACK_DASHBOARD_URL}"
-            fi
-            if [ -n "${{ secrets.LOGTAIL_SOURCE_TOKEN }}" ]; then
-              ENV_CSV="${ENV_CSV}##LOGTAIL_SOURCE_TOKEN=${{ secrets.LOGTAIL_SOURCE_TOKEN }}"
-            fi
-
-            gcloud run deploy "$svc" \
-              --image="$IMAGE_REF" \
-              --platform=managed \
-              --region=$REGION \
-              --allow-unauthenticated \
-              --port=8080 \
-              --memory=1Gi \
-              --cpu=1 \
-              --concurrency=80 \
-              --timeout=300 \
-              --min-instances=0 \
-              --max-instances=3 \
-              --cpu-throttling \
-              --execution-environment=gen2 \
-              --quiet \
-              --update-env-vars="^##^${ENV_CSV}" \
-              --update-secrets="$SECRET_CSV"
-
-            gcloud run services update "$svc" \
-              --region=$REGION \
-              --remove-env-vars="ADMIN_PASSWORD" \
-              --quiet || true
-
-            gcloud run services update-traffic "$svc" \
-              --region=$REGION \
-              --to-latest \
-              --quiet || true
-
-            DEPLOYED_URL=$(gcloud run services describe "$svc" --region=$REGION --format='value(status.url)')
-            echo "Deployed $svc → $DEPLOYED_URL"
-            DEPLOYED_SVCS="${DEPLOYED_SVCS} ${svc}"
-            PRIMARY_SERVICE="$svc"
-            PRIMARY_URL="$DEPLOYED_URL"
-          done
-
-          if [ -z "${PRIMARY_SERVICE:-}" ]; then
-            echo "::error::No Cloud Run service was deployed."
-            exit 1
-          fi
-          echo "PRIMARY_SERVICE=$PRIMARY_SERVICE" >> "$GITHUB_ENV"
-          echo "PRIMARY_URL=$PRIMARY_URL" >> "$GITHUB_ENV"
-
-          for extra in consignment-pack consignment-packing; do
-            if echo " $DEPLOYED_SVCS " | grep -q " ${extra} "; then
-              continue
-            fi
-            if gcloud run services describe "$extra" --region="$REGION" >/dev/null 2>&1; then
-              echo "Cost-cap legacy service $extra → min=0, max=1, 512Mi, 1 CPU"
-              gcloud run services update "$extra" \
-                --region="$REGION" \
-                --min-instances=0 \
-                --max-instances=1 \
-                --cpu=1 \
-                --memory=512Mi \
-                --cpu-throttling \
-                --quiet || true
-            fi
-          done
+          chmod +x scripts/gcloud-deploy.sh
+          bash scripts/gcloud-deploy.sh
 
       - name: Verify deployment health
         env:
@@ -437,40 +264,44 @@ PY
           fi
           echo "Primary service: $SERVICE_NAME_CHECK"
           echo "Service URL: $SERVICE_URL"
-          echo "::notice::Use GitHub Actions as the ONLY deploy path. Disable Cloud Run 'continuous deployment from GitHub' (Edit repo settings) — CD builds without JWT/DB secrets and causes 503."
-          # Cold start + possible CD race: retry longer, then dump logs.
+          echo "::notice::Disable Cloud Run continuous deployment from GitHub. Keep GitHub Actions as the only deploy path."
           HEALTH_OK=0
           for i in $(seq 1 12); do
-            if curl -fsS --max-time 25 "${SERVICE_URL}/api/health" -o /tmp/health.json; then
-              HEALTH_OK=1
-              break
+            CODE=$(curl -sS -o /tmp/health.json -w "%{http_code}" --max-time 25 "${SERVICE_URL}/api/health" || echo "000")
+            if [ -f /tmp/health.json ] && grep -q '"status"' /tmp/health.json; then
+              echo "Health HTTP $CODE body:"
+              cat /tmp/health.json
+              DB_STATUS=$(jq -r '.database // "unknown"' /tmp/health.json)
+              if [ "$DB_STATUS" = "ok" ] || [ "$DB_STATUS" = "connected" ] || [ "$DB_STATUS" = "healthy" ]; then
+                HEALTH_OK=1
+                break
+              fi
+              if [ "$DB_STATUS" = "unavailable" ] || [ "$DB_STATUS" = "misconfigured" ]; then
+                echo "Database status: $DB_STATUS (not ready yet)"
+              elif [ "$CODE" = "200" ]; then
+                HEALTH_OK=1
+                break
+              fi
             fi
-            echo "Health attempt $i failed — waiting..."
+            echo "Health attempt $i failed (HTTP $CODE) — waiting..."
             sleep 10
           done
           if [ "$HEALTH_OK" != "1" ]; then
             echo "::error::/api/health still failing on ${SERVICE_URL}"
             gcloud run services describe "$SERVICE_NAME_CHECK" --region=$REGION --format='yaml(status)' || true
             gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=${SERVICE_NAME_CHECK}" \
-              --region=$REGION --limit=40 --format='value(textPayload)' 2>/dev/null || true
+              --project="$PROJECT_ID" --limit=40 --format='value(textPayload)' 2>/dev/null || true
             exit 1
           fi
-          cat /tmp/health.json
-          DB_STATUS=$(jq -r '.database // "unknown"' /tmp/health.json)
-          echo "Database status: $DB_STATUS"
-          if [ "$DB_STATUS" = "misconfigured" ] || [ "$DB_STATUS" = "unavailable" ]; then
-            echo "::warning::PostgreSQL is not healthy. Check DATABASE_URL GitHub secret and Secret Manager."
-          fi
           curl -fsS --max-time 25 "${SERVICE_URL}/api/auth/status" | tee /tmp/auth-status.json
-          echo "✅ Health and auth status checks passed"
+          echo "Health and auth status checks passed"
 
-          # Verify served assets include a real Firebase apiKey (minifiers rename exports).
           verify_firebase_assets() {
             local base_url="$1"
             local label="$2"
             local html
             if ! html=$(curl -fsS "${base_url}/"); then
-              echo "::warning::${label}: could not fetch ${base_url}/ (domain mapping may be pending)"
+              echo "::warning::${label}: could not fetch ${base_url}/"
               return 0
             fi
             local found=""
@@ -483,10 +314,10 @@ PY
               fi
             done
             if [ -z "$found" ]; then
-              echo "::error::${label}: no Firebase apiKey (AIzaSy…) on ${base_url}"
+              echo "::error::${label}: no Firebase apiKey on ${base_url}"
               return 1
             fi
-            echo "✅ ${label}: ${base_url} → ${found} (apiKey OK)"
+            echo "${label}: ${base_url} -> ${found} (apiKey OK)"
           }
 
           verify_firebase_assets "${SERVICE_URL}" "Cloud Run"
@@ -494,7 +325,7 @@ PY
 
       - name: Show service URL
         run: |
-          echo "✅ Deployed successfully!"
+          echo "Deployed successfully!"
           echo "Primary service: ${PRIMARY_SERVICE:-$DOMAIN_MAPPED_SERVICE}"
           echo "URL: ${PRIMARY_URL:-}"
           gcloud run services describe "${PRIMARY_SERVICE:-$DOMAIN_MAPPED_SERVICE}" --region=$REGION --format='value(status.url)' || true
