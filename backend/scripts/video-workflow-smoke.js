@@ -29,7 +29,8 @@ async function main() {
       protocol: 'http',
     };
     const durable = buildDurableShareUrl(fakeReq, 'video-smoke-1', 'video');
-    assert.ok(durable.shareUrl.includes('/api/uploads/s/'));
+    assert.ok(durable.shareUrl.includes('/share/video/'), 'shareUrl should be dispute page');
+    assert.ok(durable.streamUrl.includes('/api/uploads/s/'), 'streamUrl should be raw stream');
     assert.strictEqual(durable.permanent === undefined || true, true);
     pass(`durable share URL shape: ${durable.path.slice(0, 40)}…`);
 

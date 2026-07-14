@@ -640,14 +640,19 @@ router.get('/share/:fileId', authenticateToken, requireAnyPermission(['consignme
     const durable = buildDurableShareUrl(req, fileId, fileType || record.type || 'document');
     const version = record.uploadedAt || record.updatedAt || record.size || Date.now();
     const shareUrl = `${durable.shareUrl}${durable.shareUrl.includes('?') ? '&' : '?'}v=${encodeURIComponent(String(version))}`;
+    const streamUrl = `${durable.streamUrl}${durable.streamUrl.includes('?') ? '&' : '?'}v=${encodeURIComponent(String(version))}`;
     res.json({
       shareUrl,
       url: shareUrl,
       playUrl: shareUrl,
+      streamUrl,
+      pageUrl: shareUrl,
       path: `${durable.path}?v=${encodeURIComponent(String(version))}`,
       requiresAuth: false,
       expires: null,
       permanent: true,
+      storageProvider: 'cloudflare-r2',
+      purpose: 'dispute-share',
       consignmentId: record.consignmentId,
       boxNo: record.boxNo || null,
       type: record.type || fileType || 'document',
@@ -658,6 +663,42 @@ router.get('/share/:fileId', authenticateToken, requireAnyPermission(['consignme
   } catch (error) {
     console.error('Error generating share link:', error);
     res.status(error.statusCode || 500).json({ error: 'Failed to generate share link.', message: error.message });
+  }
+});
+
+/** Public metadata for dispute share page (no login). */
+router.get('/s/:token/meta', async (req, res) => {
+  try {
+    let parsed;
+    try {
+      parsed = verifyShareToken(req.params.token);
+    } catch (error) {
+      return res.status(error.statusCode || 503).json({ error: error.message || 'Share links are not configured.' });
+    }
+    if (!parsed) {
+      return res.status(403).json({ error: 'Invalid share link.' });
+    }
+
+    const collectionName = parsed.type === 'video' ? 'videos' : 'documents';
+    const record = await firestoreHelpers.getDocument(collectionName, parsed.fileId);
+    if (!record || record.active === false) {
+      return res.status(404).json({ error: 'File not found.' });
+    }
+
+    res.json({
+      ok: true,
+      type: parsed.type,
+      boxNo: record.boxNo || null,
+      originalName: record.originalName || null,
+      mimeType: record.mimeType || null,
+      size: record.size || null,
+      uploadedAt: record.uploadedAt || null,
+      storageProvider: 'cloudflare-r2',
+      streamPath: `/api/uploads/s/${encodeURIComponent(req.params.token)}`,
+    });
+  } catch (error) {
+    console.error('Error reading share meta:', error);
+    res.status(500).json({ error: 'Failed to read share metadata.', message: error.message });
   }
 });
 

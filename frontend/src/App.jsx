@@ -29,6 +29,7 @@ const TermsAndConditions = lazy(() => import('./pages/TermsAndConditions'))
 const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'))
 const ContactDetails = lazy(() => import('./pages/ContactDetails'))
 const CopyrightPage = lazy(() => import('./pages/CopyrightPage'))
+const ShareVideo = lazy(() => import('./pages/ShareVideo'))
 
 const Spinner = () => <PageSpinner label="Loading application…" />
 
@@ -94,6 +95,7 @@ function AppRoutes() {
         <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/contact" element={<ContactDetails />} />
         <Route path="/copyright" element={<CopyrightPage />} />
+        <Route path="/share/video/:token" element={<ShareVideo />} />
 
         <Route path="/packing" element={<PrivateRoute><PermissionRoute permission="packing"><PackingStation /></PermissionRoute></PrivateRoute>} />
 

@@ -186,10 +186,10 @@ function VideoPreviewCard({ video, boxNo, onDelete, addToast, canDelete }) {
   const handleShare = async () => {
     try {
       const { data } = await uploadsAPI.getShareLink(video.id, 'video');
-      const link = data?.shareUrl || data?.url;
+      const link = data?.shareUrl || data?.pageUrl || data?.url;
       if (!link) throw new Error('No URL');
       await navigator.clipboard?.writeText(link);
-      addToast('Shareable video link copied (works anytime — no login)', 'success');
+      addToast('Dispute share link copied (Cloudflare R2 — no login needed)', 'success');
     } catch {
       addToast('Could not copy video link — check permissions', 'error');
     }
@@ -199,8 +199,9 @@ function VideoPreviewCard({ video, boxNo, onDelete, addToast, canDelete }) {
     e.preventDefault();
     try {
       const { data } = await uploadsAPI.getShareLink(video.id, 'video');
-      if (data?.shareUrl) {
-        window.open(data.shareUrl, '_blank', 'noopener,noreferrer');
+      const link = data?.shareUrl || data?.pageUrl;
+      if (link) {
+        window.open(link, '_blank', 'noopener,noreferrer');
         return;
       }
     } catch {
@@ -303,7 +304,7 @@ function VideoPreviewCard({ video, boxNo, onDelete, addToast, canDelete }) {
             onClick={handleShare}
             className="flex items-center gap-1 text-xs text-slate-600 hover:text-slate-800 bg-slate-100 px-2 py-1 rounded transition-colors"
           >
-            <Copy className="w-3 h-3" /> Copy Share Link
+            <Copy className="w-3 h-3" /> Copy Dispute Link
           </button>
           {src && (
             <button
