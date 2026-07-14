@@ -83,7 +83,7 @@ export default function Consignments() {
   const { user } = useAuth();
   const { pendingChanges, connected, lastSyncAt } = useConsignmentSync();
   const [listTab, setListTab] = useState('all');
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user?.role === 'admin' || user?.role === 'organization_head';
   const canDeleteConsignments = isAdmin || user?.permissions?.deleteConsignments === true;
   const [consignments, setConsignments] = useState([]);
   const [marketplaces, setMarketplaces] = useState([]);

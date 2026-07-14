@@ -33,7 +33,7 @@ const ShareVideo = lazy(() => import('./pages/ShareVideo'))
 
 const Spinner = () => <PageSpinner label="Loading application…" />
 
-const isElevatedRole = (user) => user?.role === 'admin'
+const isElevatedRole = (user) => user?.role === 'admin' || user?.role === 'organization_head'
 
 const PrivateRoute = ({ children }) => {
   const { isAuthenticated, loading, validateSession } = useAuth()
@@ -73,7 +73,7 @@ const AdminRoute = ({ children }) => {
   const { user, loading } = useAuth()
   if (loading) return <Spinner />
   if (!user) return <Navigate to="/login" replace />
-  if (user.role !== 'admin') return <Navigate to="/" replace />
+  if (user.role !== 'admin' && user.role !== 'organization_head') return <Navigate to="/" replace />
   return children
 }
 

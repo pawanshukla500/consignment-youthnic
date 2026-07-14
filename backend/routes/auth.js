@@ -488,8 +488,8 @@ router.get('/me', authenticateToken, async (req, res) => {
     if (dbUser) {
       const role = dbUser.role || decoded.role;
       const permissions = normalizePermissions(role, dbUser.permissions || decoded.permissions || {});
-      // Heal legacy org-head rows that still store packer/admin module grants.
-      if (role === 'organization_head' && JSON.stringify(dbUser.permissions || {}) !== JSON.stringify(permissions)) {
+      // Heal org-head / admin rows so permissions stay fully elevated.
+      if ((role === 'organization_head' || role === 'admin') && JSON.stringify(dbUser.permissions || {}) !== JSON.stringify(permissions)) {
         setImmediate(() => {
           firestoreHelpers.setDocument('users', dbUser.id || decoded.id, {
             permissions,

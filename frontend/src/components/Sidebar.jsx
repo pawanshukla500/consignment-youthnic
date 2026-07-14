@@ -24,7 +24,10 @@ const Sidebar = ({ forceCollapsed = false }) => {
 
   const hasPerm = (key) =>
     user?.role === 'admin' ||
+    user?.role === 'organization_head' ||
     user?.permissions?.[key] === true;
+
+  const isElevated = user?.role === 'admin' || user?.role === 'organization_head';
 
   const navGroups = [
     {
@@ -98,8 +101,8 @@ const Sidebar = ({ forceCollapsed = false }) => {
       <nav className="flex-1 overflow-y-auto py-2 px-1.5">
         {navGroups.map(group => {
           const visibleItems = group.items.filter(item => {
-            if (group.adminOnly && user?.role !== 'admin') return false;
-            if (item.adminOnly && user?.role !== 'admin') return false;
+            if (group.adminOnly && !isElevated) return false;
+            if (item.adminOnly && !isElevated) return false;
             return !item.perm || hasPerm(item.perm);
           });
           if (visibleItems.length === 0) return null;
@@ -148,8 +151,8 @@ const Sidebar = ({ forceCollapsed = false }) => {
             <div className="min-w-0 flex-1">
               <p className="text-[12.5px] font-semibold text-slate-800 truncate">{user?.name || user?.email}</p>
               <div className="flex items-center gap-1">
-                {user?.role === 'admin' && <Shield className="w-2.5 h-2.5 text-slate-500" />}
-                <p className="text-[10px] text-slate-500 capitalize">{user?.role || 'User'}</p>
+                {isElevated && <Shield className="w-2.5 h-2.5 text-slate-500" />}
+                <p className="text-[10px] text-slate-500 capitalize">{user?.role === 'organization_head' ? 'Org Head' : (user?.role || 'User')}</p>
               </div>
             </div>
           </NavLink>

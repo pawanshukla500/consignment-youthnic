@@ -12,7 +12,7 @@ import { resolvePosthogDashboardUrl } from '../utils/posthogDashboard';
 export default function Settings() {
   const { addToast } = useToast();
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user?.role === 'admin' || user?.role === 'organization_head';
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [runningCleanup, setRunningCleanup] = useState(false);
