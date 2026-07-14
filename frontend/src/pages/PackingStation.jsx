@@ -414,7 +414,12 @@ export default function PackingStation() {
       setPendingUploads(pending);
 
       if (showLog) {
-        const { getOutstandingVideos, unlockOutstandingForImmediateRetry } = await import('../utils/videoQueue');
+        const {
+          getOutstandingVideos,
+          unlockOutstandingForImmediateRetry,
+          pruneDuplicateBoxVideos,
+        } = await import('../utils/videoQueue');
+        await pruneDuplicateBoxVideos().catch(() => 0);
         await unlockOutstandingForImmediateRetry();
         const videos = await getOutstandingVideos();
         pending = videos.length;
@@ -425,7 +430,14 @@ export default function PackingStation() {
           return;
         }
         setPendingUploads(pending);
-        setUploadLog(videos.map(v => ({ id: v.id, name: v.metadata.fileName, boxNo: v.metadata.boxNo, status: 'queued', progress: 0 })));
+        setUploadLog(videos.map((v) => ({
+          id: v.id,
+          name: v.metadata.fileName,
+          boxNo: v.metadata.boxNo,
+          status: v.status === 'failed' ? 'error' : 'queued',
+          progress: 0,
+          error: v.lastError || null,
+        })));
         setShowUploadLog(true);
       }
 
@@ -1405,7 +1417,8 @@ export default function PackingStation() {
   };
 
   const retryFailedSync = async () => {
-    const { resetFailedToPending } = await import('../utils/videoQueue');
+    const { resetFailedToPending, pruneDuplicateBoxVideos } = await import('../utils/videoQueue');
+    await pruneDuplicateBoxVideos().catch(() => 0);
     const [scans, saveJobs, videos] = await Promise.all([
       resetFailedScans(),
       resetFailedSyncJobs(),
@@ -1418,6 +1431,61 @@ export default function PackingStation() {
     setSyncState('pending');
     toast(`Retrying ${scans + saveJobs + videos} failed sync item(s)`, 'info', 3000);
     await runPendingSync(true);
+  };
+
+  const refreshUploadLogFromQueue = async () => {
+    const { getOutstandingVideos } = await import('../utils/videoQueue');
+    const videos = await getOutstandingVideos();
+    if (!videos.length) {
+      setUploadLog([]);
+      setShowUploadLog(false);
+      setPendingUploads(0);
+      await updatePendingCount();
+      return 0;
+    }
+    setPendingUploads(videos.length);
+    setUploadLog(videos.map((v) => ({
+      id: v.id,
+      name: v.metadata?.fileName || `box_${v.metadata?.boxNo}.webm`,
+      boxNo: v.metadata?.boxNo,
+      status: v.status === 'failed' ? 'error' : (v.nextAttemptAt && v.nextAttemptAt > Date.now() ? 'retrying' : 'queued'),
+      progress: 0,
+      error: v.lastError || null,
+    })));
+    setShowUploadLog(true);
+    return videos.length;
+  };
+
+  const discardFailedVideoUploads = async () => {
+    if (!window.confirm('Discard all failed packing videos cached in this browser? Successfully uploaded cloud videos are not deleted.')) {
+      return;
+    }
+    const { clearFailedVideos } = await import('../utils/videoQueue');
+    const cleared = await clearFailedVideos();
+    toast(cleared ? `Discarded ${cleared} failed video(s)` : 'No failed videos to discard', cleared ? 'success' : 'info', 3500);
+    await refreshUploadLogFromQueue();
+    await updatePendingCount();
+  };
+
+  const clearDuplicateVideoUploads = async () => {
+    const { pruneDuplicateBoxVideos } = await import('../utils/videoQueue');
+    const pruned = await pruneDuplicateBoxVideos();
+    toast(pruned ? `Removed ${pruned} older duplicate video(s)` : 'No duplicate videos found', pruned ? 'success' : 'info', 3500);
+    await refreshUploadLogFromQueue();
+    await updatePendingCount();
+  };
+
+  const clearAllLocalVideoCache = async () => {
+    if (!window.confirm('Clear ALL pending/failed packing videos from this browser cache? You will need to re-record any unfinished boxes.')) {
+      return;
+    }
+    const { clearLocalVideoCache } = await import('../utils/videoQueue');
+    const cleared = await clearLocalVideoCache('all');
+    toast(cleared ? `Cleared ${cleared} cached video(s)` : 'Video cache already empty', cleared ? 'success' : 'info', 3500);
+    setUploadLog([]);
+    setShowUploadLog(false);
+    setPendingUploads(0);
+    await updatePendingCount();
   };
 
   const releaseScanLock = () => {
@@ -2418,14 +2486,48 @@ export default function PackingStation() {
                 </div>
               ))}
             </div>
-            <div className="border-t border-slate-100 px-4 py-3 flex items-center justify-between">
-              <span className="text-[11px] text-slate-500">
-                {uploadLog.filter(l => l.status === 'done').length} / {uploadLog.length} uploaded
-              </span>
-              {uploadLog.every(l => l.status === 'done' || l.status === 'error' || l.status === 'retrying') && (
-                <button onClick={() => setShowUploadLog(false)} className="px-4 py-1.5 bg-primary-600 text-white rounded-lg text-xs font-semibold hover:bg-primary-700 transition-colors">
-                  Done
-                </button>
+            <div className="border-t border-slate-100 px-4 py-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] text-slate-500">
+                  {uploadLog.filter(l => l.status === 'done').length} / {uploadLog.length} uploaded
+                </span>
+                {uploadLog.every(l => l.status === 'done' || l.status === 'error' || l.status === 'retrying') && (
+                  <button onClick={() => setShowUploadLog(false)} className="px-4 py-1.5 bg-primary-600 text-white rounded-lg text-xs font-semibold hover:bg-primary-700 transition-colors">
+                    Done
+                  </button>
+                )}
+              </div>
+              {uploadLog.some((l) => l.status === 'error' || l.status === 'retrying' || l.status === 'queued') && (
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => { void retryFailedSync(); }}
+                    className="px-2.5 py-1.5 rounded-lg text-[10px] font-semibold bg-amber-500 text-white hover:bg-amber-600"
+                  >
+                    Retry all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { void clearDuplicateVideoUploads(); }}
+                    className="px-2.5 py-1.5 rounded-lg text-[10px] font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50"
+                  >
+                    Clear duplicates
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { void discardFailedVideoUploads(); }}
+                    className="px-2.5 py-1.5 rounded-lg text-[10px] font-semibold border border-red-200 text-red-600 hover:bg-red-50"
+                  >
+                    Discard failed
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { void clearAllLocalVideoCache(); }}
+                    className="px-2.5 py-1.5 rounded-lg text-[10px] font-semibold border border-red-300 text-red-700 hover:bg-red-50"
+                  >
+                    Clear all cache
+                  </button>
+                </div>
               )}
             </div>
           </div>

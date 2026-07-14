@@ -219,3 +219,29 @@ export async function resetFailedScans() {
     req.onerror = () => reject(req.error)
   })
 }
+
+/** Permanently delete failed scan rows from this browser. */
+export async function clearFailedScans() {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    const store = tx.objectStore(STORE)
+    const req = store.getAll()
+    req.onsuccess = () => {
+      const failed = (req.result || []).filter((s) => s.status === 'failed')
+      for (const s of failed) store.delete(s.id)
+      resolve(failed.length)
+    }
+    req.onerror = () => reject(req.error)
+  })
+}
+
+export async function clearAllScans() {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    tx.objectStore(STORE).clear()
+    tx.oncomplete = () => resolve(true)
+    tx.onerror = () => reject(tx.error)
+  })
+}
