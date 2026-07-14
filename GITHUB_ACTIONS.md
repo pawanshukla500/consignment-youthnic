@@ -13,6 +13,16 @@ Public app URL target: **`https://consignment.youthnic.shop`**
 
 ---
 
+## Important: one deploy path only
+
+Cloud Run console **“Deploy from repository” / continuous deployment** builds without your GitHub Secrets (no `JWT_SECRET`, `DATABASE_URL`, etc.) and will crash the container with **503**.
+
+- Keep **GitHub Actions** (`Deploy to Cloud Run`) as the only deployer  
+- In Cloud Run → service **`consignment-youthnic-git`** → **Edit repo settings** → **disconnect / disable** continuous deployment  
+- Do not leave Max instances at **20** in the console — Actions sets **max=3**, min=0  
+
+---
+
 ## Cost profile (Cloud Run)
 
 Deploy uses a **low-cost** profile so idle time is nearly free:

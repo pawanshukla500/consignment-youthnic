@@ -324,6 +324,43 @@ jobs:
             --set-env-vars="MAIL_FROM_NAME=Youthnic Packing Station" \
             --set-env-vars="MAIL_USER_DOMAIN=youthnic.shop" \
             --set-env-vars="APP_URL=${CUSTOM_DOMAIN}" \
+            --set-env-vars="ALLOWED_ORIGINS=${CUSTOM_DOMAIN}" \
+            --set-env-vars="LOGTAIL_SOURCE_TOKEN=${{ secrets.LOGTAIL_SOURCE_TOKEN }}" \
+            --set-env-vars="LOGTAIL_INGEST_HOST=s2531760.eu-fsn-3.betterstackdata.com" \
+            --set-env-vars="POSTHOG_DASHBOARD_URL=${POSTHOG_DASHBOARD_URL:-https://us.posthog.com/embedded/aUBKw6XLlFMPLf2WJbRbmEzbfSpIyQ}" \
+            --set-env-vars="BETTERSTACK_DASHBOARD_URL=${BETTERSTACK_DASHBOARD_URL:-}" \
+            --remove-env-vars="ADMIN_PASSWORD" \
+            "${SECRET_FLAGS[@]}" || \
+          gcloud run deploy "$svc" \
+            --image="$IMAGE_REF" \
+            --platform=managed \
+            --region=$REGION \
+            --allow-unauthenticated \
+            --port=8080 \
+            --memory=1Gi \
+            --cpu=1 \
+            --concurrency=80 \
+            --timeout=300 \
+            --min-instances=0 \
+            --max-instances=3 \
+            --cpu-throttling \
+            --execution-environment=gen2 \
+            --quiet \
+            --set-env-vars="NODE_ENV=production" \
+            --set-env-vars="ADMIN_EMAIL=returnorders@vbexports.co.in" \
+            --set-env-vars="FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}" \
+            --set-env-vars="FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}" \
+            --set-env-vars="R2_BUCKET=consigmentapp" \
+            --set-env-vars="DB_USE_POSTGRES=true" \
+            --set-env-vars="DB_SSL=true" \
+            --set-env-vars="DB_POOL_MAX=10" \
+            --set-env-vars="SUPABASE_URL=${SUPABASE_URL}" \
+            --set-env-vars="SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}" \
+            --set-env-vars="MAIL_FROM_EMAIL=consignment@youthnic.shop" \
+            --set-env-vars="MAIL_FROM_NAME=Youthnic Packing Station" \
+            --set-env-vars="MAIL_USER_DOMAIN=youthnic.shop" \
+            --set-env-vars="APP_URL=${CUSTOM_DOMAIN}" \
+            --set-env-vars="ALLOWED_ORIGINS=${CUSTOM_DOMAIN}" \
             --set-env-vars="LOGTAIL_SOURCE_TOKEN=${{ secrets.LOGTAIL_SOURCE_TOKEN }}" \
             --set-env-vars="LOGTAIL_INGEST_HOST=s2531760.eu-fsn-3.betterstackdata.com" \
             --set-env-vars="POSTHOG_DASHBOARD_URL=${POSTHOG_DASHBOARD_URL:-https://us.posthog.com/embedded/aUBKw6XLlFMPLf2WJbRbmEzbfSpIyQ}" \
@@ -338,15 +375,13 @@ jobs:
 
           gcloud run services update "$svc" \
             --region=$REGION \
-            --remove-env-vars="ADMIN_PASSWORD" || true
-
-          gcloud run services update "$svc" \
-            --region=$REGION \
-            --update-env-vars="^##^ALLOWED_ORIGINS=${ALL_ORIGINS}"
+            --update-env-vars="^##^ALLOWED_ORIGINS=${ALL_ORIGINS}" \
+            --quiet || true
 
           gcloud run services update-traffic "$svc" \
             --region=$REGION \
-            --to-latest
+            --to-latest \
+            --quiet || true
 
           DEPLOYED_SVCS="${DEPLOYED_SVCS} ${svc}"
           PRIMARY_SERVICE="$svc"
@@ -389,21 +424,31 @@ jobs:
           fi
           echo "Primary service: $SERVICE_NAME_CHECK"
           echo "Service URL: $SERVICE_URL"
-          # Cold start + first request can take a bit with min-instances=0
-          for i in 1 2 3 4 5 6; do
-            if curl -fsS "${SERVICE_URL}/api/health" -o /tmp/health.json; then
+          echo "::notice::Use GitHub Actions as the ONLY deploy path. Disable Cloud Run 'continuous deployment from GitHub' (Edit repo settings) — CD builds without JWT/DB secrets and causes 503."
+          # Cold start + possible CD race: retry longer, then dump logs.
+          HEALTH_OK=0
+          for i in $(seq 1 12); do
+            if curl -fsS --max-time 25 "${SERVICE_URL}/api/health" -o /tmp/health.json; then
+              HEALTH_OK=1
               break
             fi
-            echo "Health attempt $i failed — waiting for cold start..."
-            sleep 8
+            echo "Health attempt $i failed — waiting..."
+            sleep 10
           done
+          if [ "$HEALTH_OK" != "1" ]; then
+            echo "::error::/api/health still failing on ${SERVICE_URL}"
+            gcloud run services describe "$SERVICE_NAME_CHECK" --region=$REGION --format='yaml(status)' || true
+            gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=${SERVICE_NAME_CHECK}" \
+              --region=$REGION --limit=40 --format='value(textPayload)' 2>/dev/null || true
+            exit 1
+          fi
           cat /tmp/health.json
           DB_STATUS=$(jq -r '.database // "unknown"' /tmp/health.json)
           echo "Database status: $DB_STATUS"
           if [ "$DB_STATUS" = "misconfigured" ] || [ "$DB_STATUS" = "unavailable" ]; then
             echo "::warning::PostgreSQL is not healthy. Check DATABASE_URL GitHub secret and Secret Manager."
           fi
-          curl -fsS "${SERVICE_URL}/api/auth/status" | tee /tmp/auth-status.json
+          curl -fsS --max-time 25 "${SERVICE_URL}/api/auth/status" | tee /tmp/auth-status.json
           echo "✅ Health and auth status checks passed"
 
           # Verify served assets include a real Firebase apiKey (minifiers rename exports).
