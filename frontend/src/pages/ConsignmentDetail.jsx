@@ -1787,31 +1787,64 @@ const ConsignmentDetail = () => {
                 );
               })()}
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50">
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    {/* Group headers */}
                     <tr>
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase">#</th>
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Marketplace SKU</th>
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Internal SKU</th>
-                      <th className="text-center px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Required</th>
-                      <th className="text-center px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Packed</th>
-                      <th className="text-center px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Remaining</th>
-                      {pivotData.boxes.map(b => (
-                        <th key={b.boxNo} className="text-center px-3 py-3 text-xs font-semibold text-white bg-primary-600 uppercase whitespace-nowrap">Box #{b.boxNo}</th>
-                      ))}
-                      <th className="text-center px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Total in Boxes</th>
+                      <th
+                        colSpan={3}
+                        className="sticky top-0 z-20 bg-slate-800 text-white text-left px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider border-r border-slate-600"
+                      >
+                        SKU Details
+                      </th>
+                      <th
+                        colSpan={3}
+                        className="sticky top-0 z-20 bg-slate-700 text-white text-center px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider border-r border-slate-500"
+                      >
+                        Qty Reporting
+                      </th>
+                      <th
+                        colSpan={Math.max(pivotData.boxes.length, 1)}
+                        className="sticky top-0 z-20 bg-primary-600 text-white text-center px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider border-r border-primary-500"
+                      >
+                        Box Quantities ({pivotData.boxes.length})
+                      </th>
+                      <th className="sticky top-0 z-20 bg-slate-800 text-white text-center px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider">
+                        Total
+                      </th>
+                    </tr>
+                    {/* Sub headers */}
+                    <tr className="bg-slate-100">
+                      <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">#</th>
+                      <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">Marketplace SKU</th>
+                      <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-r border-slate-200 whitespace-nowrap">Internal SKU</th>
+                      <th className="text-center px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap bg-slate-50">Required</th>
+                      <th className="text-center px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap bg-slate-50">Packed</th>
+                      <th className="text-center px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-r border-slate-200 whitespace-nowrap bg-slate-50">Remaining</th>
+                      {pivotData.boxes.length > 0 ? pivotData.boxes.map((b) => (
+                        <th
+                          key={b.boxNo}
+                          className="text-center px-2.5 py-2 text-[10px] font-semibold text-primary-800 uppercase tracking-wide border-b border-r border-primary-100 whitespace-nowrap bg-primary-50"
+                          title={`Box ${b.boxNo}`}
+                        >
+                          #{b.boxNo}
+                        </th>
+                      )) : (
+                        <th className="text-center px-3 py-2 text-[10px] font-semibold text-slate-400 uppercase tracking-wide border-b border-slate-200">—</th>
+                      )}
+                      <th className="text-center px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap bg-slate-50">In Boxes</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {pivotData.rows.map((row, idx) => (
-                      <tr key={row.skuId} className={`${row.remaining === 0 ? 'bg-emerald-50/50' : row.remaining < 0 ? 'bg-red-50/50' : ''} hover:bg-slate-50`}>
-                        <td className="px-4 py-3 text-xs text-slate-400">{idx + 1}</td>
-                        <td className="px-4 py-3 font-mono text-xs text-slate-700">{row.marketplaceSku}</td>
-                        <td className="px-4 py-3 font-medium text-slate-900">{row.internalSku}</td>
-                        <td className="px-4 py-3 text-center font-semibold text-slate-700">{row.required}</td>
-                        <td className="px-4 py-3 text-center font-semibold text-primary-600">{row.packedFromBoxes || 0}</td>
-                        <td className="px-4 py-3 text-center font-bold">
+                      <tr key={row.skuId} className={`${row.remaining === 0 ? 'bg-emerald-50/40' : row.remaining < 0 ? 'bg-red-50/40' : 'bg-white'} hover:bg-slate-50/80`}>
+                        <td className="px-3 py-2.5 text-xs text-slate-400">{idx + 1}</td>
+                        <td className="px-3 py-2.5 font-mono text-xs text-slate-700 max-w-[180px] truncate" title={row.marketplaceSku}>{row.marketplaceSku}</td>
+                        <td className="px-3 py-2.5 font-medium text-slate-900 text-xs border-r border-slate-100 max-w-[160px] truncate" title={row.internalSku}>{row.internalSku}</td>
+                        <td className="px-3 py-2.5 text-center font-semibold text-slate-700 text-xs bg-slate-50/40">{row.required}</td>
+                        <td className="px-3 py-2.5 text-center font-semibold text-emerald-700 text-xs bg-slate-50/40">{row.packedFromBoxes || 0}</td>
+                        <td className="px-3 py-2.5 text-center font-bold text-xs border-r border-slate-100 bg-slate-50/40">
                           {row.remaining === 0 ? (
                             <span className="inline-flex items-center gap-1 text-emerald-600"><CheckCircle2 className="w-3.5 h-3.5" />0</span>
                           ) : row.remaining < 0 ? (
@@ -1820,15 +1853,18 @@ const ConsignmentDetail = () => {
                             <span className="text-amber-600">{row.remaining}</span>
                           )}
                         </td>
-                        {pivotData.boxes.map(b => {
+                        {pivotData.boxes.map((b) => {
                           const qty = row.boxQtys[b.boxNo] || 0;
                           return (
-                            <td key={b.boxNo} className={`px-3 py-3 text-center font-mono text-xs ${qty > 0 ? 'bg-primary-50 text-primary-700 font-bold' : 'text-slate-300'}`}>
-                              {qty > 0 ? qty : '-'}
+                            <td
+                              key={b.boxNo}
+                              className={`px-2.5 py-2.5 text-center font-mono text-xs border-r border-slate-50 ${qty > 0 ? 'bg-primary-50 text-primary-800 font-bold' : 'text-slate-300'}`}
+                            >
+                              {qty > 0 ? qty : '·'}
                             </td>
                           );
                         })}
-                        <td className="px-4 py-3 text-center font-bold text-slate-900">{row.totalInBoxes || row.packedFromBoxes || 0}</td>
+                        <td className="px-3 py-2.5 text-center font-bold text-slate-900 text-xs bg-slate-50/60">{row.totalInBoxes || row.packedFromBoxes || 0}</td>
                       </tr>
                     ))}
                   </tbody>

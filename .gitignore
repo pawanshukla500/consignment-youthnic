@@ -56,6 +56,8 @@ coverage/
 .playwright-mcp/
 *.png
 !frontend/src/assets/*.png
+!frontend/public/brand-logo.png
+!backend/assets/*.png
 *.webp
 speech_test.html
 
