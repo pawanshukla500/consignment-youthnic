@@ -54,6 +54,15 @@ function backoffMs(retries) {
   return Math.min(60_000, 3000 * Math.pow(1.8, retries))
 }
 
+function buildVideoStoragePath(metadata, fileName, entryId) {
+  const safeCid = String(metadata.consignmentId || '').replace(/[^\w.-]/g, '_')
+  const box = String(metadata.boxNo || '').replace(/[^\w.-]/g, '_')
+  const extMatch = String(fileName || '').match(/\.(webm|mp4|mov|avi)$/i)
+  const ext = extMatch ? extMatch[0].toLowerCase() : '.webm'
+  const rev = String(entryId || metadata.clientUploadId || Date.now()).replace(/[^\w.-]/g, '_')
+  return `consignments/${safeCid}/boxes/box_${box}/video_${rev}${ext}`
+}
+
 async function uploadOneVideo(entry) {
   const { blob, metadata } = entry
   const file = new File([blob], metadata.fileName, { type: metadata.mimeType || 'video/webm' })
@@ -64,31 +73,26 @@ async function uploadOneVideo(entry) {
   let uploadPath = entry.storagePath
 
   if (!uploadPath) {
-    const storagePathReq = await apiFetch('/uploads/generate-signed-url', {
-      method: 'POST',
-      body: JSON.stringify({
-        storagePath: (() => {
-          const safeCid = String(metadata.consignmentId || '').replace(/[^\w.-]/g, '_')
-          const box = String(metadata.boxNo || '').replace(/[^\w.-]/g, '_')
-          const extMatch = String(file.name || '').match(/\.(webm|mp4|mov|avi)$/i)
-          const ext = extMatch ? extMatch[0].toLowerCase() : '.webm'
-          return `consignments/${safeCid}/boxes/box_${box}/video${ext}`
-        })(),
-        mimeType: file.type,
-        consignmentId: metadata.consignmentId,
-      }),
-    })
-
-    if (!storagePathReq.uploadUrl) {
-      throw new Error('Failed to obtain upload authorization from server.')
-    }
-
-    const uploadUrl = storagePathReq.uploadUrl
-    uploadPath = storagePathReq.storagePath
-
     let lastUploadError = null
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
+        // Fresh signed URL every attempt (avoids expired URL retries looking like "network error")
+        const storagePathReq = await apiFetch('/uploads/generate-signed-url', {
+          method: 'POST',
+          body: JSON.stringify({
+            storagePath: buildVideoStoragePath(metadata, file.name, entry.id),
+            mimeType: file.type,
+            consignmentId: metadata.consignmentId,
+          }),
+        })
+
+        if (!storagePathReq.uploadUrl) {
+          throw new Error('Failed to obtain upload authorization from server.')
+        }
+
+        const signedUploadUrl = storagePathReq.uploadUrl
+        uploadPath = storagePathReq.storagePath
+
         await new Promise((resolve, reject) => {
           const xhr = new XMLHttpRequest()
           let settled = false
@@ -99,7 +103,7 @@ async function uploadOneVideo(entry) {
             reject(new Error(`R2 upload timed out after ${Math.round(timeoutMs / 1000)}s (${fileMb.toFixed(1)} MB)`))
           }, timeoutMs)
 
-          xhr.open('PUT', uploadUrl, true)
+          xhr.open('PUT', signedUploadUrl, true)
           xhr.setRequestHeader('Content-Type', file.type)
 
           xhr.upload.onprogress = (e) => {
@@ -128,7 +132,8 @@ async function uploadOneVideo(entry) {
         break
       } catch (err) {
         lastUploadError = err
-        const retryable = /network|timeout|status 5\d\d/i.test(err.message || '')
+        uploadPath = null
+        const retryable = /network|timeout|status 5\d\d|authorization/i.test(err.message || '')
         if (!retryable || attempt === 2) break
         await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)))
       }

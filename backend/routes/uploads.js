@@ -43,12 +43,18 @@ async function streamFileRecord(req, res, record, fileType, options = {}) {
   const fileSize = fileMeta.size;
   const rangeHeader = req.headers.range;
   const publicShare = options.publicShare === true;
+  const etag = fileMeta.metadata?.etag || fileMeta.metadata?.ETag || null;
 
   res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Cache-Control', publicShare ? 'public, max-age=86400' : 'private, no-store');
+  // Never allow Chrome/CDN to pin packing videos for a full day — revalidate on each play.
+  res.setHeader('Cache-Control', publicShare ? 'public, max-age=0, must-revalidate' : 'private, no-store');
+  if (etag) res.setHeader('ETag', etag);
   res.setHeader('Content-Type', contentType);
   res.setHeader('Content-Disposition', `inline; filename="${String(record.originalName || 'video').replace(/[^\w.\-]+/g, '_')}"`);
 
+  if (etag && req.headers['if-none-match'] && req.headers['if-none-match'] === etag && !rangeHeader) {
+    return res.status(304).end();
+  }
   if (rangeHeader && fileSize) {
     const parts = rangeHeader.replace(/bytes=/, '').split('-');
     const start = parseInt(parts[0], 10);
@@ -296,8 +302,33 @@ router.post('/metadata', authenticateToken, requirePermission('packing', 'regist
     if ((fileType === 'video' || isRemovalVideo) && boxNo) {
       const existing = await findExistingVideoMetadata(consignmentId, boxNo, resolvedPath, clientUploadId || uploadQueueId);
       if (existing) {
-        const enrichedExisting = await enrichFileRecord(existing);
-        return res.status(200).json({ file: enrichedExisting, deduped: true });
+        // Same queue item/path retry: refresh stamps so clients bust stale Chrome caches.
+        const refreshed = {
+          ...existing,
+          originalName: originalName || existing.originalName,
+          size: size != null ? size : existing.size,
+          mimeType: mimeType || existing.mimeType,
+          storageUrl: resolvedUrl || existing.storageUrl || existing.url,
+          storagePath: resolvedPath || existing.storagePath,
+          firebasePath: resolvedPath || existing.firebasePath,
+          clientUploadId: clientUploadId || uploadQueueId || existing.clientUploadId || '',
+          uploadQueueId: uploadQueueId || clientUploadId || existing.uploadQueueId || '',
+          uploadedAt: now(),
+          updatedAt: now(),
+          storageVerified: true,
+          storageVerifiedAt: now(),
+          active: true,
+        };
+        await firestoreHelpers.setDocument('videos', existing.id, refreshed);
+        if (fileType === 'video' && !isRemovalVideo) {
+          try {
+            await ensureSingleVideoPerBox(consignmentId, boxNo, existing.id);
+          } catch (replaceError) {
+            console.warn('[Upload] Old video cleanup failed for box', boxNo, replaceError.message);
+          }
+        }
+        const enrichedExisting = await enrichFileRecord(refreshed);
+        return res.status(200).json({ file: enrichedExisting, deduped: true, refreshed: true });
       }
     }
 
@@ -447,11 +478,13 @@ router.get('/share/:fileId', authenticateToken, requireAnyPermission(['consignme
     }
 
     const durable = buildDurableShareUrl(req, fileId, fileType || record.type || 'document');
+    const version = record.uploadedAt || record.updatedAt || record.size || Date.now();
+    const shareUrl = `${durable.shareUrl}${durable.shareUrl.includes('?') ? '&' : '?'}v=${encodeURIComponent(String(version))}`;
     res.json({
-      shareUrl: durable.shareUrl,
-      url: durable.shareUrl,
-      playUrl: durable.shareUrl,
-      path: durable.path,
+      shareUrl,
+      url: shareUrl,
+      playUrl: shareUrl,
+      path: `${durable.path}?v=${encodeURIComponent(String(version))}`,
       requiresAuth: false,
       expires: null,
       permanent: true,
@@ -459,6 +492,8 @@ router.get('/share/:fileId', authenticateToken, requireAnyPermission(['consignme
       boxNo: record.boxNo || null,
       type: record.type || fileType || 'document',
       originalName: record.originalName,
+      uploadedAt: record.uploadedAt || null,
+      updatedAt: record.updatedAt || null,
     });
   } catch (error) {
     console.error('Error generating share link:', error);
