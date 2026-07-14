@@ -17,6 +17,8 @@ const {
   generateSignedPartUrls,
   completeMultipartUpload,
   abortMultipartUpload,
+  uploadPartBuffer,
+  uploadBuffer,
 } = require('../utils/storage');
 const { requestUserHasPermission, requirePermission, requireAnyPermission, DELETE_VIDEOS } = require('../utils/permissions');
 const { isStoragePathForConsignment } = require('../utils/storagePathValidation');
@@ -320,6 +322,78 @@ router.post('/multipart/abort', authenticateToken, requirePermission('packing', 
     res.status(500).json({ error: 'Failed to abort multipart upload.', message: error.message });
   }
 });
+
+/**
+ * Same-origin multipart part upload (no browser→R2 CORS required).
+ * Body: raw octets. Query: storagePath, uploadId, partNumber, consignmentId
+ */
+router.put(
+  '/multipart/proxy-part',
+  authenticateToken,
+  requirePermission('packing', 'register uploads'),
+  express.raw({ type: '*/*', limit: '16mb' }),
+  async (req, res) => {
+    try {
+      const storagePath = String(req.query.storagePath || '');
+      const uploadId = String(req.query.uploadId || '');
+      const consignmentId = String(req.query.consignmentId || '');
+      const partNumber = Number(req.query.partNumber);
+      if (!storagePath || !uploadId || !consignmentId || !Number.isInteger(partNumber)) {
+        return res.status(400).json({ error: 'storagePath, uploadId, consignmentId, and partNumber are required.' });
+      }
+      if (!isStoragePathForConsignment(storagePath, consignmentId)) {
+        return res.status(403).json({
+          error: 'Storage path does not belong to this consignment.',
+          code: 'STORAGE_PATH_MISMATCH',
+        });
+      }
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: 'Empty part body.' });
+      }
+      const result = await uploadPartBuffer(storagePath, uploadId, partNumber, req.body);
+      res.json(result);
+    } catch (error) {
+      console.error('Error proxying multipart part:', error);
+      res.status(500).json({ error: 'Failed to upload part via proxy.', message: error.message });
+    }
+  }
+);
+
+/**
+ * Same-origin single-object PutObject for smaller clips when R2 CORS blocks signed PUT.
+ * Body: raw octets. Query: storagePath, consignmentId, mimeType
+ */
+router.put(
+  '/proxy-object',
+  authenticateToken,
+  requirePermission('packing', 'register uploads'),
+  express.raw({ type: '*/*', limit: '32mb' }),
+  async (req, res) => {
+    try {
+      const storagePath = String(req.query.storagePath || '');
+      const consignmentId = String(req.query.consignmentId || '');
+      const mimeType = String(req.query.mimeType || req.headers['content-type'] || 'application/octet-stream');
+      const boxNo = String(req.query.boxNo || '');
+      if (!storagePath || !consignmentId) {
+        return res.status(400).json({ error: 'storagePath and consignmentId are required.' });
+      }
+      if (!isStoragePathForConsignment(storagePath, consignmentId)) {
+        return res.status(403).json({
+          error: 'Storage path does not belong to this consignment.',
+          code: 'STORAGE_PATH_MISMATCH',
+        });
+      }
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: 'Empty object body.' });
+      }
+      await uploadBuffer(req.body, storagePath, mimeType, { consignmentId, boxNo });
+      res.json({ storagePath, size: req.body.length, storageProvider: 'r2' });
+    } catch (error) {
+      console.error('Error proxying object upload:', error);
+      res.status(500).json({ error: 'Failed to upload object via proxy.', message: error.message });
+    }
+  }
+);
 
 // Save file metadata after a direct client upload to Cloudflare R2
 router.post('/metadata', authenticateToken, requirePermission('packing', 'register uploads'), async (req, res) => {

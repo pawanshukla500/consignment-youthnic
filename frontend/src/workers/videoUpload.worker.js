@@ -26,6 +26,8 @@ let config = {
 let intervalId = null
 let running = false
 let queuedProcessOpts = null
+/** After a CORS/network failure, prefer same-origin proxy for the rest of the session. */
+let preferProxyUpload = false
 
 async function notify() {
   const pending = await getQueueCount()
@@ -56,7 +58,6 @@ async function apiFetch(endpoint, options = {}) {
   return res.json()
 }
 
-/** Fast early retries; cap at 12s so Pending Sync does not stall for minutes. */
 function backoffMs(retries) {
   return Math.min(12_000, 400 * Math.pow(1.55, Math.max(0, retries)))
 }
@@ -76,10 +77,16 @@ function buildVideoStoragePath(metadata, fileName, entryId) {
   return `consignments/${safeCid}/boxes/box_${box}/video_${rev}${ext}`
 }
 
+function isCorsOrNetworkError(err) {
+  return /network error|cors|failed to fetch|load failed|upload aborted/i.test(err?.message || '')
+}
+
 function putBlob(uploadUrl, blob, {
   contentType = null,
+  auth = false,
   timeoutMs,
   onProgress,
+  expectJson = false,
 } = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
@@ -98,6 +105,9 @@ function putBlob(uploadUrl, blob, {
 
     xhr.open('PUT', uploadUrl, true)
     if (contentType) xhr.setRequestHeader('Content-Type', contentType)
+    if (auth && config.token) {
+      xhr.setRequestHeader('Authorization', `Bearer ${config.token}`)
+    }
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total)
@@ -109,15 +119,23 @@ function putBlob(uploadUrl, blob, {
       settled = true
       if (xhr.status >= 200 && xhr.status < 300) {
         const etag = xhr.getResponseHeader('ETag') || xhr.getResponseHeader('etag') || ''
-        resolve({ etag, status: xhr.status })
+        let json = null
+        if (expectJson) {
+          try { json = JSON.parse(xhr.responseText || '{}') } catch { json = null }
+        }
+        resolve({ etag: etag || json?.etag || '', status: xhr.status, json })
       } else {
-        reject(new Error(`R2 upload failed with status ${xhr.status}`))
+        let detail = `Upload failed with status ${xhr.status}`
+        try {
+          const body = JSON.parse(xhr.responseText || '{}')
+          if (body.error) detail = body.error
+        } catch { /* ignore */ }
+        reject(new Error(detail))
       }
     }
 
     xhr.onerror = () => {
       clearTimeout(timer)
-      // status 0 / network often = CORS or blocked direct R2 PUT
       fail(new Error('Network error during file upload. Check R2 CORS allows this site origin for PUT.'))
     }
 
@@ -144,50 +162,56 @@ async function mapPool(items, concurrency, worker) {
   return results
 }
 
-async function uploadSinglePut(file, metadata, entryId, timeoutMs) {
+async function uploadSingleDirect(file, metadata, entryId, timeoutMs) {
   const storagePath = buildVideoStoragePath(metadata, file.name, entryId)
-  let lastUploadError = null
-  let uploadPath = null
+  const signed = await apiFetch('/uploads/generate-signed-url', {
+    method: 'POST',
+    body: JSON.stringify({
+      storagePath,
+      mimeType: file.type,
+      consignmentId: metadata.consignmentId,
+    }),
+  })
+  if (!signed.uploadUrl) throw new Error('Failed to obtain upload authorization from server.')
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const storagePathReq = await apiFetch('/uploads/generate-signed-url', {
-        method: 'POST',
-        body: JSON.stringify({
-          storagePath,
-          mimeType: file.type,
-          consignmentId: metadata.consignmentId,
-        }),
+  await putBlob(signed.uploadUrl, file, {
+    contentType: file.type,
+    timeoutMs,
+    onProgress: (loaded, total) => {
+      postMessage({
+        type: 'ITEM_PROGRESS',
+        payload: { id: entryId, progress: Math.round((loaded / total) * 100) },
       })
-      if (!storagePathReq.uploadUrl) {
-        throw new Error('Failed to obtain upload authorization from server.')
-      }
-      uploadPath = storagePathReq.storagePath || storagePath
-
-      await putBlob(storagePathReq.uploadUrl, file, {
-        contentType: file.type,
-        timeoutMs,
-        onProgress: (loaded, total) => {
-          const percent = Math.round((loaded / total) * 100)
-          postMessage({ type: 'ITEM_PROGRESS', payload: { id: entryId, progress: percent } })
-        },
-      })
-      lastUploadError = null
-      break
-    } catch (err) {
-      lastUploadError = err
-      uploadPath = null
-      const retryable = /network|timeout|status 5\d\d|authorization|cors/i.test(err.message || '')
-      if (!retryable || attempt === 2) break
-      await new Promise((r) => setTimeout(r, 600 * (attempt + 1)))
-    }
-  }
-
-  if (lastUploadError) throw lastUploadError
-  return uploadPath
+    },
+  })
+  return signed.storagePath || storagePath
 }
 
-async function uploadMultipart(file, metadata, entryId, timeoutMs) {
+async function uploadSingleProxy(file, metadata, entryId, timeoutMs) {
+  const storagePath = buildVideoStoragePath(metadata, file.name, entryId)
+  const qs = new URLSearchParams({
+    storagePath,
+    consignmentId: String(metadata.consignmentId),
+    mimeType: file.type || 'video/webm',
+    boxNo: String(metadata.boxNo || ''),
+  })
+  const url = `${config.apiUrl}/uploads/proxy-object?${qs.toString()}`
+  await putBlob(url, file, {
+    contentType: file.type || 'application/octet-stream',
+    auth: true,
+    timeoutMs,
+    expectJson: true,
+    onProgress: (loaded, total) => {
+      postMessage({
+        type: 'ITEM_PROGRESS',
+        payload: { id: entryId, progress: Math.round((loaded / total) * 100) },
+      })
+    },
+  })
+  return storagePath
+}
+
+async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProxy }) {
   const storagePath = buildVideoStoragePath(metadata, file.name, entryId)
   const created = await apiFetch('/uploads/multipart/create', {
     method: 'POST',
@@ -203,33 +227,35 @@ async function uploadMultipart(file, metadata, entryId, timeoutMs) {
 
   const partCount = Math.ceil(file.size / PART_SIZE)
   const partNumbers = Array.from({ length: partCount }, (_, i) => i + 1)
+  let urlByPart = new Map()
 
-  let signed
-  try {
-    signed = await apiFetch('/uploads/multipart/sign-parts', {
-      method: 'POST',
-      body: JSON.stringify({
-        storagePath: finalPath,
-        uploadId,
-        consignmentId: metadata.consignmentId,
-        partNumbers,
-      }),
-    })
-  } catch (err) {
+  if (!useProxy) {
     try {
-      await apiFetch('/uploads/multipart/abort', {
+      const signed = await apiFetch('/uploads/multipart/sign-parts', {
         method: 'POST',
         body: JSON.stringify({
           storagePath: finalPath,
           uploadId,
           consignmentId: metadata.consignmentId,
+          partNumbers,
         }),
       })
-    } catch { /* ignore */ }
-    throw err
+      urlByPart = new Map((signed.parts || []).map((p) => [Number(p.partNumber), p.uploadUrl]))
+    } catch (err) {
+      try {
+        await apiFetch('/uploads/multipart/abort', {
+          method: 'POST',
+          body: JSON.stringify({
+            storagePath: finalPath,
+            uploadId,
+            consignmentId: metadata.consignmentId,
+          }),
+        })
+      } catch { /* ignore */ }
+      throw err
+    }
   }
 
-  const urlByPart = new Map((signed.parts || []).map((p) => [Number(p.partNumber), p.uploadUrl]))
   const loadedByPart = new Array(partCount).fill(0)
   const reportProgress = () => {
     const loaded = loadedByPart.reduce((sum, n) => sum + n, 0)
@@ -239,8 +265,6 @@ async function uploadMultipart(file, metadata, entryId, timeoutMs) {
 
   try {
     const completed = await mapPool(partNumbers, PARALLEL_PARTS, async (partNumber) => {
-      const uploadUrl = urlByPart.get(partNumber)
-      if (!uploadUrl) throw new Error(`Missing signed URL for part ${partNumber}`)
       const start = (partNumber - 1) * PART_SIZE
       const end = Math.min(file.size, start + PART_SIZE)
       const blob = file.slice(start, end)
@@ -249,15 +273,39 @@ async function uploadMultipart(file, metadata, entryId, timeoutMs) {
       let lastErr = null
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const result = await putBlob(uploadUrl, blob, {
-            timeoutMs: partTimeout,
-            onProgress: (loaded) => {
-              loadedByPart[partNumber - 1] = loaded
-              reportProgress()
-            },
-          })
-          const etag = String(result.etag || '').replace(/"/g, '')
-          if (!etag) throw new Error(`Missing ETag for part ${partNumber} (R2 CORS must expose ETag)`)
+          let result
+          if (useProxy) {
+            const qs = new URLSearchParams({
+              storagePath: finalPath,
+              uploadId,
+              consignmentId: String(metadata.consignmentId),
+              partNumber: String(partNumber),
+            })
+            const url = `${config.apiUrl}/uploads/multipart/proxy-part?${qs.toString()}`
+            result = await putBlob(url, blob, {
+              contentType: 'application/octet-stream',
+              auth: true,
+              timeoutMs: partTimeout,
+              expectJson: true,
+              onProgress: (loaded) => {
+                loadedByPart[partNumber - 1] = loaded
+                reportProgress()
+              },
+            })
+          } else {
+            const uploadUrl = urlByPart.get(partNumber)
+            if (!uploadUrl) throw new Error(`Missing signed URL for part ${partNumber}`)
+            result = await putBlob(uploadUrl, blob, {
+              timeoutMs: partTimeout,
+              onProgress: (loaded) => {
+                loadedByPart[partNumber - 1] = loaded
+                reportProgress()
+              },
+            })
+          }
+
+          const etag = String(result.json?.etag || result.etag || '').replace(/"/g, '')
+          if (!etag) throw new Error(`Missing ETag for part ${partNumber}`)
           loadedByPart[partNumber - 1] = blob.size
           reportProgress()
           return { partNumber, etag }
@@ -298,6 +346,34 @@ async function uploadMultipart(file, metadata, entryId, timeoutMs) {
   }
 }
 
+async function uploadBytesToR2(file, metadata, entryId, timeoutMs) {
+  const useMultipart = file.size >= MULTIPART_THRESHOLD
+
+  if (preferProxyUpload) {
+    console.log(`[Worker] Using same-origin proxy upload for Box #${metadata.boxNo}`)
+    return useMultipart
+      ? uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProxy: true })
+      : uploadSingleProxy(file, metadata, entryId, timeoutMs)
+  }
+
+  try {
+    if (useMultipart) {
+      return await uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProxy: false })
+    }
+    return await uploadSingleDirect(file, metadata, entryId, timeoutMs)
+  } catch (err) {
+    if (!isCorsOrNetworkError(err)) {
+      // Multipart may fail for missing ETag expose — still try proxy.
+      if (!/etag|cors|network/i.test(err.message || '')) throw err
+    }
+    preferProxyUpload = true
+    console.warn('[Worker] Direct R2 PUT blocked — switching to same-origin proxy:', err.message)
+    return useMultipart
+      ? uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProxy: true })
+      : uploadSingleProxy(file, metadata, entryId, timeoutMs)
+  }
+}
+
 async function uploadOneVideo(entry) {
   const { blob, metadata } = entry
   const file = new File([blob], metadata.fileName, { type: metadata.mimeType || 'video/webm' })
@@ -307,19 +383,8 @@ async function uploadOneVideo(entry) {
   let uploadPath = entry.storagePath
 
   if (!uploadPath) {
-    console.log(`[Worker] Uploading Box #${metadata.boxNo} (${fileMb.toFixed(1)} MB) via ${file.size >= MULTIPART_THRESHOLD ? 'multipart' : 'single PUT'}`)
-    if (file.size >= MULTIPART_THRESHOLD) {
-      try {
-        uploadPath = await uploadMultipart(file, metadata, entry.id, timeoutMs)
-      } catch (err) {
-        // Missing ExposeHeaders ETag / CORS often breaks multipart — fall back to one PUT.
-        console.warn('[Worker] Multipart failed, falling back to single PUT:', err.message)
-        uploadPath = await uploadSinglePut(file, metadata, entry.id, timeoutMs)
-      }
-    } else {
-      uploadPath = await uploadSinglePut(file, metadata, entry.id, timeoutMs)
-    }
-
+    console.log(`[Worker] Uploading Box #${metadata.boxNo} (${fileMb.toFixed(1)} MB)`)
+    uploadPath = await uploadBytesToR2(file, metadata, entry.id, timeoutMs)
     await saveUploadedFileInfo(entry.id, 'r2://uploaded', uploadPath)
   }
 
@@ -387,7 +452,6 @@ async function processVideoQueue(opts = {}) {
         await resetFailedToPending()
       }
 
-      // Always clear short backoffs so Pending Sync drains promptly.
       await unlockOutstandingForImmediateRetry()
 
       const pending = await getPendingVideos()
@@ -413,7 +477,6 @@ async function processVideoQueue(opts = {}) {
           postMessage({ type: 'ITEM_ERROR', payload: { id: video.id, error: e.message, isFailed } })
           postMessage({ type: 'CURRENT_UPLOAD', payload: null })
           await notify()
-          // Do not sleep here — continue other videos; poller retries soon.
         }
       }
     } while (queuedProcessOpts)

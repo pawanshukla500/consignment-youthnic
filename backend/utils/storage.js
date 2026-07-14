@@ -249,6 +249,28 @@ async function uploadBuffer(buffer, storagePath, mimeType, metadata = {}) {
   };
 }
 
+/** Server-side UploadPart — used when browser cannot PUT directly to R2 (CORS). */
+async function uploadPartBuffer(storagePath, uploadId, partNumber, body) {
+  const { client, bucket } = requireR2();
+  const part = Number(partNumber);
+  if (!Number.isInteger(part) || part < 1 || part > 10000) {
+    throw new Error('Invalid multipart partNumber');
+  }
+  if (!body || !Buffer.isBuffer(body) && !(body instanceof Uint8Array)) {
+    throw new Error('Part body is required');
+  }
+  const result = await client.send(new UploadPartCommand({
+    Bucket: bucket,
+    Key: storagePath,
+    UploadId: uploadId,
+    PartNumber: part,
+    Body: Buffer.isBuffer(body) ? body : Buffer.from(body),
+  }));
+  const etag = String(result.ETag || '').replace(/"/g, '');
+  if (!etag) throw new Error('R2 UploadPart did not return an ETag');
+  return { partNumber: part, etag };
+}
+
 function isNotFoundStorageError(error) {
   const code = error?.name || error?.Code || error?.code || '';
   const status = error?.$metadata?.httpStatusCode;
@@ -479,6 +501,7 @@ module.exports = {
   generateSignedPartUrls,
   completeMultipartUpload,
   abortMultipartUpload,
+  uploadPartBuffer,
   bucketName,
   r2Configured,
 };

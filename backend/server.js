@@ -209,7 +209,12 @@ const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests. Please slow down.' },
-  skip: (req) => /^\/packing\//.test(req.path) || /^\/uploads\/stream\//.test(req.path),
+  skip: (req) => (
+    /^\/packing\//.test(req.path)
+    || /^\/uploads\/stream\//.test(req.path)
+    || /^\/uploads\/multipart\/proxy-part/.test(req.path)
+    || /^\/uploads\/proxy-object/.test(req.path)
+  ),
 });
 // High-throughput packing scans — up to ~20/sec per station (60–70/min per user with headroom)
 const packingScanLimiter = rateLimit({
@@ -383,6 +388,23 @@ app.listen(PORT, async () => {
       console.error('[Email] FATAL —', emailBootError.message);
       if (process.env.NODE_ENV === 'production') process.exit(1);
     }
+
+    // Browser packing videos need R2 CORS for signed PUT; refresh on every boot.
+    try {
+      const { ensureR2Cors } = require('./utils/r2Cors');
+      const corsResult = await ensureR2Cors();
+      if (corsResult.ok) {
+        console.log('[R2] CORS ready for origins:', (corsResult.origins || []).join(', '));
+      } else if (corsResult.skipped) {
+        console.warn('[R2] CORS skipped — R2 not configured');
+      } else {
+        console.error('[R2] CORS apply failed — browser PUTs may fail until fixed:', corsResult.error);
+        console.error('[R2] Fallback: client will use same-origin /api/uploads proxy endpoints');
+      }
+    } catch (corsError) {
+      console.error('[R2] CORS startup error:', corsError.message);
+    }
+
     const { adminUser, dbError, firebase } = await bootstrapDefaultAdmin();
     if (dbError) {
       console.warn('[Auth] Database bootstrap failed — Firebase admin sync still attempted.');
