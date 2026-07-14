@@ -272,7 +272,7 @@ jobs:
               echo "Health HTTP $CODE body:"
               cat /tmp/health.json
               DB_STATUS=$(jq -r '.database // "unknown"' /tmp/health.json)
-              if [ "$DB_STATUS" = "ok" ] || [ "$DB_STATUS" = "connected" ] || [ "$DB_STATUS" = "healthy" ]; then
+              if [ "$DB_STATUS" = "connected" ]; then
                 HEALTH_OK=1
                 break
               fi

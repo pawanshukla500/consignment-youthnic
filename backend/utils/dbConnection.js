@@ -143,6 +143,20 @@ function buildSslOptions() {
   return options;
 }
 
+function stripOrSetSslMode(connectionString, mode) {
+  try {
+    const parsed = new URL(connectionString);
+    parsed.searchParams.set('sslmode', mode);
+    // pg v8+ / pg-connection-string treats prefer/require as verify-full unless compat is on.
+    if (mode === 'disable') {
+      parsed.searchParams.delete('uselibpqcompat');
+    }
+    return parsed.toString();
+  } catch {
+    return connectionString;
+  }
+}
+
 function buildPoolConfig(connectionString) {
   const validation = validateDatabaseUrl(connectionString);
   if (!validation.valid) {
@@ -157,10 +171,15 @@ function buildPoolConfig(connectionString) {
     );
   }
 
+  // Important: even with ssl:undefined, a URL sslmode=prefer/require still triggers SSL in pg.
+  const resolvedUrl = useSsl
+    ? stripOrSetSslMode(connectionString, 'require')
+    : stripOrSetSslMode(connectionString, 'disable');
+
   const poolMax = parseInt(process.env.DB_POOL_MAX, 10) || 20;
 
   return {
-    connectionString,
+    connectionString: resolvedUrl,
     max: poolMax,
     min: 2,
     idleTimeoutMillis: 60000,
@@ -168,7 +187,7 @@ function buildPoolConfig(connectionString) {
     keepAlive: true,
     application_name: 'consignment-packing-api',
     statement_timeout: parseInt(process.env.DB_STATEMENT_TIMEOUT_MS, 10) || 60000,
-    ssl: useSsl ? buildSslOptions() : undefined,
+    ssl: useSsl ? buildSslOptions() : false,
   };
 }
 
