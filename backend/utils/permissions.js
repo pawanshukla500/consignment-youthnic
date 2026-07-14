@@ -17,28 +17,25 @@ const BASE_PERMISSIONS = {
   [EDIT_BOX_QUANTITIES]: false,
 };
 
+/** Admin and Organization Head have full operational access by default. */
+function isElevatedRole(role) {
+  return role === 'admin' || role === 'organization_head';
+}
+
 function normalizePermissions(role = 'user', permissions = {}) {
   const normalized = {
     ...BASE_PERMISSIONS,
     ...(permissions || {}),
   };
 
-  // Organization Head = email digest recipients only (Tue/Fri). Never inherit
-  // packer defaults or admin-like module grants from BASE_PERMISSIONS / legacy rows.
-  if (role === 'organization_head') {
-    Object.keys(normalized).forEach((key) => {
-      normalized[key] = false;
-    });
-    return normalized;
-  }
-
-  if (role !== 'admin' && role !== 'organization_head') {
+  if (!isElevatedRole(role)) {
     normalized[DELETE_CONSIGNMENTS] = permissions?.[DELETE_CONSIGNMENTS] === true;
     normalized[DELETE_VIDEOS] = permissions?.[DELETE_VIDEOS] === true;
     normalized[EDIT_BOX_QUANTITIES] = permissions?.[EDIT_BOX_QUANTITIES] === true;
   }
 
-  if (role === 'admin') {
+  // Admin + Organization Head: full access to every module / sensitive action.
+  if (isElevatedRole(role)) {
     Object.keys(normalized).forEach((key) => {
       normalized[key] = true;
     });
@@ -49,13 +46,13 @@ function normalizePermissions(role = 'user', permissions = {}) {
 
 function hasPermission(user, permissionKey) {
   if (!user) return false;
-  if (user.role === 'admin') return true;
+  if (isElevatedRole(user.role)) return true;
   return user.permissions?.[permissionKey] === true;
 }
 
 async function getUserForPermissionCheck(reqUser) {
   if (!reqUser) return null;
-  if (reqUser.role === 'admin' || reqUser.id === DEFAULT_USER.id) return reqUser;
+  if (isElevatedRole(reqUser.role) || reqUser.id === DEFAULT_USER.id) return reqUser;
 
   const direct = await firestoreHelpers.getDocument('users', reqUser.id);
   if (direct) return { ...reqUser, ...direct };
@@ -82,7 +79,7 @@ async function requestUserHasPermission(req, permissionKey) {
 async function requestUserHasAnyPermission(req, permissionKeys = []) {
   const user = await getUserForPermissionCheck(req.user);
   if (!user) return false;
-  if (user.role === 'admin') return true;
+  if (isElevatedRole(user.role)) return true;
   return permissionKeys.some((key) => hasPermission(user, key));
 }
 
@@ -143,6 +140,7 @@ module.exports = {
   DELETE_CONSIGNMENTS,
   DELETE_VIDEOS,
   EDIT_BOX_QUANTITIES,
+  isElevatedRole,
   normalizePermissions,
   hasPermission,
   requestUserHasPermission,

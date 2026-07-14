@@ -124,8 +124,9 @@ const requireRole = (...roles) => {
       }
 
       const role = fresh?.role || req.user.role;
-      if (role === 'admin') {
-        req.user = { ...req.user, ...fresh, role: 'admin' };
+      // Admin + Organization Head bypass role gates (full operational access).
+      if (role === 'admin' || role === 'organization_head') {
+        req.user = { ...req.user, ...fresh, role };
         return next();
       }
 

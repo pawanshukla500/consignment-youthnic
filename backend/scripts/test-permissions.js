@@ -6,6 +6,7 @@ const assert = require('assert');
 const {
   hasPermission,
   normalizePermissions,
+  isElevatedRole,
   DELETE_CONSIGNMENTS,
   DELETE_VIDEOS,
 } = require('../utils/permissions');
@@ -29,16 +30,26 @@ assert.strictEqual(sneaky[DELETE_VIDEOS], true);
 const denied = normalizePermissions('user', {});
 assert.strictEqual(denied[DELETE_CONSIGNMENTS], false);
 
+assert.strictEqual(isElevatedRole('admin'), true);
+assert.strictEqual(isElevatedRole('organization_head'), true);
+assert.strictEqual(isElevatedRole('user'), false);
+
+// Organization Head = full access by default (same operational surface as admin).
 const orgHead = normalizePermissions('organization_head', {
-  consignments: true,
-  packing: true,
-  users: true,
-  deleteConsignments: true,
+  consignments: false,
+  packing: false,
+  users: false,
+  deleteConsignments: false,
 });
-assert.strictEqual(orgHead.consignments, false);
-assert.strictEqual(orgHead.packing, false);
-assert.strictEqual(orgHead.users, false);
-assert.strictEqual(orgHead[DELETE_CONSIGNMENTS], false);
-assert.strictEqual(hasPermission({ role: 'organization_head', permissions: orgHead }, 'consignments'), false);
+assert.strictEqual(orgHead.consignments, true);
+assert.strictEqual(orgHead.packing, true);
+assert.strictEqual(orgHead.users, true);
+assert.strictEqual(orgHead.productivity, true);
+assert.strictEqual(orgHead.marketplaces, true);
+assert.strictEqual(orgHead.auditLogs, true);
+assert.strictEqual(orgHead[DELETE_CONSIGNMENTS], true);
+assert.strictEqual(orgHead[DELETE_VIDEOS], true);
+assert.strictEqual(hasPermission({ role: 'organization_head', permissions: orgHead }, 'consignments'), true);
+assert.strictEqual(hasPermission({ role: 'organization_head', permissions: {} }, 'users'), true);
 
 console.log('H1 permission helper tests passed.');

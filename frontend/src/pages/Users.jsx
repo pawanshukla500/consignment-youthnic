@@ -37,16 +37,16 @@ const DEFAULT_PERMISSIONS = {
   editBoxQuantities: false,
 }
 
-const EMAIL_ONLY_PERMISSIONS = {
-  consignments: false,
-  packing: false,
-  productivity: false,
-  marketplaces: false,
-  users: false,
-  auditLogs: false,
-  deleteConsignments: false,
-  deleteVideos: false,
-  editBoxQuantities: false,
+const FULL_ACCESS_PERMISSIONS = {
+  consignments: true,
+  packing: true,
+  productivity: true,
+  marketplaces: true,
+  users: true,
+  auditLogs: true,
+  deleteConsignments: true,
+  deleteVideos: true,
+  editBoxQuantities: true,
 }
 
 const emptyForm = () => ({
@@ -58,11 +58,8 @@ const emptyForm = () => ({
 })
 
 const permissionsForRole = (role, current = {}) => {
-  if (role === 'admin') {
-    return Object.fromEntries(ALL_PERMISSIONS.map((p) => [p.key, true]))
-  }
-  if (role === 'organization_head') {
-    return { ...EMAIL_ONLY_PERMISSIONS }
+  if (role === 'admin' || role === 'organization_head') {
+    return { ...FULL_ACCESS_PERMISSIONS }
   }
   return { ...DEFAULT_PERMISSIONS, ...current }
 }
@@ -399,19 +396,19 @@ export default function Users() {
                             disabled={isSubmitting || editForm.role === 'admin' || editForm.role === 'organization_head'}
                           />
                           {editForm.role === 'organization_head' && (
-                            <p className="text-[10px] text-slate-500">Email reports only — module access is locked off.</p>
+                            <p className="text-[10px] text-slate-500">Organization Heads have full access by default (same as Admin).</p>
                           )}
                         </div>
                       ) : (
                         <div className="flex flex-wrap gap-1">
-                          {ALL_PERMISSIONS.filter((p) => u.role === 'admin' || u.permissions?.[p.key]).map((p) => (
+                          {ALL_PERMISSIONS.filter((p) => u.role === 'admin' || u.role === 'organization_head' || u.permissions?.[p.key]).map((p) => (
                             <span key={p.key} className={`text-[9px] font-medium px-1.5 py-px rounded ${
-                              p.key.startsWith('delete') ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600'
+                              p.key.startsWith('delete') || p.key === 'editBoxQuantities' ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-600'
                             }`}>
                               {p.label}
                             </span>
                           ))}
-                          {u.role !== 'admin' && !ALL_PERMISSIONS.some((p) => u.permissions?.[p.key]) && (
+                          {u.role !== 'admin' && u.role !== 'organization_head' && !ALL_PERMISSIONS.some((p) => u.permissions?.[p.key]) && (
                             <span className="text-[10px] text-slate-400">None</span>
                           )}
                         </div>
@@ -557,7 +554,7 @@ export default function Users() {
                 className="inp py-1.5 text-xs"
               >
                 <option value="user">User — module access only</option>
-                <option value="organization_head">Organization Head — email reports only (Tue & Fri)</option>
+                <option value="organization_head">Organization Head — full access + Tue/Fri emails</option>
                 <option value="admin">Admin — full access</option>
               </select>
             </div>
@@ -575,7 +572,7 @@ export default function Users() {
             )}
             {form.role === 'organization_head' && (
               <p className="text-[10px] text-slate-500 mt-2">
-                Organization Heads receive Tuesday & Friday email summaries only. Module access stays locked off.
+                Organization Heads have full app access by default, plus Tuesday & Friday email summaries.
               </p>
             )}
           </div>
@@ -588,7 +585,7 @@ export default function Users() {
               disabled={isSubmitting || form.role === 'admin' || form.role === 'organization_head'}
             />
             {form.role === 'organization_head' && (
-              <p className="text-[10px] text-slate-500 mt-2">Deletion is locked off for Organization Heads.</p>
+              <p className="text-[10px] text-slate-500 mt-2">Deletion and box-edit rights are included for Organization Heads.</p>
             )}
             {form.role !== 'admin' && form.role !== 'organization_head' && (
               <p className="text-[10px] text-slate-500 mt-2">These are off by default for non-admin users.</p>

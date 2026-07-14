@@ -332,9 +332,9 @@ const ConsignmentDetail = () => {
   const navigate = useNavigate();
   const { addToast } = useToast();
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
-  const canDeleteVideos = user?.role === 'admin' || user?.permissions?.deleteVideos === true;
-  const canEditBoxQuantities = user?.role === 'admin' || user?.permissions?.editBoxQuantities === true;
+  const isAdmin = user?.role === 'admin' || user?.role === 'organization_head';
+  const canDeleteVideos = user?.role === 'admin' || user?.role === 'organization_head' || user?.permissions?.deleteVideos === true;
+  const canEditBoxQuantities = user?.role === 'admin' || user?.role === 'organization_head' || user?.permissions?.editBoxQuantities === true;
   const { pendingChanges } = useConsignmentSync();
   const [searchParams, setSearchParams] = useSearchParams();
   const [uploading, setUploading] = useState(false);
@@ -1090,7 +1090,7 @@ const ConsignmentDetail = () => {
                   Pending official consignment ID
                 </span>
               )}
-              {(consignment.pendingExternalId || user?.role === 'admin') && (
+              {(consignment.pendingExternalId || user?.role === 'admin' || user?.role === 'organization_head') && (
                 <button
                   type="button"
                   onClick={() => { setShowReassignId(true); setNewConsignmentId(''); }}
