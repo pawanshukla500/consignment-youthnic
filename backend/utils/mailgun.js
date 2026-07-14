@@ -11,7 +11,7 @@ const { getLogoFilePath, LOGO_CID } = require('./emailTemplates');
 const API_KEY = () => process.env.MAILGUN_API_KEY || '';
 const DOMAIN = () => process.env.MAILGUN_DOMAIN || '';
 const FROM_EMAIL = () => process.env.MAIL_FROM_EMAIL || 'consignment@youthnic.shop';
-const FROM_NAME = () => process.env.MAIL_FROM_NAME || 'Youthnic Packing Station';
+const FROM_NAME = () => process.env.MAIL_FROM_NAME || 'Consignment App';
 
 let mgClient = null;
 
