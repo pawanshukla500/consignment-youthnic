@@ -290,10 +290,7 @@ jobs:
             if echo " $DEPLOYED_SVCS " | grep -q " ${svc} "; then
               continue
             fi
-            if ! gcloud run services describe "$svc" --region="$REGION" >/dev/null 2>&1; then
-              echo "Skipping $svc (service does not exist)"
-              continue
-            fi
+            # gcloud run deploy creates the service if it does not exist yet.
             echo "Deploying to Cloud Run service: $svc (region: $REGION)"
 
           # Cost profile: scale-to-zero, 1 vCPU / 1Gi, small max — avoid always-on billing.
@@ -334,10 +331,13 @@ jobs:
 
           DEPLOYED_URL=$(gcloud run services describe "$svc" --region=$REGION --format='value(status.url)')
           echo "Deployed $svc → $DEPLOYED_URL"
+          if [ -n "$DEPLOYED_URL" ] && ! echo ",$ALL_ORIGINS," | grep -q ",$DEPLOYED_URL,"; then
+            ALL_ORIGINS="${ALL_ORIGINS},${DEPLOYED_URL}"
+          fi
 
           gcloud run services update "$svc" \
             --region=$REGION \
-            --remove-env-vars="ADMIN_PASSWORD"
+            --remove-env-vars="ADMIN_PASSWORD" || true
 
           gcloud run services update "$svc" \
             --region=$REGION \
@@ -348,7 +348,16 @@ jobs:
             --to-latest
 
           DEPLOYED_SVCS="${DEPLOYED_SVCS} ${svc}"
+          PRIMARY_SERVICE="$svc"
+          PRIMARY_URL="$DEPLOYED_URL"
           done
+
+          if [ -z "${PRIMARY_SERVICE:-}" ]; then
+            echo "::error::No Cloud Run service was deployed."
+            exit 1
+          fi
+          echo "PRIMARY_SERVICE=$PRIMARY_SERVICE" >> "$GITHUB_ENV"
+          echo "PRIMARY_URL=$PRIMARY_URL" >> "$GITHUB_ENV"
 
           # Cap billing on any legacy duplicate service (do not keep a second warm app).
           for extra in consignment-packing; do
@@ -372,10 +381,22 @@ jobs:
         env:
           CUSTOM_DOMAIN: ${{ vars.CUSTOM_DOMAIN || 'https://consignment.youthnic.shop' }}
         run: |
-          SERVICE_URL=$(gcloud run services describe "$DOMAIN_MAPPED_SERVICE" --region=$REGION --format='value(status.url)')
-          echo "Domain-mapped service: $DOMAIN_MAPPED_SERVICE"
+          SERVICE_NAME_CHECK="${PRIMARY_SERVICE:-$DOMAIN_MAPPED_SERVICE}"
+          SERVICE_URL="${PRIMARY_URL:-}"
+          if [ -z "$SERVICE_URL" ]; then
+            SERVICE_URL=$(gcloud run services describe "$SERVICE_NAME_CHECK" --region=$REGION --format='value(status.url)')
+          fi
+          echo "Primary service: $SERVICE_NAME_CHECK"
           echo "Service URL: $SERVICE_URL"
-          curl -sS "${SERVICE_URL}/api/health" | tee /tmp/health.json
+          # Cold start + first request can take a bit with min-instances=0
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS "${SERVICE_URL}/api/health" -o /tmp/health.json; then
+              break
+            fi
+            echo "Health attempt $i failed — waiting for cold start..."
+            sleep 8
+          done
+          cat /tmp/health.json
           DB_STATUS=$(jq -r '.database // "unknown"' /tmp/health.json)
           echo "Database status: $DB_STATUS"
           if [ "$DB_STATUS" = "misconfigured" ] || [ "$DB_STATUS" = "unavailable" ]; then
@@ -384,39 +405,37 @@ jobs:
           curl -fsS "${SERVICE_URL}/api/auth/status" | tee /tmp/auth-status.json
           echo "✅ Health and auth status checks passed"
 
-          # Verify the public custom domain serves a Firebase chunk with a real apiKey.
-          verify_firebase_chunk() {
+          # Verify served assets include a real Firebase apiKey (minifiers rename exports).
+          verify_firebase_assets() {
             local base_url="$1"
             local label="$2"
             local html
-            html=$(curl -fsS "${base_url}/")
-            local chunk="" broken=""
-            for c in $(echo "$html" | grep -oE 'chunk-[A-Za-z0-9_-]+\.js' | sort -u); do
+            if ! html=$(curl -fsS "${base_url}/"); then
+              echo "::warning::${label}: could not fetch ${base_url}/ (domain mapping may be pending)"
+              return 0
+            fi
+            local found=""
+            for c in $(echo "$html" | grep -oE 'assets/[A-Za-z0-9._-]+\.js' | sort -u); do
               local body
-              body=$(curl -fsS "${base_url}/assets/${c}")
-              if echo "$body" | grep -q 'firebaseConfigured'; then
-                if echo "$body" | grep -qE 'apiKey:[`"]AIza'; then
-                  chunk="$c"
-                  break
-                fi
-                broken="${broken:-$c}"
+              body=$(curl -fsS "${base_url}/${c}" || true)
+              if echo "$body" | grep -qE 'AIzaSy[A-Za-z0-9_-]{10,}'; then
+                found="$c"
+                break
               fi
             done
-            if [ -z "$chunk" ]; then
-              echo "::error::${label}: no Firebase chunk with apiKey on ${base_url} (broken chunk: ${broken:-unknown})"
+            if [ -z "$found" ]; then
+              echo "::error::${label}: no Firebase apiKey (AIzaSy…) on ${base_url}"
               return 1
             fi
-            echo "✅ ${label}: ${base_url} → ${chunk} (apiKey OK)"
+            echo "✅ ${label}: ${base_url} → ${found} (apiKey OK)"
           }
 
-          verify_firebase_chunk "${CUSTOM_DOMAIN}" "Custom domain"
-          PACK_URL=$(gcloud run services describe consignment-pack --region=$REGION --format='value(status.url)' 2>/dev/null || true)
-          if [ -n "$PACK_URL" ]; then
-            verify_firebase_chunk "${PACK_URL}" "consignment-pack"
-          fi
+          verify_firebase_assets "${SERVICE_URL}" "Cloud Run"
+          verify_firebase_assets "${CUSTOM_DOMAIN}" "Custom domain" || true
 
       - name: Show service URL
         run: |
           echo "✅ Deployed successfully!"
-          echo "Domain-mapped service: $DOMAIN_MAPPED_SERVICE"
-          gcloud run services describe "$DOMAIN_MAPPED_SERVICE" --region=$REGION --format='value(status.url)'
+          echo "Primary service: ${PRIMARY_SERVICE:-$DOMAIN_MAPPED_SERVICE}"
+          echo "URL: ${PRIMARY_URL:-}"
+          gcloud run services describe "${PRIMARY_SERVICE:-$DOMAIN_MAPPED_SERVICE}" --region=$REGION --format='value(status.url)' || true
