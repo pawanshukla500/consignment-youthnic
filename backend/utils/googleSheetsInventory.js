@@ -449,6 +449,8 @@ function scoreParsedInventory(parsed) {
   if (!parsed?.rows?.length) return -1;
   const positive = Number(parsed.meta?.positiveQtyCount || 0);
   const rows = Number(parsed.meta?.rowCount || 0);
+  // Never prefer a tab of all zeros/blanks over a tab that actually has stock.
+  if (positive <= 0) return rows > 0 ? 1 : -1;
   return positive * 1000 + rows;
 }
 
@@ -494,11 +496,15 @@ async function listSpreadsheetTabs(sheets, spreadsheetId) {
   };
 }
 
-async function readSheetValues(sheets, spreadsheetId, sheetName) {
+async function readSheetValues(sheets, spreadsheetId, sheetName, { previewRows = null } = {}) {
   const escaped = escapeSheetName(sheetName);
+  // Only A:C — AutoFetch can have dozens of date columns; full-sheet reads time out on Cloud Run.
+  const range = previewRows
+    ? `'${escaped}'!A1:C${Math.max(20, previewRows)}`
+    : `'${escaped}'!A:C`;
   const read = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `'${escaped}'`,
+    range,
     majorDimension: 'ROWS',
     valueRenderOption: 'UNFORMATTED_VALUE',
     dateTimeRenderOption: 'FORMATTED_STRING',
@@ -538,6 +544,7 @@ async function probeSheetAccess(spreadsheetId, sheetName = 'AutoFetch') {
 
     let best = null;
     const tried = [];
+    // Read A:C only (not every date column) so 10k-row tabs stay fast on Cloud Run.
     for (const title of candidates.slice(0, 8)) {
       try {
         const values = await readSheetValues(sheets, spreadsheetId, title);
@@ -570,10 +577,25 @@ async function probeSheetAccess(spreadsheetId, sheetName = 'AutoFetch') {
     if (!best || best.score < 0) {
       return {
         ok: false,
-        error: `Could not read inventory from tabs: ${candidates.join(', ')}`,
+        error: `Could not read inventory from tabs: ${candidates.join(', ')}. Available: ${availableTabs.join(', ') || '(none)'}`,
         connection: creds,
         spreadsheetTitle,
         availableTabs,
+        tried,
+      };
+    }
+
+    if ((best.positiveQtyCount || 0) <= 0) {
+      return {
+        ok: false,
+        error:
+          `Connected to "${spreadsheetTitle || spreadsheetId}" but Column C has no positive stock on tabs tried (${tried.map((t) => t.sheetName).filter(Boolean).join(', ') || 'none'}). ` +
+          'Open the workbook tab where EJ1201-16001 = 955 (sku_code + Inventory columns) and set that tab name in Inventory Planning → Admin Settings, then Sync again.',
+        connection: creds,
+        spreadsheetTitle,
+        availableTabs,
+        sheetName: best.sheetName,
+        sampleRows: best.sampleRows || [],
         tried,
       };
     }
