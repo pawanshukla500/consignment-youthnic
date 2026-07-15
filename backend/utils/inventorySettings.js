@@ -184,14 +184,44 @@ async function saveInventorySettings(patch, userId = 'system') {
 }
 
 function getConnectionStatus() {
+  const hasSheetsJson = Boolean(
+    process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON ||
+    process.env.GOOGLE_SHEETS_CREDENTIALS_JSON
+  );
+  const hasAdcPath = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  let sheetsJsonValid = null;
+  let sheetsClientEmail = null;
+  if (hasSheetsJson) {
+    try {
+      const { parseServiceAccount } = require('./googleSheetsInventory');
+      const sa = parseServiceAccount();
+      sheetsJsonValid = Boolean(sa?.client_email && sa?.private_key);
+      sheetsClientEmail = sa?.client_email || null;
+    } catch (err) {
+      sheetsJsonValid = false;
+      sheetsClientEmail = null;
+    }
+  }
+
+  let mailgunConfigured = false;
+  try {
+    mailgunConfigured = require('./mailgun').isMailgunConfigured();
+  } catch (_) { /* ignore */ }
+
   return {
-    googleSheetsConfigured: Boolean(
-      process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON ||
-      process.env.GOOGLE_SHEETS_CREDENTIALS_JSON ||
-      process.env.GOOGLE_APPLICATION_CREDENTIALS
-    ),
+    googleSheetsConfigured: hasSheetsJson || hasAdcPath,
+    googleSheetsJsonPresent: hasSheetsJson,
+    googleSheetsJsonValid: sheetsJsonValid,
+    googleSheetsClientEmail: sheetsClientEmail,
+    googleApplicationCredentialsSet: hasAdcPath,
     sheetIdFromEnv: process.env.INVENTORY_GOOGLE_SHEET_ID || null,
     inventorySource: 'google_sheet_column_c',
+    mailgunConfigured,
+    hint: !(hasSheetsJson || hasAdcPath)
+      ? 'GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is missing on the Cloud Run service. Add the GitHub secret and redeploy so it syncs to GCP Secret Manager and mounts on Cloud Run.'
+      : (sheetsJsonValid === false
+        ? 'GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is present but invalid JSON / missing client_email or private_key.'
+        : null),
   };
 }
 

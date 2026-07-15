@@ -86,31 +86,46 @@ router.post(
       if (isSyncRunning()) {
         return res.status(409).json({ error: 'An inventory sync is already running' });
       }
-      // Respond quickly — sync continues; client can poll status
+      const connection = getConnectionStatus();
+      if (!connection.googleSheetsConfigured) {
+        return res.status(503).json({
+          error: connection.hint || 'Google Sheets is not configured on the server',
+          connection,
+        });
+      }
+      if (connection.googleSheetsJsonValid === false) {
+        return res.status(503).json({
+          error: connection.hint || 'Google Sheets service account JSON is invalid',
+          connection,
+        });
+      }
       const userId = req.user.id;
       setImmediate(() => {
         runInventorySync({ triggerType: 'manual', triggeredBy: userId })
           .then(async (result) => {
             if (result.ok) {
               try {
-                const { sendInventoryPlanningNotification } = require('../utils/inventoryNotify');
                 const report = await buildInventoryPlanningReport({
                   triggerReason: 'sync_shortage',
                   persist: true,
                 });
+                // Auto-email production when sync completes (shortage or forced daily-like alert when material)
                 await sendInventoryPlanningNotification({
                   triggerReason: 'sync_shortage',
                   report,
+                  force: (report.summary?.totalShortageQty || 0) > 0,
                 });
               } catch (err) {
                 console.warn('[InventoryPlanning] post-sync notify failed:', err.message);
               }
+            } else {
+              console.warn('[InventoryPlanning] sync failed:', result.error || result.reason);
             }
           })
           .catch((err) => console.warn('[InventoryPlanning] sync failed:', err.message));
       });
       await addAuditLog('inventory_sync_manual', 'inventory_sync', 'manual', userId, {});
-      res.json({ ok: true, started: true, message: 'Google Sheet inventory sync started' });
+      res.json({ ok: true, started: true, message: 'Google Sheet inventory sync started', connection });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }

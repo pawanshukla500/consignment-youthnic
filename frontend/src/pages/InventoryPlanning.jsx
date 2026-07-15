@@ -300,11 +300,24 @@ export default function InventoryPlanning() {
           <span className="font-semibold text-slate-800">Available:</span> {summary.totalAvailableInventory ?? 0}
         </div>
         {syncStatus?.connection && (
-          <div className="flex items-center gap-3">
-            {syncStatus.connection.googleSheetsConfigured
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+            {syncStatus.connection.googleSheetsConfigured && syncStatus.connection.googleSheetsJsonValid !== false
               ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Google Sheets connected</span>
               : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> Google Sheets not configured</span>}
-            <span className="text-slate-500">Inventory source: manual paste into AutoFetch</span>
+            {syncStatus.connection.mailgunConfigured
+              ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Mailgun ready (auto email)</span>
+              : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> Mailgun not configured</span>}
+            <span className="text-slate-500">Inventory source: Google Sheet Column C (AutoFetch)</span>
+          </div>
+        )}
+        {(syncStatus?.lastSyncError || syncStatus?.connection?.hint) && (
+          <div className="basis-full w-full rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            {syncStatus?.lastSyncError || syncStatus?.connection?.hint}
+            {syncStatus?.connection?.googleSheetsClientEmail && (
+              <div className="mt-1 text-xs text-amber-800">
+                Service account: {syncStatus.connection.googleSheetsClientEmail} — share the sheet with this email (Editor).
+              </div>
+            )}
           </div>
         )}
       </div>
