@@ -424,6 +424,9 @@ const {
     subject: 'Daily Inventory Planning Report',
   });
   assert.ok(html.includes(`cid:${LOGO_CID}`), 'email must inline logo via CID');
+  assert.ok(html.includes('rgba(255,255,255,0.10)'), 'logo must use frosted website-style shell');
+  assert.ok(html.includes('linear-gradient(160deg,#370617'), 'header must use website brand gradient');
+  assert.ok(html.includes('#E11D48'), 'CTA must use website primary rose');
   assert.ok(html.includes('Consignment App'), 'email must use branded shell');
   assert.ok(html.includes('Excel'), 'email must point to Excel attachment');
   assert.ok(!html.includes('SKD21-KAASHI-WINE_L'), 'SKU codes must not appear in HTML body');
@@ -431,6 +434,8 @@ const {
   assert.ok(!html.includes('Produce 52 units immediately'), 'SKU action text must not appear in HTML body');
   assert.ok(!text.includes('SKD21-KAASHI-WINE_L'), 'SKU codes must not appear in text body');
   assert.ok(html.includes('1217') && html.includes('18'), 'summary counts remain in body');
+  const { getLogoFilePath } = require('../utils/emailTemplates');
+  assert.ok(getLogoFilePath(), 'email logo PNG must exist for Mailgun CID inline');
 }
 
 console.log('Inventory planning tests passed.');
