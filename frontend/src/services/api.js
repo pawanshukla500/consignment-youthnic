@@ -207,7 +207,8 @@ export const emailAPI = {
 export const inventoryPlanningAPI = {
   getReport: (refresh = false) => api.get('/inventory-planning/report', { params: refresh ? { refresh: 1 } : {} }),
   getSyncStatus: () => api.get('/inventory-planning/sync/status'),
-  syncNow: () => api.post('/inventory-planning/sync'),
+  testConnection: () => api.get('/inventory-planning/connection-test'),
+  syncNow: () => api.post('/inventory-planning/sync', {}, { timeout: 180000 }),
   getSettings: () => api.get('/inventory-planning/settings'),
   updateSettings: (data) => api.put('/inventory-planning/settings', data),
   downloadExcel: () => api.get('/inventory-planning/export.xlsx', { responseType: 'blob' }),

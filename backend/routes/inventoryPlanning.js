@@ -13,6 +13,13 @@ const { runInventorySync, isSyncRunning, getLatestSyncRun, getSyncSkuLogs } = re
 const { buildInventoryPlanningReport, getDashboardReport } = require('../utils/inventoryReportBuilder');
 const { buildInventoryPlanningWorkbook } = require('../utils/inventoryPlanningExcel');
 const { sendInventoryPlanningNotification } = require('../utils/inventoryNotify');
+const { probeSheetAccess } = require('../utils/googleSheetsInventory');
+
+function isStaleCredentialsError(message) {
+  return /credentials are not configured|google sheets is not configured|not mounted/i.test(
+    String(message || '')
+  );
+}
 
 // Dashboard report (production / inventory teams with permission)
 router.get(
@@ -37,11 +44,24 @@ router.get(
   requireAnyPermission(['inventoryPlanning', 'consignments', 'productivity'], 'view inventory sync'),
   async (req, res) => {
     try {
-      const settings = await getInventorySettings();
+      let settings = await getInventorySettings();
       const latest = await getLatestSyncRun();
+      const connection = getConnectionStatus();
+
+      // Credentials are ready now but DB still stores an old "not configured" failure —
+      // clear it so the UI stops contradicting the green "connected" badge.
+      if (connection.googleSheetsConfigured && isStaleCredentialsError(settings.lastSyncError)) {
+        settings = await saveInventorySettings({
+          lastSyncError: null,
+          lastSyncStatus: settings.lastSuccessfulSyncAt
+            ? 'completed'
+            : (settings.lastSyncStatus === 'failed' ? null : settings.lastSyncStatus),
+        }, 'system').catch(() => settings);
+      }
+
       res.json({
         running: isSyncRunning(),
-        connection: getConnectionStatus(),
+        connection,
         lastSuccessfulSyncAt: settings.lastSuccessfulSyncAt,
         lastSyncStatus: settings.lastSyncStatus,
         lastSyncError: settings.lastSyncError,
@@ -49,6 +69,30 @@ router.get(
       });
     } catch (error) {
       res.status(500).json({ error: error.message });
+    }
+  }
+);
+
+router.get(
+  '/connection-test',
+  authenticateToken,
+  requireAnyPermission(['inventoryPlanning'], 'test inventory sheet connection'),
+  async (req, res) => {
+    try {
+      const settings = await getInventorySettings();
+      const connection = getConnectionStatus();
+      const probe = await probeSheetAccess(
+        settings.googleSheetId,
+        settings.googleSheetName || 'AutoFetch'
+      );
+      res.status(probe.ok ? 200 : 503).json({
+        ...probe,
+        connection,
+        googleSheetId: settings.googleSheetId,
+        googleSheetName: settings.googleSheetName || 'AutoFetch',
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message, connection: getConnectionStatus() });
     }
   }
 );
@@ -75,35 +119,69 @@ router.post(
           connection,
         });
       }
+
+      const settings = await getInventorySettings();
+      const probe = await probeSheetAccess(
+        settings.googleSheetId,
+        settings.googleSheetName || 'AutoFetch'
+      );
+      if (!probe.ok) {
+        return res.status(503).json({
+          error: probe.error || 'Google Sheets access probe failed',
+          connection,
+          probe,
+        });
+      }
+
       const userId = req.user.id;
-      setImmediate(() => {
-        runInventorySync({ triggerType: 'manual', triggeredBy: userId })
-          .then(async (result) => {
-            if (result.ok) {
-              try {
-                const report = await buildInventoryPlanningReport({
-                  triggerReason: 'sync_shortage',
-                  persist: true,
-                });
-                // Auto-email production when sync completes (shortage or forced daily-like alert when material)
-                await sendInventoryPlanningNotification({
-                  triggerReason: 'sync_shortage',
-                  report,
-                  force: (report.summary?.totalShortageQty || 0) > 0,
-                });
-              } catch (err) {
-                console.warn('[InventoryPlanning] post-sync notify failed:', err.message);
-              }
-            } else {
-              console.warn('[InventoryPlanning] sync failed:', result.error || result.reason);
-            }
-          })
-          .catch((err) => console.warn('[InventoryPlanning] sync failed:', err.message));
+      // Await sync so the UI gets the real Sheet/API error instead of a stale "started" response.
+      const result = await runInventorySync({ triggerType: 'manual', triggeredBy: userId });
+      await addAuditLog('inventory_sync_manual', 'inventory_sync', result.runId || 'manual', userId, {
+        ok: result.ok,
+        error: result.error || null,
       });
-      await addAuditLog('inventory_sync_manual', 'inventory_sync', 'manual', userId, {});
-      res.json({ ok: true, started: true, message: 'Google Sheet inventory sync started', connection });
+
+      if (!result.ok) {
+        return res.status(500).json({
+          ok: false,
+          error: result.error || result.reason || 'Inventory sync failed',
+          connection,
+          probe,
+          result,
+        });
+      }
+
+      // Build report + optional email after successful sync (non-blocking for email)
+      let report = null;
+      try {
+        report = await buildInventoryPlanningReport({
+          triggerReason: 'sync_shortage',
+          persist: true,
+        });
+        setImmediate(() => {
+          sendInventoryPlanningNotification({
+            triggerReason: 'sync_shortage',
+            report,
+            force: (report.summary?.totalShortageQty || 0) > 0,
+          }).catch((err) => console.warn('[InventoryPlanning] post-sync notify failed:', err.message));
+        });
+      } catch (err) {
+        console.warn('[InventoryPlanning] post-sync report failed:', err.message);
+      }
+
+      res.json({
+        ok: true,
+        started: false,
+        completed: true,
+        message: 'Google Sheet inventory sync completed',
+        connection,
+        probe,
+        result,
+        summary: report?.summary || null,
+      });
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      console.error('[InventoryPlanning] sync failed:', error.message);
+      res.status(500).json({ error: error.message, connection: getConnectionStatus() });
     }
   }
 );

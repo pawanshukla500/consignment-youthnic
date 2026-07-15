@@ -129,27 +129,29 @@ export default function InventoryPlanning() {
   const handleSync = async () => {
     setSyncing(true)
     try {
-      await inventoryPlanningAPI.syncNow()
-      addToast('Syncing from Google Sheet Column C…', 'success')
-      // Poll until sync finishes so Available Inventory matches the sheet immediately
-      let attempts = 0
-      const poll = async () => {
-        attempts += 1
-        try {
-          const statusRes = await inventoryPlanningAPI.getSyncStatus()
-          setSyncStatus(statusRes.data)
-          if (statusRes.data?.running && attempts < 30) {
-            setTimeout(poll, 2000)
-            return
-          }
-        } catch (_) { /* continue to refresh */ }
-        await loadReport(true)
-        setSyncing(false)
-        addToast('Inventory refreshed from Google Sheet', 'success')
+      const syncRes = await inventoryPlanningAPI.syncNow()
+      if (syncRes.data?.ok === false) {
+        throw new Error(syncRes.data?.error || 'Sync failed')
       }
-      setTimeout(poll, 2500)
+      addToast(
+        syncRes.data?.completed
+          ? `Synced ${syncRes.data?.result?.skusUpdated ?? ''} SKUs from Google Sheet Column C`
+          : 'Inventory synced from Google Sheet',
+        'success'
+      )
+      await loadReport(true)
     } catch (e) {
-      addToast(e.response?.data?.error || 'Sync failed to start', 'error')
+      const msg =
+        e.response?.data?.error ||
+        e.response?.data?.probe?.error ||
+        e.message ||
+        'Sync failed'
+      addToast(msg, 'error')
+      try {
+        const syncRes = await inventoryPlanningAPI.getSyncStatus()
+        setSyncStatus(syncRes.data)
+      } catch (_) { /* ignore */ }
+    } finally {
       setSyncing(false)
     }
   }
@@ -333,6 +335,11 @@ export default function InventoryPlanning() {
                 Service account: {syncStatus.connection.googleSheetsClientEmail} — share the sheet with this email (Editor).
               </div>
             )}
+          </div>
+        )}
+        {syncStatus?.connection?.googleSheetsConfigured && !syncStatus?.lastSyncError && syncStatus?.connection?.googleSheetsClientEmail && (
+          <div className="basis-full w-full text-xs text-slate-500">
+            Sheet reader: {syncStatus.connection.googleSheetsClientEmail}
           </div>
         )}
       </div>
