@@ -12,6 +12,7 @@ const BASE_PERMISSIONS = {
   marketplaces: false,
   users: false,
   auditLogs: false,
+  inventoryPlanning: false,
   [DELETE_CONSIGNMENTS]: false,
   [DELETE_VIDEOS]: false,
   [EDIT_BOX_QUANTITIES]: false,

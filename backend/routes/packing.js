@@ -1349,6 +1349,9 @@ router.post('/save-box', authenticateToken, async (req, res) => {
         readinessStatus: planning.readinessStatus,
       },
     });
+    try {
+      require('../utils/inventoryNotify').scheduleInventoryPlanningCheck('quantity_change');
+    } catch (_) { /* non-blocking */ }
   } catch (error) {
     sendError(res, error);
   }

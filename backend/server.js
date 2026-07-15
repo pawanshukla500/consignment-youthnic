@@ -250,6 +250,7 @@ app.use('/api/docket-companies', require('./routes/docketCompanies'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/email',   require('./routes/email'));
 app.use('/api/workflow', require('./routes/workflow').router);
+app.use('/api/inventory-planning', require('./routes/inventoryPlanning'));
 
 // Public brand logo for transactional emails (always available, even in API-only mode)
 app.get('/brand-logo.png', (req, res) => {
@@ -474,4 +475,53 @@ app.listen(PORT, async () => {
   } catch (err) {
     console.warn('[Workflow] Could not start schedulers:', err.message);
   }
+
+  // Inventory Planning: daily OMSGuru sync + daily email report (UTC hour from settings)
+  try {
+    const { getInventorySettings } = require('./utils/inventorySettings');
+    const { runInventorySync, isSyncRunning } = require('./utils/inventorySyncService');
+    const { sendInventoryPlanningNotification } = require('./utils/inventoryNotify');
+    const HOUR = 60 * 60 * 1000;
+    let lastSyncSlot = '';
+    let lastEmailSlot = '';
+    setInterval(async () => {
+      try {
+        const settings = await getInventorySettings();
+        if (!settings.enabled) return;
+        const d = new Date();
+        const hm = `${d.getUTCHours()}:${d.getUTCMinutes()}`;
+        if (settings.syncEnabled && !isSyncRunning()
+            && d.getUTCHours() === Number(settings.syncHourUtc)
+            && d.getUTCMinutes() === Number(settings.syncMinuteUtc)) {
+          const slot = `${d.toISOString().slice(0, 10)}-sync`;
+          if (slot !== lastSyncSlot) {
+            lastSyncSlot = slot;
+            console.log('[InventoryPlanning] Starting scheduled OMSGuru sync');
+            const result = await runInventorySync({ triggerType: 'scheduled', triggeredBy: 'scheduler' });
+            console.log('[InventoryPlanning] Scheduled sync', result.ok ? 'ok' : result.error || result.reason);
+            if (result.ok) {
+              await sendInventoryPlanningNotification({ triggerReason: 'sync_shortage' }).catch(() => {});
+            }
+          }
+        }
+        if (settings.emailDailyReport
+            && d.getUTCHours() === Number(settings.emailDailyHourUtc || 3)
+            && d.getUTCMinutes() < 5) {
+          const slot = `${d.toISOString().slice(0, 10)}-daily-email`;
+          if (slot !== lastEmailSlot) {
+            lastEmailSlot = slot;
+            console.log('[InventoryPlanning] Sending daily inventory report email');
+            const r = await sendInventoryPlanningNotification({ triggerReason: 'daily_report', force: true });
+            console.log('[InventoryPlanning] Daily email', r.ok ? 'sent' : r.reason || r.error);
+          }
+        }
+      } catch (err) {
+        console.warn('[InventoryPlanning] scheduler tick failed:', err.message);
+      }
+    }, 60 * 1000);
+    console.log('[InventoryPlanning] Daily sync + email schedulers started');
+  } catch (err) {
+    console.warn('[InventoryPlanning] Could not start schedulers:', err.message);
+  }
+
 });

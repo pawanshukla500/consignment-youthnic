@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Save, Trash2, AlertTriangle, ChevronLeft, Loader2, Clock, Database, Play, Server, CheckCircle2, RefreshCw, ShieldCheck, HardDrive, Activity, BarChart3, ExternalLink, ClipboardPaste } from 'lucide-react';
+import { Save, Trash2, AlertTriangle, ChevronLeft, Loader2, Clock, Database, Play, Server, CheckCircle2, RefreshCw, ShieldCheck, HardDrive, Activity, BarChart3, ExternalLink, ClipboardPaste, Factory } from 'lucide-react';
 import { settingsAPI, usersAPI } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
@@ -220,6 +220,26 @@ export default function Settings() {
           {activeTab === 'general' ? (
             <>
               <SystemHealthPanel />
+
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+            <div className="px-6 py-4 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-teal-50 rounded-lg"><Factory className="w-5 h-5 text-teal-700" /></div>
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">Inventory Planning</h2>
+                  <p className="text-sm text-slate-500">
+                    OMSGuru sync, Google Sheet AutoFetch, production emails, and SKU shortage report
+                  </p>
+                </div>
+              </div>
+              <Link
+                to="/inventory-planning"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-teal-700 text-white text-sm font-semibold hover:bg-teal-800"
+              >
+                Open dashboard <ExternalLink className="w-3.5 h-3.5" />
+              </Link>
+            </div>
+          </div>
 
           {/* ═══ DATABASE CONNECTION (admin) ═══ */}
           <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">

@@ -47,6 +47,7 @@ assert.strictEqual(orgHead.users, true);
 assert.strictEqual(orgHead.productivity, true);
 assert.strictEqual(orgHead.marketplaces, true);
 assert.strictEqual(orgHead.auditLogs, true);
+assert.strictEqual(orgHead.inventoryPlanning, true);
 assert.strictEqual(orgHead[DELETE_CONSIGNMENTS], true);
 assert.strictEqual(orgHead[DELETE_VIDEOS], true);
 assert.strictEqual(hasPermission({ role: 'organization_head', permissions: orgHead }, 'consignments'), true);
