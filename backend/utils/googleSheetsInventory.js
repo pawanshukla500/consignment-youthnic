@@ -28,6 +28,7 @@ function parseServiceAccount() {
     '';
   if (!raw) return null;
 
+  // Allow base64-encoded JSON (sometimes used in secret managers)
   const trimmed = String(raw).trim();
   if (!trimmed.startsWith('{') && !trimmed.startsWith('"')) {
     try {
