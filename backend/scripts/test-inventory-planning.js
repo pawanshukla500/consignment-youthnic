@@ -9,6 +9,7 @@ const {
   buildSkuDemand,
   applyStockToDemand,
   isOpenConsignment,
+  normalizeSkuKey,
   INVENTORY_STATUSES,
   buildAlertFingerprint,
 } = require('../utils/inventoryPlanning');
@@ -110,6 +111,7 @@ const {
   ];
   const demand = buildSkuDemand(consignments);
   assert.strictEqual(demand.length, 1);
+  assert.strictEqual(demand[0].internalSku, 'SKU123');
   assert.strictEqual(demand[0].totalPlannedQty, 100);
   assert.strictEqual(demand[0].criticalQty, 50);
   assert.strictEqual(demand[0].urgentQty, 30);
@@ -126,12 +128,20 @@ const {
   assert.strictEqual(reportRows[0].inventoryStatus, INVENTORY_STATUSES.URGENT_PRODUCTION);
 }
 
-// Sheet Column C is preferred for latest available inventory
+// Sheet Column C is preferred for latest available inventory (default)
 {
   const today = formatSheetDate(new Date('2026-07-15T12:00:00Z'));
   const colC = resolveInventoryColumn(['id', 'sku_code', '15/07/2026', '14/07/2026'], today);
   assert.strictEqual(colC.index, 2);
   assert.strictEqual(colC.reason, 'column_c');
+
+  // Even when a newer date exists elsewhere, prefer Column C by default
+  const stillC = resolveInventoryColumn(
+    ['id', 'sku_code', '14/07/2026', '15/07/2026'],
+    '15/07/2026'
+  );
+  assert.strictEqual(stillC.index, 2);
+  assert.strictEqual(stillC.reason, 'column_c');
 
   const colLatest = resolveInventoryColumn(
     ['id', 'sku_code', '14/07/2026', '15/07/2026'],
@@ -158,13 +168,43 @@ const {
   assert.strictEqual(rows[0].suggestedProductionQty, 20);
 }
 
-// Blank / invalid sheet quantities are rejected (never overwrite with blank)
+// Blank / invalid sheet quantities are rejected (sync writes 0 instead of keeping stale)
 {
   assert.strictEqual(parseQuantityCell('').ok, false);
   assert.strictEqual(parseQuantityCell(null).ok, false);
   assert.strictEqual(parseQuantityCell('-1').ok, false);
   assert.strictEqual(parseQuantityCell('12').value, 12);
   assert.strictEqual(parseQuantityCell('1,200').value, 1200);
+  assert.strictEqual(parseQuantityCell(0).ok, true);
+  assert.strictEqual(parseQuantityCell(0).value, 0);
+}
+
+// EJ1201-16001 style: sheet Col C = 0 must win over stale DB qty 955 (case-insensitive match)
+{
+  assert.strictEqual(normalizeSkuKey('ej1201-16001'), 'EJ1201-16001');
+  assert.strictEqual(normalizeSkuKey(' EJ1201-16001 '), 'EJ1201-16001');
+
+  const demand = buildSkuDemand([{
+    id: 'C1',
+    status: 'pending',
+    criticalityLevel: 'critical',
+    skus: [{ internalSku: 'ej1201-16001', requiredQty: 100, packedQty: 0 }],
+  }]);
+  assert.strictEqual(demand[0].internalSku, 'EJ1201-16001');
+
+  // After sync, stock map uses uppercase key and sheet qty 0 (not leftover 955)
+  const rows = applyStockToDemand(demand, {
+    'EJ1201-16001': { quantity: 0, sync_status: 'ok' },
+  });
+  assert.strictEqual(rows[0].latestInventory, 0);
+  assert.strictEqual(rows[0].inventoryBalance, -100);
+  assert.strictEqual(rows[0].totalShortage, 100);
+
+  // Legacy mixed-case stock key still matches
+  const rowsMixed = applyStockToDemand(demand, {
+    'Ej1201-16001': { quantity: 0, sync_status: 'ok' },
+  });
+  assert.strictEqual(rowsMixed[0].latestInventory, 0);
 }
 
 // Fingerprint changes when shortage changes

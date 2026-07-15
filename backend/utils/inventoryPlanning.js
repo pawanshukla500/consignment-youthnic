@@ -38,7 +38,8 @@ function toNonNegInt(value) {
 }
 
 function normalizeSkuKey(value) {
-  return String(value || '').trim();
+  // Case-insensitive so sheet sku_code and consignment Internal SKU always match.
+  return String(value || '').trim().toUpperCase();
 }
 
 function mapCriticalityToBucket(level, bucketMap = DEFAULT_BUCKET_MAP) {
@@ -266,8 +267,15 @@ function buildSkuDemand(openConsignments, options = {}) {
 
 function applyStockToDemand(demandRows, stockBySku, options = {}) {
   const lastSyncAt = options.lastSyncAt || null;
+  // Build a case-insensitive lookup once (covers legacy mixed-case DB keys)
+  const stockLookup = {};
+  if (stockBySku && typeof stockBySku === 'object') {
+    for (const [rawKey, value] of Object.entries(stockBySku)) {
+      stockLookup[normalizeSkuKey(rawKey)] = value;
+    }
+  }
   return (demandRows || []).map((demand) => {
-    const stock = stockBySku[demand.internalSku] || stockBySku[normalizeSkuKey(demand.internalSku)] || null;
+    const stock = stockLookup[normalizeSkuKey(demand.internalSku)] || null;
     let availableRaw = null;
     let syncFailed = false;
     if (stock) {

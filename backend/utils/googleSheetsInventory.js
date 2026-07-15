@@ -5,8 +5,9 @@
  *   Row 1: id | sku_code | <DD/MM/YYYY> | <DD/MM/YYYY> | …
  *   Row 2:    |          | Inventory    | Inventory    | …
  *
- * The team pastes inventory into the sheet. This module only READS it.
- * Matching key: sku_code (column B). Latest inventory = preferred date column.
+ * Matching key: sku_code (column B), case-insensitive.
+ * Inventory column: Column C by default (AutoFetch latest available qty).
+ * Blank/zero cells clear stale DB stock — they do NOT leave the previous quantity.
  */
 
 const { google } = require('googleapis');
@@ -27,7 +28,6 @@ function parseServiceAccount() {
     '';
   if (!raw) return null;
 
-  // Allow base64-encoded JSON (sometimes used in secret managers)
   const trimmed = String(raw).trim();
   if (!trimmed.startsWith('{') && !trimmed.startsWith('"')) {
     try {
@@ -72,7 +72,20 @@ async function getSheetsClient() {
 }
 
 function formatSheetDate(date = new Date()) {
+  // Sheet headers use local office dates (India). Prefer Asia/Kolkata when possible.
   const d = date instanceof Date ? date : new Date(date);
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: process.env.INVENTORY_SHEET_TIMEZONE || 'Asia/Kolkata',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    }).formatToParts(d);
+    const dd = parts.find((p) => p.type === 'day')?.value;
+    const mm = parts.find((p) => p.type === 'month')?.value;
+    const yyyy = parts.find((p) => p.type === 'year')?.value;
+    if (dd && mm && yyyy) return `${dd}/${mm}/${yyyy}`;
+  } catch (_) { /* fall through */ }
   const dd = String(d.getUTCDate()).padStart(2, '0');
   const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
   const yyyy = d.getUTCFullYear();
@@ -85,7 +98,6 @@ function escapeSheetName(name) {
 
 function parseSheetDateLabel(label) {
   const text = String(label || '').trim();
-  // DD/MM/YYYY or D/M/YYYY
   const m = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (!m) return null;
   const day = Number(m[1]);
@@ -97,11 +109,11 @@ function parseSheetDateLabel(label) {
 
 /**
  * Choose inventory quantity column.
- * Business rule: Column C (index 2) holds the latest available inventory
- * (today’s date column on AutoFetch, or a static latest qty).
+ * Default / business rule: Column C (index 2) — AutoFetch latest available inventory.
+ * When preferColumnC is false: today's date header if present, else newest date, else Col C.
  */
 function resolveInventoryColumn(headerRow = [], todayLabel = formatSheetDate(), options = {}) {
-  const preferColumnC = options.preferColumnC !== false;
+  const preferColumnC = options.preferColumnC !== false && options.mode !== 'latest_date';
 
   if (preferColumnC && headerRow.length > 2) {
     const label = String(headerRow[2] || '').trim() || 'C';
@@ -120,25 +132,25 @@ function resolveInventoryColumn(headerRow = [], todayLabel = formatSheetDate(), 
       candidates.push({ index: i, label, time: parsed.getTime() });
     }
   }
-  if (!candidates.length) {
-    if (headerRow.length > 2) {
-      return {
-        index: 2,
-        label: String(headerRow[2] || 'C').trim() || 'C',
-        reason: 'fallback_column_c',
-      };
-    }
-    return null;
+  if (candidates.length) {
+    candidates.sort((a, b) => b.time - a.time || a.index - b.index);
+    return { index: candidates[0].index, label: candidates[0].label, reason: 'latest_date' };
   }
-  candidates.sort((a, b) => b.time - a.time || a.index - b.index);
-  return { index: candidates[0].index, label: candidates[0].label, reason: 'latest_date' };
+  if (headerRow.length > 2) {
+    return {
+      index: 2,
+      label: String(headerRow[2] || 'C').trim() || 'C',
+      reason: 'fallback_column_c',
+    };
+  }
+  return null;
 }
 
 function parseQuantityCell(raw) {
   if (raw === null || raw === undefined) return { ok: false, reason: 'blank' };
   const text = String(raw).trim();
   if (!text) return { ok: false, reason: 'blank' };
-  const cleaned = text.replace(/,/g, '');
+  const cleaned = text.replace(/,/g, '').replace(/%$/g, '');
   const n = Number(cleaned);
   if (!Number.isFinite(n)) return { ok: false, reason: 'non_numeric' };
   if (n < 0) return { ok: false, reason: 'negative' };
@@ -146,10 +158,11 @@ function parseQuantityCell(raw) {
 }
 
 /**
- * Read latest inventory rows from AutoFetch.
- * @returns {{ rows: Array<{internalSku, quantity}>, skipped: Array, meta: object }}
+ * Read inventory rows from AutoFetch.
+ * Blank inventory cells are returned as quantity null so sync can clear stale DB values.
+ * @returns {{ rows: Array<{internalSku, quantity, displaySku}>, skipped: Array, meta: object }}
  */
-async function fetchInventoryFromSheet(spreadsheetId, sheetName) {
+async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
   if (!isSheetsConfigured()) {
     throw new Error('Google Sheets is not configured');
   }
@@ -163,6 +176,8 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName) {
     spreadsheetId,
     range: `'${escaped}'`,
     majorDimension: 'ROWS',
+    valueRenderOption: 'UNFORMATTED_VALUE',
+    dateTimeRenderOption: 'FORMATTED_STRING',
   });
 
   const values = read.data.values || [];
@@ -170,10 +185,14 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName) {
     throw new Error(`Sheet "${title}" has no header/data rows`);
   }
 
-  const header = values[0] || [];
+  const header = (values[0] || []).map((h) => (h == null ? '' : String(h)));
   const todayLabel = formatSheetDate(new Date());
-  // Prefer Column C = latest available inventory (Internal SKU in Column B)
-  const column = resolveInventoryColumn(header, todayLabel, { preferColumnC: true });
+  // Default true: match Admin UI / settings.preferSheetColumnC (Column C = available qty).
+  const preferColumnC = options.preferColumnC !== false;
+  const column = resolveInventoryColumn(header, todayLabel, {
+    preferColumnC,
+    mode: preferColumnC ? 'column_c' : 'latest_date',
+  });
   if (!column) {
     throw new Error(`No inventory column found in sheet "${title}" (expected Column C)`);
   }
@@ -181,37 +200,68 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName) {
   const rows = [];
   const skipped = [];
   const seen = new Set();
+  // Blank inventory cells default to 0 so Available matches the sheet (not a stale DB qty).
+  const blankAsZero = options.blankAsZero !== false;
 
-  for (let i = 2; i < values.length; i++) {
+  // Data usually starts at row 3 (index 2). If row 2 is not "Inventory", still skip header-like rows.
+  const startIdx = 1;
+  for (let i = startIdx; i < values.length; i++) {
     const row = values[i] || [];
-    const sku = normalizeSkuKey(row[1]);
+    const displaySku = String(row[1] ?? '').trim();
+    const sku = normalizeSkuKey(displaySku);
     if (!sku) {
+      // Skip pure header / empty rows
+      if (i <= 2) continue;
       skipped.push({ row: i + 1, reason: 'missing_sku' });
       continue;
     }
+    // Skip sub-header row ("Inventory" under dates)
+    if (sku === 'sku_code' || sku === 'inventory') continue;
+
     if (seen.has(sku)) {
-      skipped.push({ row: i + 1, internalSku: sku, reason: 'duplicate_sku_in_sheet' });
+      skipped.push({ row: i + 1, internalSku: displaySku, reason: 'duplicate_sku_in_sheet' });
       continue;
     }
     seen.add(sku);
 
-    const parsed = parseQuantityCell(row[column.index]);
+    const rawQty = row[column.index];
+    const parsed = parseQuantityCell(rawQty);
     if (!parsed.ok) {
-      skipped.push({
-        row: i + 1,
+      // Blank/invalid → still emit a row so sync clears stale DB quantities.
+      rows.push({
         internalSku: sku,
-        reason: parsed.reason,
-        raw: row[column.index],
+        displaySku: displaySku || sku,
+        quantity: blankAsZero ? 0 : null,
+        blank: parsed.reason === 'blank',
+        invalid: parsed.reason !== 'blank',
+        raw: rawQty,
       });
+      if (parsed.reason !== 'blank') {
+        skipped.push({
+          row: i + 1,
+          internalSku: displaySku,
+          reason: parsed.reason,
+          raw: rawQty,
+          clearedStale: true,
+        });
+      }
       continue;
     }
 
     rows.push({
       internalSku: sku,
+      displaySku: displaySku || sku,
       quantity: parsed.value,
-      productName: '',
+      blank: false,
+      invalid: false,
+      raw: rawQty,
     });
   }
+
+  const sample = rows
+    .filter((r) => r.quantity != null)
+    .slice(0, 5)
+    .map((r) => ({ sku: r.displaySku, qty: r.quantity }));
 
   return {
     rows,
@@ -222,9 +272,13 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName) {
       spreadsheetId,
       inventoryColumnLabel: column.label,
       inventoryColumnIndex: column.index,
+      inventoryColumnLetter: String.fromCharCode(65 + column.index),
       columnReason: column.reason,
+      todayLabel,
       rowCount: rows.length,
+      blankOrInvalidCount: rows.filter((r) => r.quantity == null || r.blank || r.invalid).length,
       skippedCount: skipped.length,
+      sample,
       source: 'google_sheet',
     },
   };
@@ -232,6 +286,7 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName) {
 
 module.exports = {
   isSheetsConfigured,
+  parseServiceAccount,
   formatSheetDate,
   parseSheetDateLabel,
   resolveInventoryColumn,

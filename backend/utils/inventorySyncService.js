@@ -70,7 +70,13 @@ async function loadExistingStockMap(pool) {
   );
   const map = {};
   for (const row of result.rows) {
-    map[row.internal_sku] = row;
+    const key = normalizeSkuKey(row.internal_sku);
+    if (!key) continue;
+    // Prefer the most recently updated row when casing duplicates exist
+    const prev = map[key];
+    if (!prev || (row.last_synced_at && (!prev.last_synced_at || row.last_synced_at > prev.last_synced_at))) {
+      map[key] = { ...row, internal_sku: key };
+    }
   }
   return map;
 }
@@ -162,7 +168,13 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
 
     const fetchResult = await fetchInventoryFromSheet(
       settings.googleSheetId,
-      settings.googleSheetName || 'AutoFetch'
+      settings.googleSheetName || 'AutoFetch',
+      {
+        // Column C = available inventory (unless admin turns preferSheetColumnC off)
+        preferColumnC: settings.preferSheetColumnC !== false,
+        // Blank Col C must become 0 so planning never keeps a stale positive qty
+        blankAsZero: true,
+      }
     );
 
     const existing = await loadExistingStockMap(pool);
@@ -190,28 +202,32 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
           continue;
         }
 
+        // Treat blank/null as 0 so Available Inventory matches the sheet (e.g. EJ1201-16001 → 0)
+        const quantity = item.quantity == null || item.blank || item.invalid
+          ? 0
+          : Number(item.quantity);
         const previousQuantity = prev?.quantity ?? null;
         const quantityChange =
-          previousQuantity == null ? item.quantity : item.quantity - previousQuantity;
+          previousQuantity == null ? quantity : quantity - previousQuantity;
 
         await upsertStockRow(pool, {
           internalSku: sku,
-          quantity: item.quantity,
+          quantity,
           previousQuantity,
-          productName: item.productName,
+          productName: item.productName || item.displaySku,
           syncStatus: 'ok',
-          errorMessage: null,
+          errorMessage: item.invalid ? `Sheet cell invalid (${item.raw})` : null,
         });
         updated += 1;
         skuLogRows.push({
           id: generateId(),
           runId,
           internalSku: sku,
-          sheetQuantity: item.quantity,
+          sheetQuantity: quantity,
           previousQuantity,
           quantityChange,
           syncStatus: 'ok',
-          errorMessage: null,
+          errorMessage: item.invalid ? `Sheet cell invalid (${item.raw})` : null,
         });
       } catch (err) {
         failed += 1;
@@ -257,6 +273,9 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
     await addAuditLog('google_sheet_read', 'inventory_sync', runId, triggeredBy, {
       rowCount: fetchResult.rows.length,
       column: fetchResult.meta?.inventoryColumnLabel,
+      columnLetter: fetchResult.meta?.inventoryColumnLetter,
+      columnReason: fetchResult.meta?.columnReason,
+      preferSheetColumnC: settings.preferSheetColumnC !== false,
     });
 
     const finishedAt = new Date().toISOString();

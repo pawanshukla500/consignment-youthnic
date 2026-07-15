@@ -187,8 +187,56 @@ async function getLatestSnapshot() {
   }
 }
 
+/**
+ * Prefer a live report when the latest snapshot is older than the last successful sheet sync.
+ * Prevents dashboards from showing stale Available Inventory after a sync completes.
+ */
+async function getDashboardReport({ refresh = false } = {}) {
+  if (refresh) {
+    return {
+      fromCache: false,
+      ...(await buildInventoryPlanningReport({ triggerReason: 'dashboard', persist: true })),
+    };
+  }
+
+  const settings = await getInventorySettings();
+  const snap = await getLatestSnapshot();
+  if (snap && snap.summary) {
+    const snapAt = snap.generatedAt ? new Date(snap.generatedAt).getTime() : 0;
+    const syncAt = settings.lastSuccessfulSyncAt
+      ? new Date(settings.lastSuccessfulSyncAt).getTime()
+      : 0;
+    // If sync finished after this snapshot, rebuild so Available qty matches the sheet.
+    if (!syncAt || snapAt >= syncAt) {
+      return {
+        fromCache: true,
+        id: snap.id,
+        fingerprint: snap.fingerprint,
+        summary: snap.summary,
+        skus: snap.skus || [],
+        consignments: snap.consignments || [],
+        criticalUrgentSkus: (snap.skus || []).filter((s) =>
+          s.inventoryStatus === 'Critical Shortage' ||
+          s.inventoryStatus === 'Urgent Production Required' ||
+          (s.criticalShortage || 0) > 0 ||
+          (s.urgentShortage || 0) > 0
+        ),
+        syncMeta: snap.syncMeta || {},
+        generatedAt: snap.generatedAt,
+      };
+    }
+  }
+
+  const report = await buildInventoryPlanningReport({
+    triggerReason: 'dashboard',
+    persist: true,
+  });
+  return { fromCache: false, ...report };
+}
+
 module.exports = {
   loadOpenConsignmentsWithSkus,
   buildInventoryPlanningReport,
   getLatestSnapshot,
+  getDashboardReport,
 };

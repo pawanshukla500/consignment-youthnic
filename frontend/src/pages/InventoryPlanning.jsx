@@ -130,11 +130,26 @@ export default function InventoryPlanning() {
     setSyncing(true)
     try {
       await inventoryPlanningAPI.syncNow()
-      addToast('Sheet sync started — refresh in a minute', 'success')
-      setTimeout(() => loadReport(true), 4000)
+      addToast('Syncing from Google Sheet Column C…', 'success')
+      // Poll until sync finishes so Available Inventory matches the sheet immediately
+      let attempts = 0
+      const poll = async () => {
+        attempts += 1
+        try {
+          const statusRes = await inventoryPlanningAPI.getSyncStatus()
+          setSyncStatus(statusRes.data)
+          if (statusRes.data?.running && attempts < 30) {
+            setTimeout(poll, 2000)
+            return
+          }
+        } catch (_) { /* continue to refresh */ }
+        await loadReport(true)
+        setSyncing(false)
+        addToast('Inventory refreshed from Google Sheet', 'success')
+      }
+      setTimeout(poll, 2500)
     } catch (e) {
       addToast(e.response?.data?.error || 'Sync failed to start', 'error')
-    } finally {
       setSyncing(false)
     }
   }

@@ -10,7 +10,7 @@ const {
   DEFAULT_INVENTORY_SETTINGS,
 } = require('../utils/inventorySettings');
 const { runInventorySync, isSyncRunning, getLatestSyncRun, getSyncSkuLogs } = require('../utils/inventorySyncService');
-const { buildInventoryPlanningReport, getLatestSnapshot } = require('../utils/inventoryReportBuilder');
+const { buildInventoryPlanningReport, getDashboardReport } = require('../utils/inventoryReportBuilder');
 const { buildInventoryPlanningWorkbook } = require('../utils/inventoryPlanningExcel');
 const { sendInventoryPlanningNotification } = require('../utils/inventoryNotify');
 
@@ -22,32 +22,8 @@ router.get(
   async (req, res) => {
     try {
       const refresh = String(req.query.refresh || '') === '1';
-      if (!refresh) {
-        const snap = await getLatestSnapshot();
-        if (snap && snap.summary) {
-          return res.json({
-            fromCache: true,
-            id: snap.id,
-            fingerprint: snap.fingerprint,
-            summary: snap.summary,
-            skus: snap.skus || [],
-            consignments: snap.consignments || [],
-            criticalUrgentSkus: (snap.skus || []).filter((s) =>
-              s.inventoryStatus === 'Critical Shortage' ||
-              s.inventoryStatus === 'Urgent Production Required' ||
-              (s.criticalShortage || 0) > 0 ||
-              (s.urgentShortage || 0) > 0
-            ),
-            syncMeta: snap.syncMeta || {},
-            generatedAt: snap.generatedAt,
-          });
-        }
-      }
-      const report = await buildInventoryPlanningReport({
-        triggerReason: 'dashboard',
-        persist: true,
-      });
-      res.json({ fromCache: false, ...report });
+      const report = await getDashboardReport({ refresh });
+      res.json(report);
     } catch (error) {
       console.error('[InventoryPlanning] report failed:', error.message);
       res.status(500).json({ error: error.message });
