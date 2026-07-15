@@ -21,18 +21,33 @@ function isSheetsConfigured() {
 }
 
 function parseServiceAccount() {
-  const raw =
+  let raw =
     process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON ||
     process.env.GOOGLE_SHEETS_CREDENTIALS_JSON ||
     '';
-  if (raw) {
+  if (!raw) return null;
+
+  // Allow base64-encoded JSON (sometimes used in secret managers)
+  const trimmed = String(raw).trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('"')) {
+    try {
+      const decoded = Buffer.from(trimmed, 'base64').toString('utf8').trim();
+      if (decoded.startsWith('{')) raw = decoded;
+    } catch (_) { /* keep original */ }
+  }
+
+  try {
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (parsed.private_key && typeof parsed.private_key === 'string') {
       parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
     }
+    if (!parsed.client_email || !parsed.private_key) {
+      throw new Error('Service account JSON missing client_email or private_key');
+    }
     return parsed;
+  } catch (err) {
+    throw new Error(`Invalid GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON: ${err.message}`);
   }
-  return null;
 }
 
 async function getSheetsClient() {

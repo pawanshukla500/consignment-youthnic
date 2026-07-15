@@ -130,6 +130,7 @@ Repository **Variables** (Settings → Secrets and variables → Actions → Var
 | `SUPABASE_JWT_SECRET` | Supabase **JWT Secret** (Project Settings → API → JWT Secret). **Not** the service_role key, **not** a JWT token |
 | `SHARE_LINK_SECRET` | Optional dedicated HMAC for durable video share links (defaults to `JWT_SECRET`) |
 | `BOOTSTRAP_SECRET` | Optional admin resync protect |
+| `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` | Full Google service-account JSON for Inventory Planning (Sheet AutoFetch). Share the spreadsheet with the SA `client_email` (Editor). Must be synced via deploy → Secret Manager → Cloud Run — GitHub secret alone is not enough. |
 | `VITE_FIREBASE_MEASUREMENT_ID` | Optional analytics |
 | `VITE_POSTHOG_KEY` | Optional |
 
@@ -163,6 +164,7 @@ Playback still works via authenticated `/api/uploads/stream/...` and durable `/a
 - `JWT_SECRET`, `MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, `DATABASE_URL`
 - `SUPABASE_JWT_SECRET`, `FIREBASE_SERVICE_ACCOUNT_JSON`, `BOOTSTRAP_SECRET`
 - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `SHARE_LINK_SECRET`
+- `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` (Inventory Planning → Google Sheet AutoFetch)
 
 Empty GitHub secrets are skipped.
 
