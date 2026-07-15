@@ -73,23 +73,31 @@ function detailRow(label, value) {
 }
 
 function logoBlock(httpUrl) {
-  // Prefer CID inline attachment (bundled with the email). Keep HTTPS URL as fallback
-  // for clients that block CID but allow remote images.
+  // Match website Login brand mark:
+  // rounded-xl frosted box + white logo (pre-inverted PNG via CID; filter kept as progressive enhance)
   return `
-    <img src="cid:${LOGO_CID}" alt="Youthnic Consignment Packing"
-      width="56" height="56"
-      style="display:block;margin:0 auto 12px;width:56px;height:56px;border-radius:12px;background:#fff;object-fit:contain;border:0" />
+    <table cellpadding="0" cellspacing="0" role="presentation" align="center" style="margin:0 auto 14px">
+      <tr>
+        <td align="center" valign="middle" width="40" height="40"
+          style="width:40px;height:40px;border-radius:12px;background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.15);box-shadow:inset 0 1px 2px rgba(0,0,0,0.18)">
+          <img src="cid:${LOGO_CID}" alt="Youthnic Packing Station"
+            width="24" height="24"
+            style="display:block;margin:0 auto;width:24px;height:24px;object-fit:contain;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic" />
+        </td>
+      </tr>
+    </table>
     <!--[if !mso]><!-->
     <img src="${httpUrl}" alt="" width="1" height="1"
       style="display:none;width:0;height:0;max-height:0;overflow:hidden;border:0" />
     <!--<![endif]-->`;
 }
 
-function emailShell({ title, preheader = '', bodyHtml, accent = '#0f172a' }) {
+function emailShell({ title, preheader = '', bodyHtml, accent = '#6A040F' }) {
   const year = new Date().getFullYear();
   const safeTitle = escapeHtml(title);
   const safePre = escapeHtml(preheader);
   const httpUrl = escapeHtml(getLogoHttpUrl());
+  const headerBg = accent || '#6A040F';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -98,17 +106,17 @@ function emailShell({ title, preheader = '', bodyHtml, accent = '#0f172a' }) {
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <title>${safeTitle}</title>
 </head>
-<body style="margin:0;padding:0;background:#eef2f7;font-family:'Segoe UI',Inter,Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%">
+<body style="margin:0;padding:0;background:#F8FAFC;font-family:'Plus Jakarta Sans',Inter,'Segoe UI',Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%">
   <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent">${safePre}</div>
-  <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:#eef2f7;width:100%">
+  <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:#F8FAFC;width:100%">
     <tr>
       <td align="center" style="padding:28px 12px">
-        <table width="640" cellpadding="0" cellspacing="0" role="presentation" style="max-width:640px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+        <table width="640" cellpadding="0" cellspacing="0" role="presentation" style="max-width:640px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #E2E8F0;box-shadow:0 1px 2px rgba(15,23,42,0.04)">
           <tr>
-            <td style="background:${accent};padding:28px 28px 22px;text-align:center">
+            <td style="background:${headerBg};background-image:linear-gradient(160deg,#370617 0%,#6A040F 55%,#900C3F 100%);padding:28px 28px 22px;text-align:center">
               ${logoBlock(httpUrl)}
-              <p style="margin:0;font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.3px">Consignment App</p>
-              <p style="margin:6px 0 0;font-size:11px;color:rgba(255,255,255,0.75);letter-spacing:1.4px;text-transform:uppercase">Youthnic Packing</p>
+              <p style="margin:0;font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.3px;font-family:'Plus Jakarta Sans',Inter,'Segoe UI',Arial,sans-serif">Consignment App</p>
+              <p style="margin:6px 0 0;font-size:11px;color:rgba(255,255,255,0.72);letter-spacing:1.4px;text-transform:uppercase">Youthnic Packing</p>
             </td>
           </tr>
           <tr>
@@ -117,11 +125,11 @@ function emailShell({ title, preheader = '', bodyHtml, accent = '#0f172a' }) {
             </td>
           </tr>
           <tr>
-            <td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:18px 28px;text-align:center">
+            <td style="background:#F8FAFC;border-top:1px solid #E2E8F0;padding:18px 28px;text-align:center">
               <p style="margin:0 0 6px;font-size:12px;color:#475569;font-weight:600">${escapeHtml(BRAND)}</p>
               <p style="margin:0;font-size:11px;color:#94a3b8;line-height:1.6">
                 © ${year} Youthnic Exports Pvt. Ltd. · Automated notification — do not reply to this email.<br>
-                Open the app: <a href="${escapeHtml(getAppUrl())}" style="color:#4f46e5;text-decoration:none">${escapeHtml(getAppUrl())}</a>
+                Open the app: <a href="${escapeHtml(getAppUrl())}" style="color:#E11D48;text-decoration:none">${escapeHtml(getAppUrl())}</a>
               </p>
             </td>
           </tr>
@@ -138,7 +146,7 @@ function ctaButton(href, label) {
     <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:24px 0 8px">
       <tr><td align="center">
         <a href="${escapeHtml(href)}"
-          style="display:inline-block;background:#0f172a;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:14px 32px;border-radius:10px">
+          style="display:inline-block;background:#E11D48;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:14px 32px;border-radius:10px">
           ${escapeHtml(label)}
         </a>
       </td></tr>

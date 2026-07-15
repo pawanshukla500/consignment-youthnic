@@ -1,7 +1,7 @@
 /**
- * Inventory planning email — branded summary body only.
+ * Inventory planning email — branded summary body only (website theme).
  * SKU-level detail belongs in the Excel attachment, not the HTML body.
- * Logo is rendered via emailShell → cid:email-logo.png (Mailgun always inlines it).
+ * Logo uses the shared Login-style frosted mark via emailShell / CID.
  */
 
 const { emailShell, escapeHtml, getAppUrl } = require('./emailTemplates');
@@ -56,18 +56,18 @@ function buildInventoryPlanningEmail({ report, dashboardUrl, subject }) {
   const appUrl = dashboardUrl || `${getAppUrl()}/inventory-planning`;
 
   const bodyHtml = `
-    <p style="margin:0 0 8px;font-size:22px;font-weight:700;color:#0f172a;letter-spacing:-0.3px">
+    <p style="margin:0 0 8px;font-size:22px;font-weight:800;color:#0f172a;letter-spacing:-0.3px;font-family:'Plus Jakarta Sans',Inter,'Segoe UI',Arial,sans-serif">
       ${escapeHtml(subject)}
     </p>
     <p style="margin:0 0 20px;font-size:14px;color:#64748b;line-height:1.65">
       High-level inventory planning summary from open consignments compared with Google Sheet Column C.
-      Allocation when stock is limited: <strong>Critical → Urgent → Normal</strong>.
+      Allocation when stock is limited: <strong style="color:#0f172a">Critical → Urgent → Normal</strong>.
     </p>
 
     <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
-      style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:12px;margin:0 0 22px">
+      style="background:#FFF1F2;border:1px solid #FECDD3;border-radius:12px;margin:0 0 22px">
       <tr><td style="padding:16px 18px">
-        <p style="margin:0;font-size:14px;color:#0f766e;line-height:1.55;font-weight:600">
+        <p style="margin:0;font-size:14px;color:#BE123C;line-height:1.55;font-weight:600">
           ${escapeHtml(highlightLine)}
         </p>
       </td></tr>
@@ -85,19 +85,19 @@ function buildInventoryPlanningEmail({ report, dashboardUrl, subject }) {
       ${summaryRow('Unique SKUs reviewed', escapeHtml(summary.totalSkusReviewed ?? '—'))}
       ${summaryRow('Total planned quantity', escapeHtml(summary.totalPlannedQty ?? '—'))}
       ${summaryRow('Total available (Col C)', escapeHtml(summary.totalAvailableInventory ?? '—'))}
-      ${summaryRow('Total shortage', escapeHtml(shortageQty), shortageQty > 0 ? '#b91c1c' : '#047857')}
-      ${summaryRow('Suggested production qty', escapeHtml(produceQty), produceQty > 0 ? '#b91c1c' : '#047857')}
-      ${summaryRow('Critical SKU count', escapeHtml(critical), critical > 0 ? '#b91c1c' : '#0f172a')}
+      ${summaryRow('Total shortage', escapeHtml(shortageQty), shortageQty > 0 ? '#E11D48' : '#059669')}
+      ${summaryRow('Suggested production qty', escapeHtml(produceQty), produceQty > 0 ? '#E11D48' : '#059669')}
+      ${summaryRow('Critical SKU count', escapeHtml(critical), critical > 0 ? '#E11D48' : '#0f172a')}
       ${summaryRow('Urgent SKU count', escapeHtml(urgent), urgent > 0 ? '#c2410c' : '#0f172a')}
       ${summaryRow('Low inventory SKU count', escapeHtml(summary.lowInventorySkuCount ?? 0), '#b45309')}
-      ${summaryRow('Sufficient SKU count', escapeHtml(summary.sufficientSkuCount ?? 0), '#047857')}
+      ${summaryRow('Sufficient SKU count', escapeHtml(summary.sufficientSkuCount ?? 0), '#059669')}
       ${summaryRow('Missing / sync-fail SKUs', escapeHtml(missingFail), missingFail > 0 ? '#64748b' : '#0f172a')}
-      ${summaryRow('SKUs shared across 2+ consignments', escapeHtml(sharedSkuCount), sharedSkuCount > 0 ? '#b45309' : '#047857')}
+      ${summaryRow('SKUs shared across 2+ consignments', escapeHtml(sharedSkuCount), sharedSkuCount > 0 ? '#b45309' : '#059669')}
       ${summaryRow('Earliest shipment / appointment', escapeHtml(summary.earliestShipmentOrAppointmentDate || '—'))}
     </table>
 
     <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
-      style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;margin:20px 0 8px">
+      style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:12px;margin:20px 0 8px">
       <tr><td style="padding:14px 18px">
         <p style="margin:0;font-size:13px;color:#9a3412;line-height:1.55">
           <strong>SKU lists are not included in this email.</strong>
@@ -110,7 +110,7 @@ function buildInventoryPlanningEmail({ report, dashboardUrl, subject }) {
     <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:24px 0 8px">
       <tr><td align="center">
         <a href="${escapeHtml(appUrl)}"
-          style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:14px 28px;border-radius:10px">
+          style="display:inline-block;background:#E11D48;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:14px 28px;border-radius:10px">
           Open Inventory Planning
         </a>
       </td></tr>
@@ -122,7 +122,8 @@ function buildInventoryPlanningEmail({ report, dashboardUrl, subject }) {
       ? `${highlights.join(' · ')}. Details in Excel attachment.`
       : 'Inventory planning summary — details in Excel attachment.',
     bodyHtml,
-    accent: '#0f766e',
+    // Website login brand gradient base (emailShell also applies linear-gradient)
+    accent: '#6A040F',
   });
 
   const text = [
