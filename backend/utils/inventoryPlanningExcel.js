@@ -83,6 +83,7 @@ async function buildInventoryPlanningWorkbook(report, syncLogs = []) {
     ['Sufficient SKU count', summary.sufficientSkuCount],
     ['Missing inventory SKU count', summary.missingInventorySkuCount],
     ['Sync-failed SKU count', summary.syncFailedSkuCount],
+    ['SKUs shared by 2+ consignments', skus.filter((s) => (s.activeConsignmentCount || 0) > 1).length],
     ['Earliest shipment / appointment', summary.earliestShipmentOrAppointmentDate],
   ];
   execRows.forEach((r) => exec.addRow(r));
@@ -102,6 +103,7 @@ async function buildInventoryPlanningWorkbook(report, syncLogs = []) {
     'Urgent qty',
     'Normal qty',
     'Latest sheet inventory',
+    'Avail − Planned',
     'Allocated critical',
     'Allocated urgent',
     'Allocated normal',
@@ -130,6 +132,7 @@ async function buildInventoryPlanningWorkbook(report, syncLogs = []) {
       row.urgentQty,
       row.normalQty,
       row.latestInventory,
+      row.inventoryBalance,
       row.inventoryAllocatedCritical,
       row.inventoryAllocatedUrgent,
       row.inventoryAllocatedNormal,
@@ -145,7 +148,7 @@ async function buildInventoryPlanningWorkbook(report, syncLogs = []) {
       row.recommendedAction,
     ]);
     const fill = statusFill(row.inventoryStatus);
-    if (fill) r.getCell(22).fill = fill;
+    if (fill) r.getCell(23).fill = fill;
   }
   // Totals
   if (skus.length) {
@@ -160,6 +163,7 @@ async function buildInventoryPlanningWorkbook(report, syncLogs = []) {
       skus.reduce((s, r) => s + (r.urgentQty || 0), 0),
       skus.reduce((s, r) => s + (r.normalQty || 0), 0),
       summary.totalAvailableInventory,
+      '',
       '',
       '',
       '',
@@ -233,6 +237,7 @@ async function buildInventoryPlanningWorkbook(report, syncLogs = []) {
       row.urgentQty,
       row.normalQty,
       row.latestInventory,
+      row.inventoryBalance,
       row.inventoryAllocatedCritical,
       row.inventoryAllocatedUrgent,
       row.inventoryAllocatedNormal,
@@ -248,7 +253,7 @@ async function buildInventoryPlanningWorkbook(report, syncLogs = []) {
       row.recommendedAction,
     ]);
     const fill = statusFill(row.inventoryStatus);
-    if (fill) r.getCell(22).fill = fill;
+    if (fill) r.getCell(23).fill = fill;
   }
   cu.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: skuHeaders.length } };
   cu.views = [{ state: 'frozen', ySplit: 1 }];

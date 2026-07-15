@@ -204,6 +204,11 @@ export default function InventoryPlanning() {
         additionalCcEmails: textToEmails(settingsForm.additionalCcEmails),
         syncHourUtc: Number(settingsForm.syncHourUtc),
         syncMinuteUtc: Number(settingsForm.syncMinuteUtc),
+        syncHourLocal: Number(settingsForm.syncHourLocal ?? 10),
+        syncMinuteLocal: Number(settingsForm.syncMinuteLocal ?? 30),
+        syncTimezone: settingsForm.syncTimezone || 'Asia/Kolkata',
+        sheetFetchBatchSize: Number(settingsForm.sheetFetchBatchSize || 2000),
+        sheetFetchPauseMs: Number(settingsForm.sheetFetchPauseMs ?? 2000),
         emailDailyHourUtc: Number(settingsForm.emailDailyHourUtc),
         emailMinIntervalMinutes: Number(settingsForm.emailMinIntervalMinutes),
         reportRetentionDays: Number(settingsForm.reportRetentionDays),
@@ -214,7 +219,9 @@ export default function InventoryPlanning() {
         treatMissingInventoryAsZero: Boolean(settingsForm.treatMissingInventoryAsZero),
         emailOnResolvedShortage: Boolean(settingsForm.emailOnResolvedShortage),
         emailDailyReport: Boolean(settingsForm.emailDailyReport),
+        emailAfterDailySync: settingsForm.emailAfterDailySync !== false,
         autoCcOrganisationHeadUsers: Boolean(settingsForm.autoCcOrganisationHeadUsers),
+        preferSheetColumnC: settingsForm.preferSheetColumnC !== false,
       }
       const res = await inventoryPlanningAPI.updateSettings(payload)
       setSettings(res.data.settings)
@@ -538,26 +545,50 @@ export default function InventoryPlanning() {
               />
             </label>
             <label className="text-sm">
-              <span className="font-semibold text-slate-700">Daily sync hour (UTC)</span>
+              <span className="font-semibold text-slate-700">Daily sync hour (India / IST)</span>
               <input
                 type="number"
                 min={0}
                 max={23}
                 className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
-                value={settingsForm.syncHourUtc}
-                onChange={(e) => setSettingsForm({ ...settingsForm, syncHourUtc: e.target.value })}
+                value={settingsForm.syncHourLocal ?? 10}
+                onChange={(e) => setSettingsForm({ ...settingsForm, syncHourLocal: e.target.value })}
               />
             </label>
             <label className="text-sm">
-              <span className="font-semibold text-slate-700">Daily sync minute (UTC)</span>
+              <span className="font-semibold text-slate-700">Daily sync minute (IST)</span>
               <input
                 type="number"
                 min={0}
                 max={59}
                 className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
-                value={settingsForm.syncMinuteUtc}
-                onChange={(e) => setSettingsForm({ ...settingsForm, syncMinuteUtc: e.target.value })}
+                value={settingsForm.syncMinuteLocal ?? 30}
+                onChange={(e) => setSettingsForm({ ...settingsForm, syncMinuteLocal: e.target.value })}
               />
+            </label>
+            <label className="text-sm">
+              <span className="font-semibold text-slate-700">Sheet fetch batch size</span>
+              <input
+                type="number"
+                min={100}
+                max={5000}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
+                value={settingsForm.sheetFetchBatchSize ?? 2000}
+                onChange={(e) => setSettingsForm({ ...settingsForm, sheetFetchBatchSize: e.target.value })}
+              />
+              <span className="mt-1 block text-xs text-slate-500">Default 2000 SKU rows per Google Sheet request</span>
+            </label>
+            <label className="text-sm">
+              <span className="font-semibold text-slate-700">Pause between batches (ms)</span>
+              <input
+                type="number"
+                min={0}
+                max={30000}
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
+                value={settingsForm.sheetFetchPauseMs ?? 2000}
+                onChange={(e) => setSettingsForm({ ...settingsForm, sheetFetchPauseMs: e.target.value })}
+              />
+              <span className="mt-1 block text-xs text-slate-500">Default 2000 ms (2 seconds) to avoid API limits</span>
             </label>
             <label className="text-sm md:col-span-2">
               <span className="font-semibold text-slate-700">Production team (To)</span>
@@ -593,11 +624,13 @@ export default function InventoryPlanning() {
           <div className="grid sm:grid-cols-2 gap-3 text-sm">
             {[
               ['enabled', 'Feature enabled'],
-              ['syncEnabled', 'Scheduled daily sheet sync'],
+              ['syncEnabled', 'Scheduled daily sheet sync at 10:30 IST'],
               ['autoCcOrganisationHeadUsers', 'Auto-CC Organisation Head users when Cc list is empty'],
               ['emailDailyReport', 'Daily email report'],
+              ['emailAfterDailySync', 'Email full report right after morning sync'],
               ['emailOnResolvedShortage', 'Notify when shortage resolves'],
               ['treatMissingInventoryAsZero', 'Treat missing inventory as zero'],
+              ['preferSheetColumnC', 'Prefer Google Sheet Column C for available qty'],
             ].map(([key, label]) => (
               <label key={key} className="flex items-center gap-2">
                 <input

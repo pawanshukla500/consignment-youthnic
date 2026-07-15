@@ -359,5 +359,27 @@ const {
   );
 }
 
+// Batched sheet read settings (2000 + pause)
+{
+  const { isDailySyncSlot, getZonedDateParts, DEFAULT_INVENTORY_SETTINGS } = require('../utils/inventorySettings');
+  assert.strictEqual(DEFAULT_INVENTORY_SETTINGS.syncHourLocal, 10);
+  assert.strictEqual(DEFAULT_INVENTORY_SETTINGS.syncMinuteLocal, 30);
+  assert.strictEqual(DEFAULT_INVENTORY_SETTINGS.sheetFetchBatchSize, 2000);
+  assert.strictEqual(DEFAULT_INVENTORY_SETTINGS.sheetFetchPauseMs, 2000);
+  const parts = getZonedDateParts(new Date('2026-07-15T05:00:00.000Z'), 'Asia/Kolkata');
+  // 05:00 UTC = 10:30 IST is wrong - 05:00 UTC = 10:30 IST yes: IST = UTC+5:30 so 05:00 UTC = 10:30 IST
+  assert.strictEqual(parts.hour, 10);
+  assert.strictEqual(parts.minute, 30);
+  assert.strictEqual(
+    isDailySyncSlot({ syncTimezone: 'Asia/Kolkata', syncHourLocal: 10, syncMinuteLocal: 30 }, new Date('2026-07-15T05:00:00.000Z')),
+    true
+  );
+  assert.strictEqual(
+    isDailySyncSlot({ syncTimezone: 'Asia/Kolkata', syncHourLocal: 10, syncMinuteLocal: 30 }, new Date('2026-07-15T05:01:00.000Z')),
+    false
+  );
+}
+
 console.log('Inventory planning tests passed.');
+
 

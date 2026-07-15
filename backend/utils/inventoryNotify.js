@@ -195,7 +195,10 @@ async function sendInventoryPlanningNotification({
     return { ok: false, reason: 'duplicate_fingerprint' };
   }
 
-  const subject = 'Inventory Planning Alert – Critical and Urgent SKU Requirements';
+  const isDaily = triggerReason === 'daily_report';
+  const subject = isDaily
+    ? `Daily Inventory Planning Report – ${new Date().toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata' })}`
+    : 'Inventory Planning Alert – Critical and Urgent SKU Requirements';
   const dashboardUrl = `${appBaseUrl()}${settings.dashboardPath || '/inventory-planning'}`;
   const { html, text } = buildInventoryPlanningEmail({ report, dashboardUrl, subject });
 

@@ -476,48 +476,95 @@ app.listen(PORT, async () => {
     console.warn('[Workflow] Could not start schedulers:', err.message);
   }
 
-  // Inventory Planning: daily Google Sheet inventory sync + daily email report (UTC hour from settings)
+  // Inventory Planning: daily Google Sheet sync @ 10:30 Asia/Kolkata, then full team report email
   try {
-    const { getInventorySettings } = require('./utils/inventorySettings');
+    const {
+      getInventorySettings,
+      isDailySyncSlot,
+      getZonedDateParts,
+    } = require('./utils/inventorySettings');
     const { runInventorySync, isSyncRunning } = require('./utils/inventorySyncService');
     const { sendInventoryPlanningNotification } = require('./utils/inventoryNotify');
+    const { buildInventoryPlanningReport } = require('./utils/inventoryReportBuilder');
     let lastSyncSlot = '';
-    let lastEmailSlot = '';
     setInterval(async () => {
       try {
         const settings = await getInventorySettings();
-        if (!settings.enabled) return;
-        const d = new Date();
-        if (settings.syncEnabled && !isSyncRunning()
-            && d.getUTCHours() === Number(settings.syncHourUtc)
-            && d.getUTCMinutes() === Number(settings.syncMinuteUtc)) {
-          const slot = `${d.toISOString().slice(0, 10)}-sync`;
-          if (slot !== lastSyncSlot) {
-            lastSyncSlot = slot;
-            console.log('[InventoryPlanning] Starting scheduled Google Sheet inventory sync');
-            const result = await runInventorySync({ triggerType: 'scheduled', triggeredBy: 'scheduler' });
-            console.log('[InventoryPlanning] Scheduled sync', result.ok ? 'ok' : result.error || result.reason);
-            if (result.ok) {
-              await sendInventoryPlanningNotification({ triggerReason: 'sync_shortage' }).catch(() => {});
-            }
+        if (!settings.enabled || !settings.syncEnabled) return;
+        if (isSyncRunning()) return;
+        if (!isDailySyncSlot(settings)) return;
+
+        const parts = getZonedDateParts(new Date(), settings.syncTimezone || 'Asia/Kolkata');
+        const slot = `${parts.dateKey}-morning-sync`;
+        if (slot === lastSyncSlot) return;
+        lastSyncSlot = slot;
+
+        console.log(
+          `[InventoryPlanning] Starting daily Google Sheet sync (${parts.hour}:${String(parts.minute).padStart(2, '0')} ${settings.syncTimezone || 'Asia/Kolkata'})`
+        );
+
+        let result = null;
+        let lastError = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            result = await runInventorySync({ triggerType: 'scheduled', triggeredBy: 'scheduler' });
+            if (result.ok) break;
+            lastError = result.error || result.reason || 'sync_failed';
+            console.warn(`[InventoryPlanning] Daily sync attempt ${attempt}/3 failed:`, lastError);
+          } catch (err) {
+            lastError = err.message;
+            console.warn(`[InventoryPlanning] Daily sync attempt ${attempt}/3 threw:`, err.message);
+          }
+          if (attempt < 3) {
+            await new Promise((r) => setTimeout(r, 60 * 1000 * attempt));
           }
         }
-        if (settings.emailDailyReport
-            && d.getUTCHours() === Number(settings.emailDailyHourUtc || 3)
-            && d.getUTCMinutes() < 5) {
-          const slot = `${d.toISOString().slice(0, 10)}-daily-email`;
-          if (slot !== lastEmailSlot) {
-            lastEmailSlot = slot;
-            console.log('[InventoryPlanning] Sending daily inventory report email');
-            const r = await sendInventoryPlanningNotification({ triggerReason: 'daily_report', force: true });
-            console.log('[InventoryPlanning] Daily email', r.ok ? 'sent' : r.reason || r.error);
+
+        if (!result?.ok) {
+          console.error('[InventoryPlanning] Daily sync failed after retries:', lastError);
+          return;
+        }
+
+        console.log(
+          `[InventoryPlanning] Daily sync ok — ${result.skusUpdated} SKUs from "${result.sheetMeta?.sheetName}" ` +
+            `(batches=${result.sheetMeta?.batchCount || '?'})`
+        );
+
+        if (settings.emailDailyReport !== false && settings.emailAfterDailySync !== false) {
+          try {
+            const report = await buildInventoryPlanningReport({
+              triggerReason: 'daily_report',
+              persist: true,
+            });
+            const mail = await sendInventoryPlanningNotification({
+              triggerReason: 'daily_report',
+              force: true,
+              report,
+            });
+            console.log(
+              '[InventoryPlanning] Daily report email',
+              mail.ok ? `sent → ${(mail.to || []).join(',')}` : (mail.reason || mail.error)
+            );
+          } catch (err) {
+            console.warn('[InventoryPlanning] Daily report email failed:', err.message);
+            // One email retry after short pause
+            try {
+              await new Promise((r) => setTimeout(r, 15000));
+              const mail = await sendInventoryPlanningNotification({
+                triggerReason: 'daily_report',
+                force: true,
+              });
+              console.log('[InventoryPlanning] Daily report email retry', mail.ok ? 'sent' : mail.reason || mail.error);
+            } catch (retryErr) {
+              console.error('[InventoryPlanning] Daily report email retry failed:', retryErr.message);
+            }
           }
         }
       } catch (err) {
         console.warn('[InventoryPlanning] scheduler tick failed:', err.message);
       }
-    }, 60 * 1000);
-    console.log('[InventoryPlanning] Daily sync + email schedulers started');
+    }, 30 * 1000);
+    console.log('[InventoryPlanning] Daily sync+email scheduler started (default 10:30 Asia/Kolkata)');
   } catch (err) {
     console.warn('[InventoryPlanning] Could not start schedulers:', err.message);
   }

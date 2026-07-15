@@ -496,20 +496,96 @@ async function listSpreadsheetTabs(sheets, spreadsheetId) {
   };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRetry(fn, { retries = 3, delayMs = 2000, label = 'operation' } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[InventorySheets] ${label} attempt ${attempt}/${retries} failed:`, err.message);
+      if (attempt < retries) await sleep(delayMs * attempt);
+    }
+  }
+  throw lastErr;
+}
+
 async function readSheetValues(sheets, spreadsheetId, sheetName, { previewRows = null } = {}) {
   const escaped = escapeSheetName(sheetName);
   // Only A:C — AutoFetch can have dozens of date columns; full-sheet reads time out on Cloud Run.
   const range = previewRows
     ? `'${escaped}'!A1:C${Math.max(20, previewRows)}`
     : `'${escaped}'!A:C`;
-  const read = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range,
-    majorDimension: 'ROWS',
-    valueRenderOption: 'UNFORMATTED_VALUE',
-    dateTimeRenderOption: 'FORMATTED_STRING',
-  });
+  const read = await withRetry(
+    () => sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range,
+      majorDimension: 'ROWS',
+      valueRenderOption: 'UNFORMATTED_VALUE',
+      dateTimeRenderOption: 'FORMATTED_STRING',
+    }),
+    { label: `read ${sheetName} ${range}` }
+  );
   return read.data.values || [];
+}
+
+/**
+ * Fetch inventory sheet in batches of `batchSize` rows with `pauseMs` between batches.
+ * Prevents Google API rate limits on large AutoFetch / Total Inventory tabs.
+ */
+async function readSheetValuesBatched(sheets, spreadsheetId, sheetName, {
+  batchSize = 2000,
+  pauseMs = 2000,
+  maxRows = 200000,
+} = {}) {
+  const size = Math.max(100, Math.min(5000, Number(batchSize) || 2000));
+  const pause = Math.max(0, Number(pauseMs) || 0);
+  const escaped = escapeSheetName(sheetName);
+  const all = [];
+  let start = 1;
+  let batchIndex = 0;
+
+  while (start <= maxRows) {
+    if (batchIndex > 0 && pause > 0) {
+      await sleep(pause);
+    }
+    const end = start + size - 1;
+    const range = `'${escaped}'!A${start}:C${end}`;
+    const values = await withRetry(
+      async () => {
+        const read = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range,
+          majorDimension: 'ROWS',
+          valueRenderOption: 'UNFORMATTED_VALUE',
+          dateTimeRenderOption: 'FORMATTED_STRING',
+        });
+        return read.data.values || [];
+      },
+      { retries: 4, delayMs: Math.max(2000, pause || 2000), label: `batch ${sheetName} ${range}` }
+    );
+
+    if (!values.length) break;
+    all.push(...values);
+    batchIndex += 1;
+    console.log(
+      `[InventorySheets] ${sheetName} batch ${batchIndex}: rows ${start}-${start + values.length - 1} (got ${values.length})`
+    );
+    // Partial batch ⇒ end of sheet
+    if (values.length < size) break;
+    start += size;
+  }
+
+  return {
+    values: all,
+    batchCount: batchIndex,
+    batchSize: size,
+    pauseMs: pause,
+  };
 }
 
 /**
@@ -625,6 +701,7 @@ async function probeSheetAccess(spreadsheetId, sheetName = 'AutoFetch') {
 
 /**
  * Read inventory rows from the best matching workbook tab.
+ * Large tabs are fetched in batches of 2000 rows with a 2s pause between batches.
  */
 async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
   const creds = getSheetsCredentialStatus();
@@ -658,6 +735,10 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
 
   const preferColumnC = options.preferColumnC !== false;
   const blankAsZero = options.blankAsZero !== false;
+  const batchSize = options.batchSize || Number(process.env.INVENTORY_SHEET_BATCH_SIZE) || 2000;
+  const pauseMs = options.pauseMs != null
+    ? Number(options.pauseMs)
+    : Number(process.env.INVENTORY_SHEET_BATCH_PAUSE_MS || 2000);
   const candidates = buildSheetCandidates(sheetName || 'AutoFetch', availableTabs);
   if (!candidates.length) {
     throw new Error(
@@ -665,58 +746,100 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
     );
   }
 
-  let best = null;
+  // 1) Score tabs using a fast sample (first 500 rows) — then fully batch-read the winner.
+  let bestTitle = null;
+  let bestSampleScore = -1;
   const tried = [];
-  // Scan candidate tabs and pick the one with the most real stock (not just the configured name).
   for (const title of candidates.slice(0, 8)) {
     try {
-      const values = await readSheetValues(sheets, spreadsheetId, title);
-      if (values.length < 2) {
-        tried.push({ sheetName: title, error: 'too few rows', score: -1 });
+      const sampleValues = await readSheetValues(sheets, spreadsheetId, title, { previewRows: 500 });
+      if (sampleValues.length < 2) {
+        tried.push({ sheetName: title, error: 'too few rows', score: -1, phase: 'sample' });
         continue;
       }
-      const parsed = parseInventorySheetValues(values, { preferColumnC, blankAsZero });
-      const score = scoreParsedInventory(parsed);
+      const sampleParsed = parseInventorySheetValues(sampleValues, { preferColumnC, blankAsZero });
+      const score = scoreParsedInventory(sampleParsed);
       tried.push({
         sheetName: title,
         score,
-        rowCount: parsed.meta.rowCount,
-        positiveQtyCount: parsed.meta.positiveQtyCount,
-        columnReason: parsed.meta.columnReason,
+        rowCount: sampleParsed.meta.rowCount,
+        positiveQtyCount: sampleParsed.meta.positiveQtyCount,
+        columnReason: sampleParsed.meta.columnReason,
+        phase: 'sample',
       });
-      if (!best || score > best.score) {
-        best = { title, parsed, score };
+      if (score > bestSampleScore) {
+        bestSampleScore = score;
+        bestTitle = title;
       }
     } catch (err) {
-      tried.push({ sheetName: title, error: err.message, score: -1 });
+      tried.push({ sheetName: title, error: err.message, score: -1, phase: 'sample' });
     }
   }
 
-  if (!best || !best.parsed.rows.length) {
+  if (!bestTitle) {
     throw new Error(
       `No inventory SKU rows found. Tried tabs: ${candidates.join(', ')}. ` +
         'Check sku_code (Column B) and Inventory (Column C).'
     );
   }
 
-  if ((best.parsed.meta.positiveQtyCount || 0) === 0) {
+  // 2) Full batched read of the winning tab
+  let batched;
+  try {
+    batched = await readSheetValuesBatched(sheets, spreadsheetId, bestTitle, {
+      batchSize,
+      pauseMs,
+    });
+  } catch (err) {
+    throw new Error(formatGoogleSheetsApiError(err, {
+      spreadsheetId,
+      clientEmail: creds.sheetsClientEmail,
+    }));
+  }
+
+  if ((batched.values || []).length < 2) {
+    throw new Error(`Sheet "${bestTitle}" has no header/data rows after batched read`);
+  }
+
+  const parsed = parseInventorySheetValues(batched.values, { preferColumnC, blankAsZero });
+  const score = scoreParsedInventory(parsed);
+  tried.push({
+    sheetName: bestTitle,
+    score,
+    rowCount: parsed.meta.rowCount,
+    positiveQtyCount: parsed.meta.positiveQtyCount,
+    columnReason: parsed.meta.columnReason,
+    phase: 'full_batched',
+    batchCount: batched.batchCount,
+  });
+
+  if (!parsed.rows.length) {
+    throw new Error(
+      `No inventory SKU rows found on "${bestTitle}". Check sku_code (Column B) and Inventory (Column C).`
+    );
+  }
+
+  if ((parsed.meta.positiveQtyCount || 0) === 0) {
     console.warn(
-      `[InventorySheets] Selected tab "${best.title}" has 0 positive qty across ${best.parsed.meta.rowCount} SKUs. Tried: ${JSON.stringify(tried)}`
+      `[InventorySheets] Selected tab "${bestTitle}" has 0 positive qty across ${parsed.meta.rowCount} SKUs. Tried: ${JSON.stringify(tried)}`
     );
   }
 
   return {
-    rows: best.parsed.rows,
-    skipped: best.parsed.skipped,
+    rows: parsed.rows,
+    skipped: parsed.skipped,
     meta: {
-      ...best.parsed.meta,
+      ...parsed.meta,
       fetchedAt: new Date().toISOString(),
-      sheetName: best.title,
+      sheetName: bestTitle,
       requestedSheetName: sheetName || null,
       spreadsheetId,
       spreadsheetTitle,
       availableTabs,
       triedTabs: tried,
+      batchCount: batched.batchCount,
+      batchSize: batched.batchSize,
+      pauseMs: batched.pauseMs,
       serviceAccountEmail: creds.sheetsClientEmail,
     },
   };
@@ -738,5 +861,6 @@ module.exports = {
   formatGoogleSheetsApiError,
   probeSheetAccess,
   fetchInventoryFromSheet,
+  readSheetValuesBatched,
   DEFAULT_SHEET_CANDIDATES,
 };
