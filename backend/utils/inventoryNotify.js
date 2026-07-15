@@ -5,7 +5,7 @@
 const { generateId, addAuditLog } = require('./helpers');
 const { getPool, pgEnabled } = require('../config/database');
 const { isMailgunConfigured, sendViaMailgun } = require('./mailgun');
-const { getInventorySettings, saveInventorySettings } = require('./inventorySettings');
+const { getInventorySettings, saveInventorySettings, resolveOrganisationHeadCcEmails } = require('./inventorySettings');
 const { buildInventoryPlanningReport } = require('./inventoryReportBuilder');
 const { buildInventoryPlanningWorkbook } = require('./inventoryPlanningExcel');
 const { buildInventoryPlanningEmail } = require('./inventoryPlanningEmail');
@@ -119,12 +119,14 @@ async function sendInventoryPlanningNotification({
     return { ok: false, reason: 'rule_disabled', triggerReason };
   }
 
+  // Production team is the primary To; inventory team emails (if configured) are also To.
   const to = [...new Set([
     ...settings.productionTeamEmails,
     ...settings.inventoryTeamEmails,
   ])];
+  const orgHeadCc = await resolveOrganisationHeadCcEmails(settings);
   const cc = [...new Set([
-    ...settings.organisationHeadCcEmails,
+    ...orgHeadCc,
     ...settings.additionalCcEmails,
   ])].filter((e) => !to.includes(e));
 
@@ -300,26 +302,30 @@ async function sendInventoryPlanningNotification({
 
 /**
  * Debounce packing/consignment-driven recalculation so packing stays non-blocking.
+ * New consignments use a shorter delay so production is alerted quickly.
  */
 function scheduleInventoryPlanningCheck(reason = 'quantity_change') {
   pendingReasons.add(reason);
   if (notifyTimer) clearTimeout(notifyTimer);
+  const delayMs = reason === 'new_shortage' || pendingReasons.has('new_shortage') ? 2500 : 8000;
   notifyTimer = setTimeout(async () => {
     const reasons = [...pendingReasons];
     pendingReasons.clear();
     notifyTimer = null;
     try {
-      const triggerReason = reasons.includes('priority_change')
-        ? 'priority_change'
-        : reasons.includes('new_shortage')
-          ? 'new_shortage'
+      const triggerReason = reasons.includes('new_shortage')
+        ? 'new_shortage'
+        : reasons.includes('priority_change')
+          ? 'priority_change'
           : reasons[0] || 'quantity_change';
       const report = await buildInventoryPlanningReport({ triggerReason, persist: true });
-      await sendInventoryPlanningNotification({ triggerReason, report });
+      // New consignment / shortage alerts force send when any shortage exists
+      const force = triggerReason === 'new_shortage' && (report.summary?.totalShortageQty || 0) > 0;
+      await sendInventoryPlanningNotification({ triggerReason, report, force });
     } catch (err) {
       console.warn('[InventoryNotify] deferred check failed:', err.message);
     }
-  }, 8000);
+  }, delayMs);
 }
 
 module.exports = {

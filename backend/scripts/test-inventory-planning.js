@@ -126,16 +126,36 @@ const {
   assert.strictEqual(reportRows[0].inventoryStatus, INVENTORY_STATUSES.URGENT_PRODUCTION);
 }
 
-// Sheet date column: prefer today, else newest date
+// Sheet Column C is preferred for latest available inventory
 {
   const today = formatSheetDate(new Date('2026-07-15T12:00:00Z'));
-  const colToday = resolveInventoryColumn(['id', 'sku_code', '15/07/2026', '14/07/2026'], today);
-  assert.strictEqual(colToday.index, 2);
-  assert.strictEqual(colToday.reason, 'today');
+  const colC = resolveInventoryColumn(['id', 'sku_code', '15/07/2026', '14/07/2026'], today);
+  assert.strictEqual(colC.index, 2);
+  assert.strictEqual(colC.reason, 'column_c');
 
-  const colLatest = resolveInventoryColumn(['id', 'sku_code', '14/07/2026', '13/07/2026'], '99/99/9999');
-  assert.strictEqual(colLatest.label, '14/07/2026');
+  const colLatest = resolveInventoryColumn(
+    ['id', 'sku_code', '14/07/2026', '15/07/2026'],
+    '99/99/9999',
+    { preferColumnC: false }
+  );
+  assert.strictEqual(colLatest.label, '15/07/2026');
   assert.strictEqual(colLatest.reason, 'latest_date');
+}
+
+// Available − Planned balance on shortage example
+{
+  const demand = buildSkuDemand([{
+    id: 'C1', status: 'pending', criticalityLevel: 'critical',
+    skus: [{ internalSku: 'SKU123', requiredQty: 100, packedQty: 0 }],
+  }]);
+  const rows = applyStockToDemand(demand, {
+    SKU123: { quantity: 80, sync_status: 'ok' },
+  });
+  assert.strictEqual(rows[0].latestInventory, 80);
+  assert.strictEqual(rows[0].totalPlannedQty, 100);
+  assert.strictEqual(rows[0].inventoryBalance, -20);
+  assert.strictEqual(rows[0].totalShortage, 20);
+  assert.strictEqual(rows[0].suggestedProductionQty, 20);
 }
 
 // Blank / invalid sheet quantities are rejected (never overwrite with blank)

@@ -195,6 +195,7 @@ export default function InventoryPlanning() {
         treatMissingInventoryAsZero: Boolean(settingsForm.treatMissingInventoryAsZero),
         emailOnResolvedShortage: Boolean(settingsForm.emailOnResolvedShortage),
         emailDailyReport: Boolean(settingsForm.emailDailyReport),
+        autoCcOrganisationHeadUsers: Boolean(settingsForm.autoCcOrganisationHeadUsers),
       }
       const res = await inventoryPlanningAPI.updateSettings(payload)
       setSettings(res.data.settings)
@@ -221,9 +222,10 @@ export default function InventoryPlanning() {
           <div className="flex items-center gap-2 text-teal-700 text-sm font-semibold uppercase tracking-wider">
             <Factory className="w-4 h-4" /> Inventory Planning
           </div>
-          <h1 className="mt-1 text-2xl font-bold text-slate-900">SKU demand vs sheet inventory</h1>
+          <h1 className="mt-1 text-2xl font-bold text-slate-900">Internal SKU demand vs sheet inventory</h1>
           <p className="mt-1 text-sm text-slate-600 max-w-2xl">
-            Paste OMSGuru inventory into Google Sheet AutoFetch, then Sync. Open consignments are allocated Critical → Urgent → Normal against that stock.
+            Uses Internal SKUs from consignments that are created or planned but not fully packed.
+            Compares Google Sheet Column C available qty with total planned remaining quantity, then alerts Production.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -361,7 +363,8 @@ export default function InventoryPlanning() {
                   <th className="px-3 py-2.5 font-semibold">Status</th>
                   <th className="px-3 py-2.5 font-semibold text-right">Planned</th>
                   <th className="px-3 py-2.5 font-semibold text-right">Crit / Urg / Norm</th>
-                  <th className="px-3 py-2.5 font-semibold text-right">Inventory</th>
+                  <th className="px-3 py-2.5 font-semibold text-right">Inventory (Col C)</th>
+                  <th className="px-3 py-2.5 font-semibold text-right">Avail − Planned</th>
                   <th className="px-3 py-2.5 font-semibold text-right">Shortage</th>
                   <th className="px-3 py-2.5 font-semibold text-right">Produce</th>
                   <th className="px-3 py-2.5 font-semibold">Consignments</th>
@@ -391,6 +394,15 @@ export default function InventoryPlanning() {
                     <td className="px-3 py-2.5 text-right tabular-nums">
                       {row.latestInventory == null ? '—' : row.latestInventory}
                     </td>
+                    <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${
+                      row.inventoryBalance == null
+                        ? 'text-slate-400'
+                        : row.inventoryBalance < 0
+                          ? 'text-red-700'
+                          : 'text-emerald-700'
+                    }`}>
+                      {row.inventoryBalance == null ? '—' : row.inventoryBalance}
+                    </td>
                     <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-red-700">{row.totalShortage}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-teal-800">{row.suggestedProductionQty}</td>
                     <td className="px-3 py-2.5 text-xs text-slate-600 max-w-[180px]">
@@ -402,7 +414,7 @@ export default function InventoryPlanning() {
                 ))}
                 {!filtered.length && (
                   <tr>
-                    <td colSpan={9} className="px-3 py-10 text-center text-slate-500">
+                    <td colSpan={10} className="px-3 py-10 text-center text-slate-500">
                       <Package className="w-8 h-8 mx-auto mb-2 text-slate-300" />
                       No SKUs match the current filters.
                     </td>
@@ -457,7 +469,9 @@ export default function InventoryPlanning() {
             <Settings2 className="w-4 h-4" /> Inventory Planning configuration
           </div>
           <p className="text-sm text-slate-600">
-            Google service-account JSON stays in environment variables. Paste inventory into AutoFetch manually; configure sheet ID, schedule, recipients, and priority rules here.
+            Inventory comes from Google Sheet AutoFetch Column C (matched by Internal SKU / sku_code).
+            Demand = remaining qty on consignments created or under packing, not fully packed.
+            Shortage email goes to the Production team; Organisation Head is CC’d automatically.
           </p>
 
           <div className="grid md:grid-cols-2 gap-4">
@@ -503,23 +517,19 @@ export default function InventoryPlanning() {
               <span className="font-semibold text-slate-700">Production team (To)</span>
               <input
                 className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
-                placeholder="comma-separated emails"
+                placeholder="production@vbexports.co.in, dispatches@vbexports.co.in"
                 value={settingsForm.productionTeamEmails}
                 onChange={(e) => setSettingsForm({ ...settingsForm, productionTeamEmails: e.target.value })}
               />
-            </label>
-            <label className="text-sm md:col-span-2">
-              <span className="font-semibold text-slate-700">Inventory planning team (To)</span>
-              <input
-                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
-                value={settingsForm.inventoryTeamEmails}
-                onChange={(e) => setSettingsForm({ ...settingsForm, inventoryTeamEmails: e.target.value })}
-              />
+              <span className="mt-1 block text-xs text-slate-500">
+                Defaults: production@vbexports.co.in, dispatches@vbexports.co.in
+              </span>
             </label>
             <label className="text-sm md:col-span-2">
               <span className="font-semibold text-slate-700">Organisation Head (Cc)</span>
               <input
                 className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
+                placeholder="Leave blank to auto-CC users with Organisation Head role"
                 value={settingsForm.organisationHeadCcEmails}
                 onChange={(e) => setSettingsForm({ ...settingsForm, organisationHeadCcEmails: e.target.value })}
               />
@@ -537,7 +547,8 @@ export default function InventoryPlanning() {
           <div className="grid sm:grid-cols-2 gap-3 text-sm">
             {[
               ['enabled', 'Feature enabled'],
-              ['syncEnabled', 'Scheduled daily sync'],
+              ['syncEnabled', 'Scheduled daily sheet sync'],
+              ['autoCcOrganisationHeadUsers', 'Auto-CC Organisation Head users when Cc list is empty'],
               ['emailDailyReport', 'Daily email report'],
               ['emailOnResolvedShortage', 'Notify when shortage resolves'],
               ['treatMissingInventoryAsZero', 'Treat missing inventory as zero'],
