@@ -1,17 +1,31 @@
 /**
- * Google Sheets inventory reader for AutoFetch (manual OMSGuru paste).
+ * Google Sheets inventory reader.
  *
- * Observed AutoFetch layout:
+ * Supported layouts (same workbook):
+ *
+ * A) Date meta + Inventory header (FC inventory / Total Inventory):
+ *   Row 1:        | Date     | 15/07/2026
+ *   Row 2: id     | sku_code | Inventory
+ *   Row n: 21591169 | EJ1201-16001 | 955
+ *
+ * B) AutoFetch multi-date:
  *   Row 1: id | sku_code | <DD/MM/YYYY> | <DD/MM/YYYY> | …
  *   Row 2:    |          | Inventory    | Inventory    | …
  *
- * Matching key: sku_code (column B), case-insensitive.
- * Inventory column: Column C by default (AutoFetch latest available qty).
- * Blank/zero cells clear stale DB stock — they do NOT leave the previous quantity.
+ * Matching key: Column B sku_code (case-insensitive).
+ * Quantity: Column C by default, or the column whose header is "Inventory".
  */
 
 const { google } = require('googleapis');
 const { normalizeSkuKey } = require('./inventoryPlanning');
+
+const DEFAULT_SHEET_CANDIDATES = [
+  'AutoFetch',
+  'Total Inventory',
+  'FC inventory and In-Transit',
+  'Inventory',
+  'FC Inventory',
+];
 
 function getSheetsJsonRaw() {
   return (
@@ -125,7 +139,6 @@ function getSheetsCredentialStatus() {
 }
 
 function isSheetsConfigured() {
-  // Preferred path: valid SA JSON. Fall back to ADC only when JSON is absent (local/dev).
   const status = getSheetsCredentialStatus();
   if (status.ready) return true;
   if (!status.rawPresent && status.hasAdcPath) return true;
@@ -148,7 +161,7 @@ function formatGoogleSheetsApiError(err, { spreadsheetId, clientEmail } = {}) {
     return `Google Sheets access denied (403).${shareHint} Also enable the Google Sheets API on the GCP project that owns this service account.`;
   }
   if (code === 404 || lower.includes('not found')) {
-    return `Google Sheet not found (404). Check Sheet ID ${spreadsheetId || '(missing)'} and that the AutoFetch tab exists.${shareHint}`;
+    return `Google Sheet not found (404). Check Sheet ID ${spreadsheetId || '(missing)'} and that the inventory tab exists.${shareHint}`;
   }
   if (lower.includes('api has not been used') || lower.includes('sheets.googleapis.com') || lower.includes('access not configured')) {
     return `Google Sheets API is not enabled for this GCP project. Enable "Google Sheets API" in Google Cloud Console, then retry Sync.`;
@@ -191,7 +204,6 @@ async function getSheetsClient() {
 }
 
 function formatSheetDate(date = new Date()) {
-  // Sheet headers use local office dates (India). Prefer Asia/Kolkata when possible.
   const d = date instanceof Date ? date : new Date(date);
   try {
     const parts = new Intl.DateTimeFormat('en-GB', {
@@ -226,22 +238,53 @@ function parseSheetDateLabel(label) {
   return new Date(Date.UTC(year, month - 1, day));
 }
 
+function cellText(value) {
+  if (value === null || value === undefined) return '';
+  return String(value).trim();
+}
+
+function isSkuHeaderCell(value) {
+  const t = cellText(value).toLowerCase().replace(/\s+/g, '_');
+  return t === 'sku_code' || t === 'sku' || t === 'internal_sku' || t === 'internal sku';
+}
+
+function isInventoryHeaderCell(value) {
+  const t = cellText(value).toLowerCase();
+  return (
+    t === 'inventory' ||
+    t === 'available' ||
+    t === 'available inventory' ||
+    t === 'stock' ||
+    t === 'qty' ||
+    t === 'quantity'
+  );
+}
+
 /**
- * Choose inventory quantity column.
- * Default / business rule: Column C (index 2) — AutoFetch latest available inventory.
- * When preferColumnC is false: today's date header if present, else newest date, else Col C.
+ * Choose inventory quantity column from a header row.
+ * Prefers an "Inventory" header, otherwise Column C.
  */
 function resolveInventoryColumn(headerRow = [], todayLabel = formatSheetDate(), options = {}) {
   const preferColumnC = options.preferColumnC !== false && options.mode !== 'latest_date';
 
+  for (let i = 2; i < headerRow.length; i++) {
+    if (isInventoryHeaderCell(headerRow[i])) {
+      return {
+        index: i,
+        label: cellText(headerRow[i]) || 'Inventory',
+        reason: i === 2 ? 'column_c_inventory' : 'inventory_header',
+      };
+    }
+  }
+
   if (preferColumnC && headerRow.length > 2) {
-    const label = String(headerRow[2] || '').trim() || 'C';
+    const label = cellText(headerRow[2]) || 'C';
     return { index: 2, label, reason: 'column_c' };
   }
 
   const candidates = [];
   for (let i = 2; i < headerRow.length; i++) {
-    const label = String(headerRow[i] || '').trim();
+    const label = cellText(headerRow[i]);
     if (!label) continue;
     if (label === todayLabel) {
       return { index: i, label, reason: 'today' };
@@ -258,11 +301,31 @@ function resolveInventoryColumn(headerRow = [], todayLabel = formatSheetDate(), 
   if (headerRow.length > 2) {
     return {
       index: 2,
-      label: String(headerRow[2] || 'C').trim() || 'C',
+      label: cellText(headerRow[2]) || 'C',
       reason: 'fallback_column_c',
     };
   }
   return null;
+}
+
+/**
+ * Locate the header row that contains sku_code (may not be row 1 when Date meta sits above it).
+ */
+function findHeaderRow(values = []) {
+  const maxScan = Math.min(values.length, 10);
+  for (let i = 0; i < maxScan; i++) {
+    const row = values[i] || [];
+    if (isSkuHeaderCell(row[1]) || isSkuHeaderCell(row[0])) {
+      return {
+        index: i,
+        row: row.map((h) => (h == null ? '' : String(h))),
+      };
+    }
+  }
+  return {
+    index: 0,
+    row: (values[0] || []).map((h) => (h == null ? '' : String(h))),
+  };
 }
 
 function parseQuantityCell(raw) {
@@ -277,160 +340,46 @@ function parseQuantityCell(raw) {
 }
 
 /**
- * Lightweight auth + sheet access check used by status UI and before sync writes.
+ * Pure parser — unit-testable without Google APIs.
  */
-async function probeSheetAccess(spreadsheetId, sheetName = 'AutoFetch') {
-  const creds = getSheetsCredentialStatus();
-  if (!creds.ready && !(creds.hasAdcPath && !creds.rawPresent)) {
-    return {
-      ok: false,
-      error: creds.hint || 'Google Sheets credentials are not configured',
-      connection: creds,
-    };
-  }
-  if (!spreadsheetId) {
-    return { ok: false, error: 'Google Sheet ID is not configured', connection: creds };
+function parseInventorySheetValues(values = [], options = {}) {
+  if (!values.length) {
+    return { rows: [], skipped: [], meta: { rowCount: 0, positiveQtyCount: 0 } };
   }
 
-  try {
-    const sheets = await getSheetsClient();
-    const meta = await sheets.spreadsheets.get({
-      spreadsheetId,
-      fields: 'spreadsheetId,properties.title,sheets.properties.title',
-    });
-    const titles = (meta.data.sheets || []).map((s) => s.properties?.title).filter(Boolean);
-    const title = sheetName || 'AutoFetch';
-    if (titles.length && !titles.includes(title)) {
-      return {
-        ok: false,
-        error: `Tab "${title}" not found in spreadsheet. Available tabs: ${titles.join(', ') || '(none)'}`,
-        connection: creds,
-        spreadsheetTitle: meta.data.properties?.title || null,
-        availableTabs: titles,
-      };
-    }
-
-    // Read a small sample from Column C so operators can verify qty immediately
-    const escaped = escapeSheetName(title);
-    const sampleRead = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `'${escaped}'!A1:C12`,
-      majorDimension: 'ROWS',
-      valueRenderOption: 'UNFORMATTED_VALUE',
-      dateTimeRenderOption: 'FORMATTED_STRING',
-    });
-    const values = sampleRead.data.values || [];
-    const sampleRows = [];
-    for (let i = 1; i < values.length && sampleRows.length < 5; i++) {
-      const row = values[i] || [];
-      const sku = String(row[1] ?? '').trim();
-      if (!sku || sku.toLowerCase() === 'sku_code' || sku.toLowerCase() === 'inventory') continue;
-      const parsed = parseQuantityCell(row[2]);
-      sampleRows.push({
-        sku,
-        columnC: parsed.ok ? parsed.value : null,
-        blank: !parsed.ok,
-      });
-    }
-
-    return {
-      ok: true,
-      connection: creds,
-      spreadsheetTitle: meta.data.properties?.title || null,
-      availableTabs: titles,
-      sheetName: title,
-      sampleRows,
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      error: formatGoogleSheetsApiError(err, {
-        spreadsheetId,
-        clientEmail: creds.sheetsClientEmail,
-      }),
-      connection: creds,
-    };
-  }
-}
-
-/**
- * Read inventory rows from AutoFetch.
- * Blank inventory cells are returned as quantity null so sync can clear stale DB values.
- * @returns {{ rows: Array<{internalSku, quantity, displaySku}>, skipped: Array, meta: object }}
- */
-async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
-  const creds = getSheetsCredentialStatus();
-  if (!creds.ready && !(creds.hasAdcPath && !creds.rawPresent)) {
-    throw new Error(creds.hint || 'Google Sheets credentials are not configured');
-  }
-  if (!spreadsheetId) throw new Error('Google Sheet ID is required');
-
-  let sheets;
-  try {
-    sheets = await getSheetsClient();
-  } catch (err) {
-    throw new Error(formatGoogleSheetsApiError(err, {
-      spreadsheetId,
-      clientEmail: creds.sheetsClientEmail,
-    }));
-  }
-
-  const title = sheetName || 'AutoFetch';
-  const escaped = escapeSheetName(title);
-
-  let values;
-  try {
-    const read = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `'${escaped}'`,
-      majorDimension: 'ROWS',
-      valueRenderOption: 'UNFORMATTED_VALUE',
-      dateTimeRenderOption: 'FORMATTED_STRING',
-    });
-    values = read.data.values || [];
-  } catch (err) {
-    throw new Error(formatGoogleSheetsApiError(err, {
-      spreadsheetId,
-      clientEmail: creds.sheetsClientEmail,
-    }));
-  }
-
-  if (values.length < 2) {
-    throw new Error(`Sheet "${title}" has no header/data rows`);
-  }
-
-  const header = (values[0] || []).map((h) => (h == null ? '' : String(h)));
-  const todayLabel = formatSheetDate(new Date());
-  // Default true: match Admin UI / settings.preferSheetColumnC (Column C = available qty).
+  const todayLabel = options.todayLabel || formatSheetDate(new Date());
   const preferColumnC = options.preferColumnC !== false;
+  const blankAsZero = options.blankAsZero !== false;
+  const headerInfo = findHeaderRow(values);
+  const header = headerInfo.row;
   const column = resolveInventoryColumn(header, todayLabel, {
     preferColumnC,
     mode: preferColumnC ? 'column_c' : 'latest_date',
   });
   if (!column) {
-    throw new Error(`No inventory column found in sheet "${title}" (expected Column C)`);
+    throw new Error('No inventory column found (expected Column C / Inventory)');
   }
+
+  let skuIndex = 1;
+  if (isSkuHeaderCell(header[0]) && !isSkuHeaderCell(header[1])) skuIndex = 0;
+  else if (isSkuHeaderCell(header[1])) skuIndex = 1;
 
   const rows = [];
   const skipped = [];
   const seen = new Set();
-  // Blank inventory cells default to 0 so Available matches the sheet (not a stale DB qty).
-  const blankAsZero = options.blankAsZero !== false;
+  const startIdx = headerInfo.index + 1;
 
-  // Data usually starts at row 3 (index 2). If row 2 is not "Inventory", still skip header-like rows.
-  const startIdx = 1;
   for (let i = startIdx; i < values.length; i++) {
     const row = values[i] || [];
-    const displaySku = String(row[1] ?? '').trim();
+    const displaySku = cellText(row[skuIndex]);
     const sku = normalizeSkuKey(displaySku);
     if (!sku) {
-      // Skip pure header / empty rows
-      if (i <= 2) continue;
+      if (i <= headerInfo.index + 2) continue;
       skipped.push({ row: i + 1, reason: 'missing_sku' });
       continue;
     }
-    // Skip sub-header row ("Inventory" under dates)
-    if (sku === 'sku_code' || sku === 'inventory') continue;
+    if (sku === 'SKU_CODE' || sku === 'INVENTORY' || sku === 'SKU' || sku === 'DATE') continue;
+    if (isInventoryHeaderCell(displaySku)) continue;
 
     if (seen.has(sku)) {
       skipped.push({ row: i + 1, internalSku: displaySku, reason: 'duplicate_sku_in_sheet' });
@@ -441,7 +390,6 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
     const rawQty = row[column.index];
     const parsed = parseQuantityCell(rawQty);
     if (!parsed.ok) {
-      // Blank/invalid → still emit a row so sync clears stale DB quantities.
       rows.push({
         internalSku: sku,
         displaySku: displaySku || sku,
@@ -481,9 +429,7 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
     rows,
     skipped,
     meta: {
-      fetchedAt: new Date().toISOString(),
-      sheetName: title,
-      spreadsheetId,
+      headerRowIndex: headerInfo.index,
       inventoryColumnLabel: column.label,
       inventoryColumnIndex: column.index,
       inventoryColumnLetter: String.fromCharCode(65 + column.index),
@@ -495,6 +441,260 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
       skippedCount: skipped.length,
       sample,
       source: 'google_sheet',
+    },
+  };
+}
+
+function scoreParsedInventory(parsed) {
+  if (!parsed?.rows?.length) return -1;
+  const positive = Number(parsed.meta?.positiveQtyCount || 0);
+  const rows = Number(parsed.meta?.rowCount || 0);
+  return positive * 1000 + rows;
+}
+
+function buildSheetCandidates(preferredName, availableTabs = []) {
+  const preferred = String(preferredName || '').trim();
+  const ordered = [];
+  const push = (name) => {
+    const n = String(name || '').trim();
+    if (!n) return;
+    if (!ordered.some((x) => x.toLowerCase() === n.toLowerCase())) ordered.push(n);
+  };
+  push(preferred);
+  for (const name of DEFAULT_SHEET_CANDIDATES) push(name);
+  for (const title of availableTabs) {
+    const lower = String(title || '').toLowerCase();
+    if (
+      lower.includes('inventory') ||
+      lower.includes('autofetch') ||
+      lower.includes('stock') ||
+      lower.includes('fc')
+    ) {
+      push(title);
+    }
+  }
+  if (availableTabs.length) {
+    const byLower = new Map(availableTabs.map((t) => [String(t).toLowerCase(), t]));
+    return ordered
+      .map((name) => byLower.get(name.toLowerCase()) || null)
+      .filter(Boolean);
+  }
+  return ordered;
+}
+
+async function listSpreadsheetTabs(sheets, spreadsheetId) {
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: 'spreadsheetId,properties.title,sheets.properties.title',
+  });
+  const titles = (meta.data.sheets || []).map((s) => s.properties?.title).filter(Boolean);
+  return {
+    spreadsheetTitle: meta.data.properties?.title || null,
+    availableTabs: titles,
+  };
+}
+
+async function readSheetValues(sheets, spreadsheetId, sheetName) {
+  const escaped = escapeSheetName(sheetName);
+  const read = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${escaped}'`,
+    majorDimension: 'ROWS',
+    valueRenderOption: 'UNFORMATTED_VALUE',
+    dateTimeRenderOption: 'FORMATTED_STRING',
+  });
+  return read.data.values || [];
+}
+
+/**
+ * Lightweight auth + sheet access check used by status UI and before sync writes.
+ */
+async function probeSheetAccess(spreadsheetId, sheetName = 'AutoFetch') {
+  const creds = getSheetsCredentialStatus();
+  if (!creds.ready && !(creds.hasAdcPath && !creds.rawPresent)) {
+    return {
+      ok: false,
+      error: creds.hint || 'Google Sheets credentials are not configured',
+      connection: creds,
+    };
+  }
+  if (!spreadsheetId) {
+    return { ok: false, error: 'Google Sheet ID is not configured', connection: creds };
+  }
+
+  try {
+    const sheets = await getSheetsClient();
+    const { spreadsheetTitle, availableTabs } = await listSpreadsheetTabs(sheets, spreadsheetId);
+    const candidates = buildSheetCandidates(sheetName, availableTabs);
+    if (!candidates.length) {
+      return {
+        ok: false,
+        error: `No inventory tabs found. Available tabs: ${availableTabs.join(', ') || '(none)'}`,
+        connection: creds,
+        spreadsheetTitle,
+        availableTabs,
+      };
+    }
+
+    let best = null;
+    const tried = [];
+    for (const title of candidates.slice(0, 8)) {
+      try {
+        const values = await readSheetValues(sheets, spreadsheetId, title);
+        const parsed = parseInventorySheetValues(values, { preferColumnC: true, blankAsZero: true });
+        const score = scoreParsedInventory(parsed);
+        const sampleRows = (parsed.rows || [])
+          .filter((r) => Number(r.quantity) > 0)
+          .slice(0, 5)
+          .map((r) => ({ sku: r.displaySku, columnC: r.quantity, blank: false }));
+        const ej = (parsed.rows || []).find((r) => r.internalSku === 'EJ1201-16001');
+        if (ej && !sampleRows.some((s) => normalizeSkuKey(s.sku) === 'EJ1201-16001')) {
+          sampleRows.unshift({ sku: ej.displaySku, columnC: ej.quantity, blank: Boolean(ej.blank) });
+        }
+        const entry = {
+          sheetName: title,
+          score,
+          rowCount: parsed.meta.rowCount,
+          positiveQtyCount: parsed.meta.positiveQtyCount,
+          sampleRows,
+          columnReason: parsed.meta.columnReason,
+          inventoryColumnLabel: parsed.meta.inventoryColumnLabel,
+        };
+        tried.push(entry);
+        if (!best || entry.score > best.score) best = entry;
+      } catch (err) {
+        tried.push({ sheetName: title, error: err.message, score: -1 });
+      }
+    }
+
+    if (!best || best.score < 0) {
+      return {
+        ok: false,
+        error: `Could not read inventory from tabs: ${candidates.join(', ')}`,
+        connection: creds,
+        spreadsheetTitle,
+        availableTabs,
+        tried,
+      };
+    }
+
+    return {
+      ok: true,
+      connection: creds,
+      spreadsheetTitle,
+      availableTabs,
+      sheetName: best.sheetName,
+      sampleRows: best.sampleRows,
+      positiveQtyCount: best.positiveQtyCount,
+      rowCount: best.rowCount,
+      tried,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: formatGoogleSheetsApiError(err, {
+        spreadsheetId,
+        clientEmail: creds.sheetsClientEmail,
+      }),
+      connection: creds,
+    };
+  }
+}
+
+/**
+ * Read inventory rows from the best matching workbook tab.
+ */
+async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
+  const creds = getSheetsCredentialStatus();
+  if (!creds.ready && !(creds.hasAdcPath && !creds.rawPresent)) {
+    throw new Error(creds.hint || 'Google Sheets credentials are not configured');
+  }
+  if (!spreadsheetId) throw new Error('Google Sheet ID is required');
+
+  let sheets;
+  try {
+    sheets = await getSheetsClient();
+  } catch (err) {
+    throw new Error(formatGoogleSheetsApiError(err, {
+      spreadsheetId,
+      clientEmail: creds.sheetsClientEmail,
+    }));
+  }
+
+  let availableTabs = [];
+  let spreadsheetTitle = null;
+  try {
+    const meta = await listSpreadsheetTabs(sheets, spreadsheetId);
+    availableTabs = meta.availableTabs;
+    spreadsheetTitle = meta.spreadsheetTitle;
+  } catch (err) {
+    throw new Error(formatGoogleSheetsApiError(err, {
+      spreadsheetId,
+      clientEmail: creds.sheetsClientEmail,
+    }));
+  }
+
+  const preferColumnC = options.preferColumnC !== false;
+  const blankAsZero = options.blankAsZero !== false;
+  const candidates = buildSheetCandidates(sheetName || 'AutoFetch', availableTabs);
+  if (!candidates.length) {
+    throw new Error(
+      `No inventory tabs found in spreadsheet${spreadsheetTitle ? ` "${spreadsheetTitle}"` : ''}.`
+    );
+  }
+
+  let best = null;
+  const tried = [];
+  // Scan candidate tabs and pick the one with the most real stock (not just the configured name).
+  for (const title of candidates.slice(0, 8)) {
+    try {
+      const values = await readSheetValues(sheets, spreadsheetId, title);
+      if (values.length < 2) {
+        tried.push({ sheetName: title, error: 'too few rows', score: -1 });
+        continue;
+      }
+      const parsed = parseInventorySheetValues(values, { preferColumnC, blankAsZero });
+      const score = scoreParsedInventory(parsed);
+      tried.push({
+        sheetName: title,
+        score,
+        rowCount: parsed.meta.rowCount,
+        positiveQtyCount: parsed.meta.positiveQtyCount,
+        columnReason: parsed.meta.columnReason,
+      });
+      if (!best || score > best.score) {
+        best = { title, parsed, score };
+      }
+    } catch (err) {
+      tried.push({ sheetName: title, error: err.message, score: -1 });
+    }
+  }
+
+  if (!best || !best.parsed.rows.length) {
+    throw new Error(
+      `No inventory SKU rows found. Tried tabs: ${candidates.join(', ')}. ` +
+        'Check sku_code (Column B) and Inventory (Column C).'
+    );
+  }
+
+  if ((best.parsed.meta.positiveQtyCount || 0) === 0) {
+    console.warn(
+      `[InventorySheets] Selected tab "${best.title}" has 0 positive qty across ${best.parsed.meta.rowCount} SKUs. Tried: ${JSON.stringify(tried)}`
+    );
+  }
+
+  return {
+    rows: best.parsed.rows,
+    skipped: best.parsed.skipped,
+    meta: {
+      ...best.parsed.meta,
+      fetchedAt: new Date().toISOString(),
+      sheetName: best.title,
+      requestedSheetName: sheetName || null,
+      spreadsheetId,
+      spreadsheetTitle,
+      availableTabs,
+      triedTabs: tried,
       serviceAccountEmail: creds.sheetsClientEmail,
     },
   };
@@ -509,8 +709,12 @@ module.exports = {
   formatSheetDate,
   parseSheetDateLabel,
   resolveInventoryColumn,
+  findHeaderRow,
   parseQuantityCell,
+  parseInventorySheetValues,
+  buildSheetCandidates,
   formatGoogleSheetsApiError,
   probeSheetAccess,
   fetchInventoryFromSheet,
+  DEFAULT_SHEET_CANDIDATES,
 };

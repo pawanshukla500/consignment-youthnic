@@ -324,7 +324,7 @@ export default function InventoryPlanning() {
             {syncStatus.connection.mailgunConfigured
               ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Mailgun ready (auto email)</span>
               : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> Mailgun not configured</span>}
-            <span className="text-slate-500">Inventory source: Google Sheet Column C (AutoFetch)</span>
+            <span className="text-slate-500">Inventory source: Google Sheet Column C (Inventory)</span>
           </div>
         )}
         {(syncStatus?.lastSyncError || syncStatus?.connection?.hint) && (
@@ -504,7 +504,8 @@ export default function InventoryPlanning() {
             <Settings2 className="w-4 h-4" /> Inventory Planning configuration
           </div>
           <p className="text-sm text-slate-600">
-            Inventory comes from Google Sheet AutoFetch Column C (matched by Internal SKU / sku_code).
+            Inventory comes from Google Sheet Column C (matched by Internal SKU / sku_code).
+            The app auto-picks the workbook tab with real stock (AutoFetch, Total Inventory, etc.).
             Demand = remaining qty on consignments created or under packing, not fully packed.
             Shortage email goes to the Production team; Organisation Head is CC’d automatically.
           </p>

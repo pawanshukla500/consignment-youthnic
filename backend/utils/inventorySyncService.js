@@ -196,6 +196,19 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
       );
     }
 
+    // Remember the tab that actually had inventory (e.g. Total Inventory vs empty AutoFetch)
+    if (
+      fetchResult.meta?.sheetName &&
+      fetchResult.meta.sheetName !== settings.googleSheetName &&
+      (fetchResult.meta.positiveQtyCount || 0) > 0
+    ) {
+      await saveInventorySettings({
+        googleSheetName: fetchResult.meta.sheetName,
+      }, triggeredBy).catch((err) => {
+        console.warn('[InventorySync] could not persist detected sheet tab:', err.message);
+      });
+    }
+
     const existing = await loadExistingStockMap(pool);
     let updated = 0;
     let failed = 0;
@@ -221,7 +234,7 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
           continue;
         }
 
-        // Treat blank/null as 0 so Available Inventory matches the sheet (e.g. EJ1201-16001 → 0)
+        // Exact sheet qty (blank/invalid → 0 only when the cell is empty/invalid)
         const quantity = item.quantity == null || item.blank || item.invalid
           ? 0
           : Number(item.quantity);
