@@ -64,7 +64,7 @@ router.get(
         connection,
         lastSuccessfulSyncAt: settings.lastSuccessfulSyncAt,
         lastSyncStatus: settings.lastSyncStatus,
-        lastSyncError: settings.lastSyncError,
+        lastSyncError: settings.lastSyncError || latest?.error_message || null,
         latestRun: latest,
       });
     } catch (error) {
@@ -120,25 +120,13 @@ router.post(
         });
       }
 
-      const settings = await getInventorySettings();
-      const probe = await probeSheetAccess(
-        settings.googleSheetId,
-        settings.googleSheetName || 'AutoFetch'
-      );
-      if (!probe.ok) {
-        return res.status(503).json({
-          error: probe.error || 'Google Sheets access probe failed',
-          connection,
-          probe,
-        });
-      }
-
       const userId = req.user.id;
-      // Await sync so the UI gets the real Sheet/API error instead of a stale "started" response.
+      // Await sync so the UI gets the real Sheet/API error (single sheet pass inside sync).
       const result = await runInventorySync({ triggerType: 'manual', triggeredBy: userId });
       await addAuditLog('inventory_sync_manual', 'inventory_sync', result.runId || 'manual', userId, {
         ok: result.ok,
         error: result.error || null,
+        sheetName: result.sheetMeta?.sheetName || null,
       });
 
       if (!result.ok) {
@@ -146,7 +134,6 @@ router.post(
           ok: false,
           error: result.error || result.reason || 'Inventory sync failed',
           connection,
-          probe,
           result,
         });
       }
@@ -169,15 +156,20 @@ router.post(
         console.warn('[InventoryPlanning] post-sync report failed:', err.message);
       }
 
+      const ejSample = (result.sheetMeta?.sample || []).find(
+        (s) => String(s.sku || '').trim().toUpperCase() === 'EJ1201-16001'
+      );
+
       res.json({
         ok: true,
         started: false,
         completed: true,
-        message: 'Google Sheet inventory sync completed',
+        message: `Synced ${result.skusUpdated || 0} SKUs from "${result.sheetMeta?.sheetName || 'sheet'}"`,
         connection,
-        probe,
         result,
         summary: report?.summary || null,
+        ej1201: ejSample || null,
+        sheetMeta: result.sheetMeta || null,
       });
     } catch (error) {
       console.error('[InventoryPlanning] sync failed:', error.message);

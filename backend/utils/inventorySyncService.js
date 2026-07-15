@@ -123,6 +123,54 @@ async function upsertStockRow(pool, {
 }
 
 /**
+ * Batch upsert inventory rows (avoids 10k sequential round-trips on Cloud Run).
+ */
+async function upsertStockRowsBatch(pool, items = []) {
+  if (!items.length) return 0;
+  const nowIso = new Date().toISOString();
+  let written = 0;
+  for (let i = 0; i < items.length; i += 200) {
+    const chunk = items.slice(i, i + 200);
+    const values = [];
+    const params = [];
+    chunk.forEach((row, idx) => {
+      const b = idx * 6;
+      values.push(
+        `($${b + 1},$${b + 2},$${b + 3},$${b + 4},'ok',$${b + 5},$${b + 5},$${b + 6},'google_sheet',$${b + 5})`
+      );
+      params.push(
+        row.internalSku,
+        row.quantity,
+        row.previousQuantity,
+        row.productName || null,
+        nowIso,
+        row.errorMessage || null
+      );
+    });
+    await pool.query(
+      `INSERT INTO inventory_stock (
+         internal_sku, quantity, previous_quantity, product_name, sync_status,
+         last_synced_at, last_success_at, error_message, source, updated_at
+       ) VALUES ${values.join(',')}
+       ON CONFLICT (internal_sku) DO UPDATE SET
+         quantity = EXCLUDED.quantity,
+         previous_quantity = EXCLUDED.previous_quantity,
+         product_name = COALESCE(NULLIF(EXCLUDED.product_name, ''), inventory_stock.product_name),
+         sync_status = EXCLUDED.sync_status,
+         last_synced_at = EXCLUDED.last_synced_at,
+         last_success_at = EXCLUDED.last_synced_at,
+         error_message = EXCLUDED.error_message,
+         source = 'google_sheet',
+         updated_at = EXCLUDED.updated_at
+       WHERE inventory_stock.manual_override IS NOT TRUE`,
+      params
+    );
+    written += chunk.length;
+  }
+  return written;
+}
+
+/**
  * Run inventory sync from Google Sheet → DB.
  * Prevents overlapping jobs via in-process lock.
  */
@@ -170,29 +218,43 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
       throw new Error('Google Sheet ID is not configured');
     }
 
-    // Probe first so we never wipe stock on auth/share failures disguised as blank Col C
-    const probe = await probeSheetAccess(
-      settings.googleSheetId,
-      settings.googleSheetName || 'AutoFetch'
-    );
-    if (!probe.ok) {
-      throw new Error(probe.error || 'Google Sheets access probe failed');
-    }
-
+    // Single pass: pick best tab + parse A:C (probe is only for /connection-test UI).
     const fetchResult = await fetchInventoryFromSheet(
       settings.googleSheetId,
       settings.googleSheetName || 'AutoFetch',
       {
-        // Column C = available inventory (unless admin turns preferSheetColumnC off)
         preferColumnC: settings.preferSheetColumnC !== false,
-        // Blank Col C must become 0 so planning never keeps a stale positive qty
         blankAsZero: true,
       }
     );
 
     if (!fetchResult.rows.length) {
       throw new Error(
-        `Sheet "${settings.googleSheetName || 'AutoFetch'}" returned 0 SKU rows. Check sku_code in Column B.`
+        `Sheet "${fetchResult.meta?.sheetName || settings.googleSheetName || 'AutoFetch'}" returned 0 SKU rows. Check sku_code in Column B. ` +
+          `Workbook: ${fetchResult.meta?.spreadsheetTitle || '(unknown)'}. Tabs: ${(fetchResult.meta?.availableTabs || []).join(', ') || '(none)'}.`
+      );
+    }
+
+    const positiveQtyCount = fetchResult.meta?.positiveQtyCount || 0;
+    if (positiveQtyCount <= 0) {
+      const tried = (fetchResult.meta?.triedTabs || [])
+        .map((t) => t.sheetName)
+        .filter(Boolean)
+        .join(', ');
+      throw new Error(
+        `No positive inventory found in Column C (tried: ${tried || fetchResult.meta?.sheetName || 'unknown'}). ` +
+          'Your Google Sheet shows EJ1201-16001 = 955 — set Admin Settings → Sheet tab to that exact tab name ' +
+          `(e.g. "Total Inventory"), confirm Sheet ID, then Sync again. ` +
+          `Workbook: ${fetchResult.meta?.spreadsheetTitle || '(unknown)'}. Available tabs: ${(fetchResult.meta?.availableTabs || []).join(', ') || '(none)'}.`
+      );
+    }
+
+    const ejRow = fetchResult.rows.find((r) => r.internalSku === 'EJ1201-16001');
+    if (ejRow) {
+      console.log(`[InventorySync] EJ1201-16001 = ${ejRow.quantity} from tab "${fetchResult.meta?.sheetName}"`);
+    } else {
+      console.warn(
+        `[InventorySync] EJ1201-16001 not present on tab "${fetchResult.meta?.sheetName}" (${fetchResult.rows.length} SKUs, ${positiveQtyCount} with stock)`
       );
     }
 
@@ -200,7 +262,7 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
     if (
       fetchResult.meta?.sheetName &&
       fetchResult.meta.sheetName !== settings.googleSheetName &&
-      (fetchResult.meta.positiveQtyCount || 0) > 0
+      positiveQtyCount > 0
     ) {
       await saveInventorySettings({
         googleSheetName: fetchResult.meta.sheetName,
@@ -214,65 +276,74 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
     let failed = 0;
     let skipped = fetchResult.skipped?.length || 0;
     const skuLogRows = [];
+    const upsertBatch = [];
 
     for (const item of fetchResult.rows) {
       const sku = normalizeSkuKey(item.internalSku);
-      try {
-        const prev = existing[sku];
-        if (prev?.manual_override) {
-          skipped += 1;
-          skuLogRows.push({
-            id: generateId(),
-            runId,
-            internalSku: sku,
-            sheetQuantity: item.quantity,
-            previousQuantity: prev.override_quantity ?? prev.quantity,
-            quantityChange: null,
-            syncStatus: 'skipped_override',
-            errorMessage: 'Manual override active',
-          });
-          continue;
-        }
-
-        // Exact sheet qty (blank/invalid → 0 only when the cell is empty/invalid)
-        const quantity = item.quantity == null || item.blank || item.invalid
-          ? 0
-          : Number(item.quantity);
-        const previousQuantity = prev?.quantity ?? null;
-        const quantityChange =
-          previousQuantity == null ? quantity : quantity - previousQuantity;
-
-        await upsertStockRow(pool, {
-          internalSku: sku,
-          quantity,
-          previousQuantity,
-          productName: item.productName || item.displaySku,
-          syncStatus: 'ok',
-          errorMessage: item.invalid ? `Sheet cell invalid (${item.raw})` : null,
-        });
-        updated += 1;
-        skuLogRows.push({
-          id: generateId(),
-          runId,
-          internalSku: sku,
-          sheetQuantity: quantity,
-          previousQuantity,
-          quantityChange,
-          syncStatus: 'ok',
-          errorMessage: item.invalid ? `Sheet cell invalid (${item.raw})` : null,
-        });
-      } catch (err) {
-        failed += 1;
+      const prev = existing[sku];
+      if (prev?.manual_override) {
+        skipped += 1;
         skuLogRows.push({
           id: generateId(),
           runId,
           internalSku: sku,
           sheetQuantity: item.quantity,
-          previousQuantity: existing[sku]?.quantity ?? null,
+          previousQuantity: prev.override_quantity ?? prev.quantity,
           quantityChange: null,
-          syncStatus: 'failed',
-          errorMessage: err.message,
+          syncStatus: 'skipped_override',
+          errorMessage: 'Manual override active',
         });
+        continue;
+      }
+
+      const quantity = item.quantity == null || item.blank || item.invalid
+        ? 0
+        : Number(item.quantity);
+      const previousQuantity = prev?.quantity ?? null;
+      const quantityChange =
+        previousQuantity == null ? quantity : quantity - previousQuantity;
+
+      upsertBatch.push({
+        internalSku: sku,
+        quantity,
+        previousQuantity,
+        productName: item.productName || item.displaySku,
+        errorMessage: item.invalid ? `Sheet cell invalid (${item.raw})` : null,
+      });
+      skuLogRows.push({
+        id: generateId(),
+        runId,
+        internalSku: sku,
+        sheetQuantity: quantity,
+        previousQuantity,
+        quantityChange,
+        syncStatus: 'ok',
+        errorMessage: item.invalid ? `Sheet cell invalid (${item.raw})` : null,
+      });
+    }
+
+    try {
+      updated = await upsertStockRowsBatch(pool, upsertBatch);
+    } catch (err) {
+      // Fallback to per-row upsert if bulk path is unsupported
+      console.warn('[InventorySync] batch upsert failed, falling back:', err.message);
+      updated = 0;
+      failed = 0;
+      for (const row of upsertBatch) {
+        try {
+          await upsertStockRow(pool, {
+            ...row,
+            syncStatus: 'ok',
+          });
+          updated += 1;
+        } catch (rowErr) {
+          failed += 1;
+          const log = skuLogRows.find((l) => l.internalSku === row.internalSku);
+          if (log) {
+            log.syncStatus = 'failed';
+            log.errorMessage = rowErr.message;
+          }
+        }
       }
     }
 
@@ -310,7 +381,9 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
       preferSheetColumnC: settings.preferSheetColumnC !== false,
       positiveQtyCount: fetchResult.meta?.positiveQtyCount,
       serviceAccountEmail: fetchResult.meta?.serviceAccountEmail || creds.sheetsClientEmail,
-      probeSample: probe.sampleRows || [],
+      sheetName: fetchResult.meta?.sheetName,
+      sample: fetchResult.meta?.sample || [],
+      ej1201: (fetchResult.rows || []).find((r) => r.internalSku === 'EJ1201-16001') || null,
     });
 
     const finishedAt = new Date().toISOString();

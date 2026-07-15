@@ -135,7 +135,9 @@ export default function InventoryPlanning() {
       }
       addToast(
         syncRes.data?.completed
-          ? `Synced ${syncRes.data?.result?.skusUpdated ?? ''} SKUs from Google Sheet Column C`
+          ? `Synced ${syncRes.data?.result?.skusUpdated ?? ''} SKUs` +
+            (syncRes.data?.ej1201 ? ` · EJ1201-16001 = ${syncRes.data.ej1201.qty}` : '') +
+            (syncRes.data?.sheetMeta?.sheetName ? ` from "${syncRes.data.sheetMeta.sheetName}"` : '')
           : 'Inventory synced from Google Sheet',
         'success'
       )
@@ -327,12 +329,20 @@ export default function InventoryPlanning() {
             <span className="text-slate-500">Inventory source: Google Sheet Column C (Inventory)</span>
           </div>
         )}
-        {(syncStatus?.lastSyncError || syncStatus?.connection?.hint) && (
+        {(syncStatus?.lastSyncError || syncStatus?.latestRun?.error_message || syncStatus?.connection?.hint) && (
           <div className="basis-full w-full rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            {syncStatus?.lastSyncError || syncStatus?.connection?.hint}
+            {syncStatus?.lastSyncError || syncStatus?.latestRun?.error_message || syncStatus?.connection?.hint}
             {syncStatus?.connection?.googleSheetsClientEmail && (
               <div className="mt-1 text-xs text-amber-800">
                 Service account: {syncStatus.connection.googleSheetsClientEmail} — share the sheet with this email (Editor).
+              </div>
+            )}
+            {syncStatus?.latestRun?.details?.fetchMeta?.sheetName && (
+              <div className="mt-1 text-xs text-amber-800">
+                Last sheet tab: {syncStatus.latestRun.details.fetchMeta.sheetName}
+                {syncStatus.latestRun.details.fetchMeta.spreadsheetTitle
+                  ? ` · Workbook: ${syncStatus.latestRun.details.fetchMeta.spreadsheetTitle}`
+                  : ''}
               </div>
             )}
           </div>

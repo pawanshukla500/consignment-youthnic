@@ -337,4 +337,27 @@ const {
   assert.ok(a.totalShortage >= 0);
 }
 
+// Prefer tabs that actually contain stock over empty AutoFetch catalogues
+{
+  const { parseInventorySheetValues } = require('../utils/googleSheetsInventory');
+  // Re-require score via parse + compare
+  const empty = parseInventorySheetValues([
+    ['id', 'sku_code', 'Inventory'],
+    [1, 'A', 0],
+    [2, 'B', null],
+  ]);
+  const stocked = parseInventorySheetValues([
+    ['', 'Date', '15/07/2026'],
+    ['id', 'sku_code', 'Inventory'],
+    [21591169, 'EJ1201-16001', 955],
+    [1, 'OTHER', 10],
+  ]);
+  assert.ok((stocked.meta.positiveQtyCount || 0) > (empty.meta.positiveQtyCount || 0));
+  assert.strictEqual(
+    stocked.rows.find((r) => r.internalSku === 'EJ1201-16001').quantity,
+    955
+  );
+}
+
 console.log('Inventory planning tests passed.');
+
