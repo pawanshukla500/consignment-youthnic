@@ -13,6 +13,7 @@ const STATUS_STYLES = {
   'Urgent Production Required': 'bg-orange-50 text-orange-900 border-orange-200',
   'Critical Shortage': 'bg-red-50 text-red-900 border-red-200',
   'Inventory Data Missing': 'bg-slate-100 text-slate-800 border-slate-300',
+  'Sheet Sync Failed': 'bg-rose-50 text-rose-900 border-rose-200',
   'OMSGuru Sync Failed': 'bg-rose-50 text-rose-900 border-rose-200',
 }
 
@@ -220,10 +221,9 @@ export default function InventoryPlanning() {
           <div className="flex items-center gap-2 text-teal-700 text-sm font-semibold uppercase tracking-wider">
             <Factory className="w-4 h-4" /> Inventory Planning
           </div>
-          <h1 className="mt-1 text-2xl font-bold text-slate-900">SKU demand vs OMSGuru stock</h1>
+          <h1 className="mt-1 text-2xl font-bold text-slate-900">SKU demand vs sheet inventory</h1>
           <p className="mt-1 text-sm text-slate-600 max-w-2xl">
-            Open consignments are allocated Critical → Urgent → Normal against the latest OMSGuru inventory.
-            Shortages drive production actions for the inventory and production teams.
+            Paste OMSGuru inventory into Google Sheet AutoFetch, then Sync. Open consignments are allocated Critical → Urgent → Normal against that stock.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -242,7 +242,7 @@ export default function InventoryPlanning() {
               className="inline-flex items-center gap-2 rounded-lg bg-teal-700 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60"
             >
               {syncing || syncStatus?.running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Warehouse className="w-4 h-4" />}
-              Sync Now
+              Sync from Sheet
             </button>
           )}
           <button
@@ -279,8 +279,8 @@ export default function InventoryPlanning() {
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 flex flex-wrap gap-4 text-sm text-slate-600">
         <div>
-          <span className="font-semibold text-slate-800">OMSGuru sync:</span>{' '}
-          {summary.omsGuruSyncStatus || syncStatus?.lastSyncStatus || 'never'}
+          <span className="font-semibold text-slate-800">Sheet sync:</span>{' '}
+          {summary.sheetSyncStatus || summary.omsGuruSyncStatus || syncStatus?.lastSyncStatus || 'never'}
         </div>
         <div>
           <span className="font-semibold text-slate-800">Last sync:</span>{' '}
@@ -299,12 +299,10 @@ export default function InventoryPlanning() {
         </div>
         {syncStatus?.connection && (
           <div className="flex items-center gap-3">
-            {syncStatus.connection.omsGuruConfigured
-              ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> OMSGuru API</span>
-              : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> OMSGuru API not configured</span>}
             {syncStatus.connection.googleSheetsConfigured
-              ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Google Sheets</span>
-              : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> Sheets not configured</span>}
+              ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Google Sheets connected</span>
+              : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> Google Sheets not configured</span>}
+            <span className="text-slate-500">Inventory source: manual paste into AutoFetch</span>
           </div>
         )}
       </div>
@@ -459,8 +457,7 @@ export default function InventoryPlanning() {
             <Settings2 className="w-4 h-4" /> Inventory Planning configuration
           </div>
           <p className="text-sm text-slate-600">
-            OMSGuru API keys and Google service-account JSON stay in environment variables — only non-secret
-            schedule, sheet IDs, recipients, and priority rules are stored here.
+            Google service-account JSON stays in environment variables. Paste inventory into AutoFetch manually; configure sheet ID, schedule, recipients, and priority rules here.
           </p>
 
           <div className="grid md:grid-cols-2 gap-4">

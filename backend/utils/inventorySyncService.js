@@ -1,19 +1,18 @@
 /**
- * OMSGuru → DB → Google Sheet inventory sync orchestration.
+ * Google Sheet → DB inventory sync orchestration.
+ * Team pastes OMSGuru inventory into AutoFetch; app reads sheet and calculates planning.
  * Non-blocking for packing: callers should fire-and-forget or await off the request path.
  */
 
 const { getPool, pgEnabled } = require('../config/database');
 const { generateId, addAuditLog } = require('./helpers');
-const { fetchOmsGuruInventory, isConfigured: omsConfigured } = require('./omsGuruInventoryClient');
-const { upsertInventoryToSheet, isSheetsConfigured } = require('./googleSheetsInventory');
+const { fetchInventoryFromSheet, isSheetsConfigured } = require('./googleSheetsInventory');
 const { getInventorySettings, saveInventorySettings } = require('./inventorySettings');
 const { normalizeSkuKey } = require('./inventoryPlanning');
 
 let syncInFlight = null;
 
 async function ensureInventoryTables(pool) {
-  // Soft ensure for environments that haven't run migration yet
   await pool.query(`
     CREATE TABLE IF NOT EXISTS inventory_stock (
       internal_sku TEXT PRIMARY KEY,
@@ -24,7 +23,7 @@ async function ensureInventoryTables(pool) {
       last_synced_at TIMESTAMPTZ,
       last_success_at TIMESTAMPTZ,
       error_message TEXT,
-      source TEXT NOT NULL DEFAULT 'omsguru',
+      source TEXT NOT NULL DEFAULT 'google_sheet',
       manual_override BOOLEAN NOT NULL DEFAULT false,
       override_quantity INTEGER,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -89,7 +88,7 @@ async function upsertStockRow(pool, {
     `INSERT INTO inventory_stock (
        internal_sku, quantity, previous_quantity, product_name, sync_status,
        last_synced_at, last_success_at, error_message, source, updated_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'omsguru',$6)
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'google_sheet',$6)
      ON CONFLICT (internal_sku) DO UPDATE SET
        quantity = EXCLUDED.quantity,
        previous_quantity = EXCLUDED.previous_quantity,
@@ -101,6 +100,7 @@ async function upsertStockRow(pool, {
          ELSE inventory_stock.last_success_at
        END,
        error_message = EXCLUDED.error_message,
+       source = 'google_sheet',
        updated_at = EXCLUDED.updated_at
      WHERE inventory_stock.manual_override IS NOT TRUE`,
     [
@@ -117,7 +117,8 @@ async function upsertStockRow(pool, {
 }
 
 /**
- * Run inventory sync. Prevents overlapping jobs via in-process lock.
+ * Run inventory sync from Google Sheet → DB.
+ * Prevents overlapping jobs via in-process lock.
  */
 async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'system' } = {}) {
   if (syncInFlight) {
@@ -148,14 +149,22 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
       'inventory_sync',
       runId,
       triggeredBy,
-      { triggerType }
+      { triggerType, source: 'google_sheet' }
     );
 
-    if (!omsConfigured()) {
-      throw new Error('OMSGuru API credentials are not configured');
+    const settings = await getInventorySettings();
+    if (!isSheetsConfigured()) {
+      throw new Error('Google Sheets credentials are not configured');
+    }
+    if (!settings.googleSheetId) {
+      throw new Error('Google Sheet ID is not configured');
     }
 
-    const fetchResult = await fetchOmsGuruInventory();
+    const fetchResult = await fetchInventoryFromSheet(
+      settings.googleSheetId,
+      settings.googleSheetName || 'AutoFetch'
+    );
+
     const existing = await loadExistingStockMap(pool);
     let updated = 0;
     let failed = 0;
@@ -166,14 +175,13 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
       const sku = normalizeSkuKey(item.internalSku);
       try {
         const prev = existing[sku];
-        // Respect manual overrides — still log but do not overwrite quantity
         if (prev?.manual_override) {
           skipped += 1;
           skuLogRows.push({
             id: generateId(),
             runId,
             internalSku: sku,
-            omsguruQuantity: item.quantity,
+            sheetQuantity: item.quantity,
             previousQuantity: prev.override_quantity ?? prev.quantity,
             quantityChange: null,
             syncStatus: 'skipped_override',
@@ -199,7 +207,7 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
           id: generateId(),
           runId,
           internalSku: sku,
-          omsguruQuantity: item.quantity,
+          sheetQuantity: item.quantity,
           previousQuantity,
           quantityChange,
           syncStatus: 'ok',
@@ -211,7 +219,7 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
           id: generateId(),
           runId,
           internalSku: sku,
-          omsguruQuantity: item.quantity,
+          sheetQuantity: item.quantity,
           previousQuantity: existing[sku]?.quantity ?? null,
           quantityChange: null,
           syncStatus: 'failed',
@@ -220,7 +228,6 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
       }
     }
 
-    // Persist sku logs in batches
     for (let i = 0; i < skuLogRows.length; i += 200) {
       const chunk = skuLogRows.slice(i, i + 200);
       const values = [];
@@ -232,7 +239,7 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
           row.id,
           row.runId,
           row.internalSku,
-          row.omsguruQuantity,
+          row.sheetQuantity,
           row.previousQuantity,
           row.quantityChange,
           row.syncStatus,
@@ -247,23 +254,10 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
       );
     }
 
-    let sheetResult = null;
-    let sheetUpdated = false;
-    const settings = await getInventorySettings();
-    if (isSheetsConfigured() && settings.googleSheetId) {
-      try {
-        sheetResult = await upsertInventoryToSheet(
-          settings.googleSheetId,
-          settings.googleSheetName || 'AutoFetch',
-          fetchResult.rows
-        );
-        sheetUpdated = true;
-        await addAuditLog('google_sheet_updated', 'inventory_sync', runId, triggeredBy, sheetResult);
-      } catch (sheetErr) {
-        console.warn('[InventorySync] Google Sheet update failed:', sheetErr.message);
-        sheetResult = { error: sheetErr.message };
-      }
-    }
+    await addAuditLog('google_sheet_read', 'inventory_sync', runId, triggeredBy, {
+      rowCount: fetchResult.rows.length,
+      column: fetchResult.meta?.inventoryColumnLabel,
+    });
 
     const finishedAt = new Date().toISOString();
     await pool.query(
@@ -284,11 +278,11 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
         updated,
         failed,
         skipped,
-        sheetUpdated,
+        true,
         JSON.stringify({
           fetchMeta: fetchResult.meta,
           skippedSamples: (fetchResult.skipped || []).slice(0, 25),
-          sheetResult,
+          source: 'google_sheet',
         }),
       ]
     );
@@ -296,14 +290,14 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
     await saveInventorySettings({
       lastSuccessfulSyncAt: finishedAt,
       lastSyncStatus: 'completed',
-      lastSyncError: sheetResult?.error || null,
+      lastSyncError: null,
     }, triggeredBy);
 
     await addAuditLog('inventory_sync_completed', 'inventory_sync', runId, triggeredBy, {
       updated,
       failed,
       skipped,
-      sheetUpdated,
+      source: 'google_sheet',
     });
 
     return {
@@ -313,8 +307,8 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
       skusUpdated: updated,
       skusFailed: failed,
       skusSkipped: skipped,
-      sheetUpdated,
-      sheetResult,
+      sheetUpdated: true,
+      sheetMeta: fetchResult.meta,
       finishedAt,
     };
   } catch (error) {
@@ -332,6 +326,7 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
 
     await addAuditLog('inventory_sync_failed', 'inventory_sync', runId, triggeredBy, {
       error: error.message,
+      source: 'google_sheet',
     });
 
     return { ok: false, runId, error: error.message };

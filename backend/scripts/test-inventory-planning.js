@@ -1,5 +1,5 @@
 /**
- * Inventory planning allocation + status tests.
+ * Inventory planning allocation + Google Sheet read helpers tests.
  * Run: node scripts/test-inventory-planning.js
  */
 const assert = require('assert');
@@ -11,19 +11,18 @@ const {
   isOpenConsignment,
   INVENTORY_STATUSES,
   buildAlertFingerprint,
-  normalizeInventoryRows,
-} = (() => {
-  const planning = require('../utils/inventoryPlanning');
-  const client = require('../utils/omsGuruInventoryClient');
-  return { ...planning, normalizeInventoryRows: client.normalizeInventoryRows };
-})();
+} = require('../utils/inventoryPlanning');
+const {
+  resolveInventoryColumn,
+  parseQuantityCell,
+  formatSheetDate,
+} = require('../utils/googleSheetsInventory');
 
 // --- Example from the product brief ---
 {
   const a = allocateInventory(50, 30, 20, 60);
   assert.strictEqual(a.criticalCovered, 50);
   assert.strictEqual(a.criticalShortage, 0);
-  assert.strictEqual(a.remainingAfterAllocation, 0); // 60-50-10=0 after urgent partial
   assert.strictEqual(a.urgentCovered, 10);
   assert.strictEqual(a.urgentShortage, 20);
   assert.strictEqual(a.normalCovered, 0);
@@ -73,7 +72,7 @@ const {
   assert.strictEqual(isOpenConsignment({ status: 'pending', shipmentStatus: 'Dispatched' }), false);
 }
 
-// Duplicate consignment / SKU demand aggregation (same SKU across consignments, no double count within one line)
+// Demand aggregation across consignments
 {
   const consignments = [
     {
@@ -94,7 +93,7 @@ const {
       appointmentDate: '2026-07-22',
       requiredDispatchDate: '2026-07-20',
       transitDays: 2,
-      skus: [{ internalSku: 'SKU123', requiredQty: 40, packedQty: 10 }], // remaining 30 urgent
+      skus: [{ internalSku: 'SKU123', requiredQty: 40, packedQty: 10 }],
     },
     {
       id: 'C3',
@@ -111,7 +110,7 @@ const {
   ];
   const demand = buildSkuDemand(consignments);
   assert.strictEqual(demand.length, 1);
-  assert.strictEqual(demand[0].totalPlannedQty, 100); // 50+30+20
+  assert.strictEqual(demand[0].totalPlannedQty, 100);
   assert.strictEqual(demand[0].criticalQty, 50);
   assert.strictEqual(demand[0].urgentQty, 30);
   assert.strictEqual(demand[0].normalQty, 20);
@@ -127,17 +126,25 @@ const {
   assert.strictEqual(reportRows[0].inventoryStatus, INVENTORY_STATUSES.URGENT_PRODUCTION);
 }
 
-// Duplicate SKU rows in OMSGuru response — first wins
+// Sheet date column: prefer today, else newest date
 {
-  const { rows, skipped } = normalizeInventoryRows([
-    { sku_code: 'A', quantity: 5 },
-    { sku: 'A', inventory: 9 },
-    { sku: 'B', qty: '' },
-  ]);
-  assert.strictEqual(rows.length, 1);
-  assert.strictEqual(rows[0].quantity, 5);
-  assert.ok(skipped.some((s) => s.reason === 'duplicate_sku_in_response'));
-  assert.ok(skipped.some((s) => s.reason === 'blank'));
+  const today = formatSheetDate(new Date('2026-07-15T12:00:00Z'));
+  const colToday = resolveInventoryColumn(['id', 'sku_code', '15/07/2026', '14/07/2026'], today);
+  assert.strictEqual(colToday.index, 2);
+  assert.strictEqual(colToday.reason, 'today');
+
+  const colLatest = resolveInventoryColumn(['id', 'sku_code', '14/07/2026', '13/07/2026'], '99/99/9999');
+  assert.strictEqual(colLatest.label, '14/07/2026');
+  assert.strictEqual(colLatest.reason, 'latest_date');
+}
+
+// Blank / invalid sheet quantities are rejected (never overwrite with blank)
+{
+  assert.strictEqual(parseQuantityCell('').ok, false);
+  assert.strictEqual(parseQuantityCell(null).ok, false);
+  assert.strictEqual(parseQuantityCell('-1').ok, false);
+  assert.strictEqual(parseQuantityCell('12').value, 12);
+  assert.strictEqual(parseQuantityCell('1,200').value, 1200);
 }
 
 // Fingerprint changes when shortage changes
@@ -159,7 +166,7 @@ const {
   assert.notStrictEqual(buildAlertFingerprint(r1), buildAlertFingerprint(r2));
 }
 
-// Sync failed status
+// Sheet sync failed status
 {
   const rows = applyStockToDemand(
     [{

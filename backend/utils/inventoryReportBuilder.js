@@ -60,6 +60,7 @@ async function buildInventoryPlanningReport({ triggerReason = 'manual', persist 
       'Urgent Production Required': 1,
       'Low Inventory': 2,
       'Inventory Data Missing': 3,
+      'Sheet Sync Failed': 4,
       'OMSGuru Sync Failed': 4,
       Sufficient: 5,
     };
@@ -76,7 +77,7 @@ async function buildInventoryPlanningReport({ triggerReason = 'manual', persist 
 
   const summary = summarizePlanning(skuRows, {
     generatedAt: new Date().toISOString(),
-    omsGuruSyncStatus: syncStatus,
+    sheetSyncStatus: syncStatus,
     lastInventorySyncAt: settings.lastSuccessfulSyncAt || latestRun?.finished_at || null,
     activeConsignmentCount: openConsignments.length,
   });

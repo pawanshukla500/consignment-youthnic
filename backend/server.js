@@ -476,12 +476,11 @@ app.listen(PORT, async () => {
     console.warn('[Workflow] Could not start schedulers:', err.message);
   }
 
-  // Inventory Planning: daily OMSGuru sync + daily email report (UTC hour from settings)
+  // Inventory Planning: daily Google Sheet inventory sync + daily email report (UTC hour from settings)
   try {
     const { getInventorySettings } = require('./utils/inventorySettings');
     const { runInventorySync, isSyncRunning } = require('./utils/inventorySyncService');
     const { sendInventoryPlanningNotification } = require('./utils/inventoryNotify');
-    const HOUR = 60 * 60 * 1000;
     let lastSyncSlot = '';
     let lastEmailSlot = '';
     setInterval(async () => {
@@ -489,14 +488,13 @@ app.listen(PORT, async () => {
         const settings = await getInventorySettings();
         if (!settings.enabled) return;
         const d = new Date();
-        const hm = `${d.getUTCHours()}:${d.getUTCMinutes()}`;
         if (settings.syncEnabled && !isSyncRunning()
             && d.getUTCHours() === Number(settings.syncHourUtc)
             && d.getUTCMinutes() === Number(settings.syncMinuteUtc)) {
           const slot = `${d.toISOString().slice(0, 10)}-sync`;
           if (slot !== lastSyncSlot) {
             lastSyncSlot = slot;
-            console.log('[InventoryPlanning] Starting scheduled OMSGuru sync');
+            console.log('[InventoryPlanning] Starting scheduled Google Sheet inventory sync');
             const result = await runInventorySync({ triggerType: 'scheduled', triggeredBy: 'scheduler' });
             console.log('[InventoryPlanning] Scheduled sync', result.ok ? 'ok' : result.error || result.reason);
             if (result.ok) {

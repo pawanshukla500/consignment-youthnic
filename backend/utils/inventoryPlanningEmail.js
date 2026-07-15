@@ -46,13 +46,13 @@ function buildInventoryPlanningEmail({ report, dashboardUrl, subject }) {
       <div style="padding:20px 24px">
         <p style="margin:0 0 16px;color:#334155;line-height:1.5">
           Inventory planning alert for production and inventory teams.
-          Critical and urgent SKU requirements are allocated against the latest OMSGuru on-hand stock
-          (Critical → Urgent → Normal). An Excel workbook is attached.
+          Critical and urgent SKU requirements are allocated against the latest inventory
+          pasted into Google Sheet AutoFetch (Critical → Urgent → Normal). An Excel workbook is attached.
         </p>
 
         <table style="border-collapse:collapse;width:100%;margin-bottom:18px"><tr>
           ${metric('Report time', new Date(summary.generatedAt || Date.now()).toLocaleString('en-GB'))}
-          ${metric('OMSGuru sync', summary.omsGuruSyncStatus)}
+          ${metric('Sheet sync', summary.sheetSyncStatus || summary.omsGuruSyncStatus)}
           ${metric('Active consignments', summary.activeConsignmentCount)}
           ${metric('SKUs reviewed', summary.totalSkusReviewed)}
         </tr></table>
@@ -104,7 +104,7 @@ function buildInventoryPlanningEmail({ report, dashboardUrl, subject }) {
   const text = [
     subject,
     `Generated: ${summary.generatedAt}`,
-    `OMSGuru sync: ${summary.omsGuruSyncStatus}`,
+    `Sheet sync: ${summary.sheetSyncStatus || summary.omsGuruSyncStatus}`,
     `Active consignments: ${summary.activeConsignmentCount}`,
     `SKUs reviewed: ${summary.totalSkusReviewed}`,
     `Critical shortages: ${summary.criticalShortageSkuCount}`,

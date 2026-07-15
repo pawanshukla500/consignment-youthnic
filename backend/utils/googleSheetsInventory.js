@@ -1,18 +1,16 @@
 /**
- * Google Sheets updater for OMSGuru AutoFetch inventory.
+ * Google Sheets inventory reader for AutoFetch (manual OMSGuru paste).
  *
- * Observed AutoFetch layout (not a static Col C quantity):
+ * Observed AutoFetch layout:
  *   Row 1: id | sku_code | <DD/MM/YYYY> | <DD/MM/YYYY> | …
  *   Row 2:    |          | Inventory    | Inventory    | …
  *
- * Strategy:
- * 1. Match rows by sku_code (column B) — never insert a duplicate SKU.
- * 2. Ensure today's date column exists (insert after sku_code when missing).
- * 3. Write quantity into today's Inventory cell.
- * 4. Skip blank/invalid quantities.
+ * The team pastes inventory into the sheet. This module only READS it.
+ * Matching key: sku_code (column B). Latest inventory = preferred date column.
  */
 
 const { google } = require('googleapis');
+const { normalizeSkuKey } = require('./inventoryPlanning');
 
 function isSheetsConfigured() {
   return Boolean(
@@ -38,7 +36,10 @@ function parseServiceAccount() {
 }
 
 async function getSheetsClient() {
-  const scopes = ['https://www.googleapis.com/auth/spreadsheets'];
+  const scopes = [
+    'https://www.googleapis.com/auth/spreadsheets.readonly',
+    'https://www.googleapis.com/auth/spreadsheets',
+  ];
   const sa = parseServiceAccount();
   let auth;
   if (sa) {
@@ -63,28 +64,71 @@ function formatSheetDate(date = new Date()) {
   return `${dd}/${mm}/${yyyy}`;
 }
 
-function colIndexToA1(colIndex1Based) {
-  let n = colIndex1Based;
-  let s = '';
-  while (n > 0) {
-    const rem = (n - 1) % 26;
-    s = String.fromCharCode(65 + rem) + s;
-    n = Math.floor((n - 1) / 26);
-  }
-  return s;
-}
-
 function escapeSheetName(name) {
   return String(name || 'AutoFetch').replace(/'/g, "''");
 }
 
+function parseSheetDateLabel(label) {
+  const text = String(label || '').trim();
+  // DD/MM/YYYY or D/M/YYYY
+  const m = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  const day = Number(m[1]);
+  const month = Number(m[2]);
+  const year = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
 /**
- * Upsert inventory quantities into AutoFetch.
- * @param {string} spreadsheetId
- * @param {string} sheetName
- * @param {Array<{internalSku: string, quantity: number}>} rows
+ * Choose inventory date column:
+ * 1) today's date header if present
+ * 2) otherwise the newest parseable date column (leftmost among equal / newest by value)
  */
-async function upsertInventoryToSheet(spreadsheetId, sheetName, rows) {
+function resolveInventoryColumn(headerRow = [], todayLabel = formatSheetDate()) {
+  const candidates = [];
+  for (let i = 2; i < headerRow.length; i++) {
+    const label = String(headerRow[i] || '').trim();
+    if (!label) continue;
+    if (label === todayLabel) {
+      return { index: i, label, reason: 'today' };
+    }
+    const parsed = parseSheetDateLabel(label);
+    if (parsed) {
+      candidates.push({ index: i, label, time: parsed.getTime() });
+    }
+  }
+  if (!candidates.length) {
+    // Fallback: first data column after sku_code
+    if (headerRow.length > 2) {
+      return {
+        index: 2,
+        label: String(headerRow[2] || 'C').trim() || 'C',
+        reason: 'fallback_column_c',
+      };
+    }
+    return null;
+  }
+  candidates.sort((a, b) => b.time - a.time || a.index - b.index);
+  return { index: candidates[0].index, label: candidates[0].label, reason: 'latest_date' };
+}
+
+function parseQuantityCell(raw) {
+  if (raw === null || raw === undefined) return { ok: false, reason: 'blank' };
+  const text = String(raw).trim();
+  if (!text) return { ok: false, reason: 'blank' };
+  const cleaned = text.replace(/,/g, '');
+  const n = Number(cleaned);
+  if (!Number.isFinite(n)) return { ok: false, reason: 'non_numeric' };
+  if (n < 0) return { ok: false, reason: 'negative' };
+  return { ok: true, value: Math.floor(n) };
+}
+
+/**
+ * Read latest inventory rows from AutoFetch.
+ * @returns {{ rows: Array<{internalSku, quantity}>, skipped: Array, meta: object }}
+ */
+async function fetchInventoryFromSheet(spreadsheetId, sheetName) {
   if (!isSheetsConfigured()) {
     throw new Error('Google Sheets is not configured');
   }
@@ -93,7 +137,6 @@ async function upsertInventoryToSheet(spreadsheetId, sheetName, rows) {
   const sheets = await getSheetsClient();
   const title = sheetName || 'AutoFetch';
   const escaped = escapeSheetName(title);
-  const todayLabel = formatSheetDate(new Date());
 
   const read = await sheets.spreadsheets.values.get({
     spreadsheetId,
@@ -102,183 +145,74 @@ async function upsertInventoryToSheet(spreadsheetId, sheetName, rows) {
   });
 
   const values = read.data.values || [];
-  const header = values[0] || ['id', 'sku_code'];
-  const subHeader = values[1] || [];
-
-  // Ensure id + sku_code headers
-  if (!header[0]) header[0] = 'id';
-  if (!header[1]) header[1] = 'sku_code';
-
-  let dateColIndex = header.findIndex((h, idx) => idx >= 2 && String(h || '').trim() === todayLabel);
-  const dataUpdates = [];
-  let insertedColumn = false;
-
-  if (dateColIndex < 0) {
-    // Insert today's column at C (index 2)
-    dateColIndex = 2;
-    insertedColumn = true;
-    // Shift existing headers in memory for local map; Sheets API insertDimension handles sheet
-    const meta = await sheets.spreadsheets.get({
-      spreadsheetId,
-      fields: 'sheets(properties(sheetId,title))',
-    });
-    const sheet = (meta.data.sheets || []).find((s) => s.properties.title === title);
-    if (!sheet) throw new Error(`Sheet tab "${title}" not found`);
-    const sheetId = sheet.properties.sheetId;
-
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        requests: [
-          {
-            insertDimension: {
-              range: {
-                sheetId,
-                dimension: 'COLUMNS',
-                startIndex: 2,
-                endIndex: 3,
-              },
-              inheritFromBefore: false,
-            },
-          },
-        ],
-      },
-    });
-
-    // Re-read after insert
-    const again = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `'${escaped}'!A1:ZZ2`,
-      majorDimension: 'ROWS',
-    });
-    const h2 = again.data.values?.[0] || header;
-    const s2 = again.data.values?.[1] || subHeader;
-    h2[2] = todayLabel;
-    s2[2] = 'Inventory';
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `'${escaped}'!A1:${colIndexToA1(Math.max(h2.length, 3))}2`,
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [h2, s2] },
-    });
-  } else {
-    // Ensure sub-header says Inventory
-    if (String(subHeader[dateColIndex] || '').trim().toLowerCase() !== 'inventory') {
-      dataUpdates.push({
-        range: `'${escaped}'!${colIndexToA1(dateColIndex + 1)}2`,
-        values: [['Inventory']],
-      });
-    }
+  if (values.length < 2) {
+    throw new Error(`Sheet "${title}" has no header/data rows`);
   }
 
-  // Build sku → row index map (1-based sheet rows). Data starts at row 3 typically.
-  const refreshed = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `'${escaped}'!A:B`,
-    majorDimension: 'ROWS',
-  });
-  const ab = refreshed.data.values || [];
-  const skuToRow = new Map();
-  let maxId = 0;
-  for (let i = 0; i < ab.length; i++) {
-    const rowNum = i + 1;
-    if (rowNum <= 2) {
-      const maybeId = Number(ab[i]?.[0]);
-      if (Number.isFinite(maybeId)) maxId = Math.max(maxId, maybeId);
-      continue;
-    }
-    const idVal = Number(ab[i]?.[0]);
-    if (Number.isFinite(idVal)) maxId = Math.max(maxId, idVal);
-    const sku = String(ab[i]?.[1] || '').trim();
-    if (sku && !skuToRow.has(sku)) skuToRow.set(sku, rowNum);
+  const header = values[0] || [];
+  const todayLabel = formatSheetDate(new Date());
+  const column = resolveInventoryColumn(header, todayLabel);
+  if (!column) {
+    throw new Error(`No inventory date column found in sheet "${title}"`);
   }
 
-  const colLetter = colIndexToA1(dateColIndex + 1);
-  const valueData = [];
-  const appendRows = [];
-  let updated = 0;
-  let appended = 0;
-  let skipped = 0;
+  const rows = [];
+  const skipped = [];
+  const seen = new Set();
 
-  for (const item of rows || []) {
-    const sku = String(item.internalSku || '').trim();
-    const qty = item.quantity;
+  for (let i = 2; i < values.length; i++) {
+    const row = values[i] || [];
+    const sku = normalizeSkuKey(row[1]);
     if (!sku) {
-      skipped += 1;
+      skipped.push({ row: i + 1, reason: 'missing_sku' });
       continue;
     }
-    if (qty === null || qty === undefined || qty === '' || !Number.isFinite(Number(qty)) || Number(qty) < 0) {
-      skipped += 1;
+    if (seen.has(sku)) {
+      skipped.push({ row: i + 1, internalSku: sku, reason: 'duplicate_sku_in_sheet' });
       continue;
     }
-    const safeQty = Math.floor(Number(qty));
-    const existingRow = skuToRow.get(sku);
-    if (existingRow) {
-      valueData.push({
-        range: `'${escaped}'!${colLetter}${existingRow}`,
-        values: [[safeQty]],
+    seen.add(sku);
+
+    const parsed = parseQuantityCell(row[column.index]);
+    if (!parsed.ok) {
+      skipped.push({
+        row: i + 1,
+        internalSku: sku,
+        reason: parsed.reason,
+        raw: row[column.index],
       });
-      updated += 1;
-    } else {
-      maxId += 1;
-      appendRows.push([maxId, sku, safeQty]);
-      skuToRow.set(sku, ab.length + appendRows.length);
-      appended += 1;
+      continue;
     }
-  }
 
-  if (valueData.length) {
-    // batchUpdate in chunks
-    const chunkSize = 400;
-    for (let i = 0; i < valueData.length; i += chunkSize) {
-      const chunk = valueData.slice(i, i + chunkSize);
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          valueInputOption: 'USER_ENTERED',
-          data: chunk,
-        },
-      });
-    }
-  }
-
-  if (appendRows.length) {
-    // Append with id, sku, and today qty in col C position — pad for dateColIndex
-    const padded = appendRows.map(([id, sku, qty]) => {
-      const row = [id, sku];
-      while (row.length < dateColIndex) row.push('');
-      row[dateColIndex] = qty;
-      return row;
-    });
-    await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range: `'${escaped}'!A:A`,
-      valueInputOption: 'USER_ENTERED',
-      insertDataOption: 'INSERT_ROWS',
-      requestBody: { values: padded },
-    });
-  }
-
-  if (dataUpdates.length) {
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId,
-      requestBody: { valueInputOption: 'USER_ENTERED', data: dataUpdates },
+    rows.push({
+      internalSku: sku,
+      quantity: parsed.value,
+      productName: '',
     });
   }
 
   return {
-    updated,
-    appended,
+    rows,
     skipped,
-    insertedColumn,
-    todayLabel,
-    dateColumn: colLetter,
+    meta: {
+      fetchedAt: new Date().toISOString(),
+      sheetName: title,
+      spreadsheetId,
+      inventoryColumnLabel: column.label,
+      inventoryColumnIndex: column.index,
+      columnReason: column.reason,
+      rowCount: rows.length,
+      skippedCount: skipped.length,
+      source: 'google_sheet',
+    },
   };
 }
 
 module.exports = {
   isSheetsConfigured,
   formatSheetDate,
-  colIndexToA1,
-  upsertInventoryToSheet,
+  parseSheetDateLabel,
+  resolveInventoryColumn,
+  parseQuantityCell,
+  fetchInventoryFromSheet,
 };

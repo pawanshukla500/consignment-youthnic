@@ -44,6 +44,7 @@ function statusFill(status) {
     'Urgent Production Required': 'FFFED7AA',
     'Low Inventory': 'FEF3C7',
     'Inventory Data Missing': 'E2E8F0',
+    'Sheet Sync Failed': 'FCE7F3',
     'OMSGuru Sync Failed': 'FCE7F3',
     Sufficient: 'D1FAE5',
   };
@@ -68,7 +69,7 @@ async function buildInventoryPlanningWorkbook(report, syncLogs = []) {
   styleHeader(exec.getRow(1));
   const execRows = [
     ['Report generation time', summary.generatedAt],
-    ['OMSGuru sync status', summary.omsGuruSyncStatus],
+    ['Sheet sync status', summary.sheetSyncStatus || summary.omsGuruSyncStatus],
     ['Last inventory sync', summary.lastInventorySyncAt],
     ['Total active consignments', summary.activeConsignmentCount],
     ['Total unique SKUs', summary.totalSkusReviewed],
@@ -100,7 +101,7 @@ async function buildInventoryPlanningWorkbook(report, syncLogs = []) {
     'Critical qty',
     'Urgent qty',
     'Normal qty',
-    'Latest OMSGuru inventory',
+    'Latest sheet inventory',
     'Allocated critical',
     'Allocated urgent',
     'Allocated normal',
@@ -257,7 +258,7 @@ async function buildInventoryPlanningWorkbook(report, syncLogs = []) {
   const logSheet = wb.addWorksheet('Inventory Sync Log');
   const logHeaders = [
     'Internal SKU',
-    'OMSGuru quantity',
+    'Sheet quantity',
     'Previous quantity',
     'Quantity change',
     'Sync status',

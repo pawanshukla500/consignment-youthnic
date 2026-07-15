@@ -28,7 +28,7 @@ const INVENTORY_STATUSES = {
   URGENT_PRODUCTION: 'Urgent Production Required',
   CRITICAL_SHORTAGE: 'Critical Shortage',
   MISSING: 'Inventory Data Missing',
-  SYNC_FAILED: 'OMSGuru Sync Failed',
+  SYNC_FAILED: 'Sheet Sync Failed',
 };
 
 function toNonNegInt(value) {
@@ -156,9 +156,9 @@ function recommendedAction(status, allocation) {
     case INVENTORY_STATUSES.LOW:
       return `Plan production of ${allocation.suggestedProductionQty} units before shipment deadlines`;
     case INVENTORY_STATUSES.MISSING:
-      return 'Verify Internal SKU in OMSGuru and re-sync inventory';
+      return 'Paste inventory for this Internal SKU into Google Sheet AutoFetch and re-sync';
     case INVENTORY_STATUSES.SYNC_FAILED:
-      return 'Investigate OMSGuru sync failure and re-run Sync Now';
+      return 'Investigate Google Sheet sync failure and re-run Sync Now';
     default:
       return 'No production action required';
   }
@@ -379,7 +379,8 @@ function summarizePlanning(skuRows, meta = {}) {
 
   return {
     generatedAt: meta.generatedAt || new Date().toISOString(),
-    omsGuruSyncStatus: meta.omsGuruSyncStatus || 'unknown',
+    sheetSyncStatus: meta.sheetSyncStatus || meta.omsGuruSyncStatus || 'unknown',
+    omsGuruSyncStatus: meta.sheetSyncStatus || meta.omsGuruSyncStatus || 'unknown', // back-compat alias
     lastInventorySyncAt: meta.lastInventorySyncAt || null,
     activeConsignmentCount: meta.activeConsignmentCount ?? consignmentIds.size,
     totalSkusReviewed: skus.length,

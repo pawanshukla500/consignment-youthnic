@@ -130,16 +130,13 @@ async function saveInventorySettings(patch, userId = 'system') {
 
 function getConnectionStatus() {
   return {
-    omsGuruConfigured: Boolean(
-      process.env.OMSGURU_API_BASE_URL &&
-      (process.env.OMSGURU_API_KEY || process.env.OMSGURU_API_TOKEN)
-    ),
     googleSheetsConfigured: Boolean(
       process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON ||
       process.env.GOOGLE_SHEETS_CREDENTIALS_JSON ||
       process.env.GOOGLE_APPLICATION_CREDENTIALS
     ),
     sheetIdFromEnv: process.env.INVENTORY_GOOGLE_SHEET_ID || null,
+    inventorySource: 'google_sheet_manual_paste',
   };
 }
 

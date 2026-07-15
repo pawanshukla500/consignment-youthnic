@@ -110,7 +110,7 @@ router.post(
           .catch((err) => console.warn('[InventoryPlanning] sync failed:', err.message));
       });
       await addAuditLog('inventory_sync_manual', 'inventory_sync', 'manual', userId, {});
-      res.json({ ok: true, started: true, message: 'Inventory sync started' });
+      res.json({ ok: true, started: true, message: 'Google Sheet inventory sync started' });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }

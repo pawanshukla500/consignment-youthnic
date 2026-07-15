@@ -12,7 +12,7 @@ const PERMISSIONS = [
   { key: 'consignments', label: 'Consignments', desc: 'View and manage shipments' },
   { key: 'packing', label: 'Packing Station', desc: 'Scan and pack boxes' },
   { key: 'productivity', label: 'Productivity', desc: 'Reports and planning' },
-  { key: 'inventoryPlanning', label: 'Inventory Planning', desc: 'SKU demand vs OMSGuru stock and production alerts' },
+  { key: 'inventoryPlanning', label: 'Inventory Planning', desc: 'SKU demand vs Google Sheet inventory and production alerts' },
   { key: 'marketplaces', label: 'Marketplaces', desc: 'Portal configuration' },
   { key: 'users', label: 'Users', desc: 'Team administration' },
   { key: 'auditLogs', label: 'Audit Logs', desc: 'System activity history' },

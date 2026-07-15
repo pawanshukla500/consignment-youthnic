@@ -228,7 +228,7 @@ export default function Settings() {
                 <div>
                   <h2 className="text-lg font-semibold text-slate-900">Inventory Planning</h2>
                   <p className="text-sm text-slate-500">
-                    OMSGuru sync, Google Sheet AutoFetch, production emails, and SKU shortage report
+                    Google Sheet AutoFetch inventory, SKU shortage report, and production emails
                   </p>
                 </div>
               </div>
