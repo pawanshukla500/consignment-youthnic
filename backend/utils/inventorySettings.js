@@ -7,17 +7,34 @@ const { firestoreHelpers } = require('./helpers');
 
 const SETTINGS_ID = 'inventoryPlanning';
 
+const DEFAULT_PRODUCTION_TEAM_EMAILS = [
+  'production@vbexports.co.in',
+  'dispatches@vbexports.co.in',
+];
+
+function parseEmailList(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((v) => String(v || '').trim().toLowerCase()).filter(Boolean))];
+  }
+  if (typeof value === 'string') {
+    return [...new Set(value.split(/[,;\s]+/).map((v) => v.trim().toLowerCase()).filter(Boolean))];
+  }
+  return [];
+}
+
 const DEFAULT_INVENTORY_SETTINGS = {
   enabled: true,
   googleSheetId: process.env.INVENTORY_GOOGLE_SHEET_ID || '1tTOzLKp_Ybh3kIuQbzZOv6eTdVLMk-3EyzHcEjMQgk4',
   googleSheetName: process.env.INVENTORY_GOOGLE_SHEET_NAME || 'AutoFetch',
+  preferSheetColumnC: true,
   syncHourUtc: 2,
   syncMinuteUtc: 0,
   syncEnabled: true,
-  productionTeamEmails: [],
+  productionTeamEmails: [...DEFAULT_PRODUCTION_TEAM_EMAILS],
   inventoryTeamEmails: [],
-  organisationHeadCcEmails: [],
+  organisationHeadCcEmails: parseEmailList(process.env.INVENTORY_ORG_HEAD_CC || ''),
   additionalCcEmails: [],
+  autoCcOrganisationHeadUsers: true,
   bucketMap: {
     critical: 'critical',
     high: 'urgent',
@@ -47,16 +64,6 @@ const DEFAULT_INVENTORY_SETTINGS = {
   lastEmailSentAt: null,
 };
 
-function parseEmailList(value) {
-  if (Array.isArray(value)) {
-    return [...new Set(value.map((v) => String(v || '').trim().toLowerCase()).filter(Boolean))];
-  }
-  if (typeof value === 'string') {
-    return [...new Set(value.split(/[,;\s]+/).map((v) => v.trim().toLowerCase()).filter(Boolean))];
-  }
-  return [];
-}
-
 function sanitizeBucketMap(input) {
   const base = { ...DEFAULT_INVENTORY_SETTINGS.bucketMap };
   if (!input || typeof input !== 'object') return base;
@@ -69,18 +76,57 @@ function sanitizeBucketMap(input) {
   return base;
 }
 
+function withProductionDefaults(emails) {
+  const list = parseEmailList(emails);
+  return list.length ? list : [...DEFAULT_PRODUCTION_TEAM_EMAILS];
+}
+
+/**
+ * Resolve Organisation Head CC:
+ * 1) Admin-configured organisationHeadCcEmails
+ * 2) Else (when autoCcOrganisationHeadUsers) active users with role organization_head
+ */
+async function resolveOrganisationHeadCcEmails(settings) {
+  const configured = parseEmailList(settings?.organisationHeadCcEmails);
+  if (configured.length) return configured;
+  if (settings?.autoCcOrganisationHeadUsers === false) return [];
+
+  try {
+    const users = await firestoreHelpers.getCollection('users');
+    return parseEmailList(
+      (users || [])
+        .filter((u) => u.role === 'organization_head' && u.isActive !== false && u.email)
+        .map((u) => u.email)
+    );
+  } catch (err) {
+    console.warn('[InventorySettings] org-head CC lookup failed:', err.message);
+    return [];
+  }
+}
+
 async function getInventorySettings() {
   const doc = await firestoreHelpers.getDocument('settings', SETTINGS_ID);
-  if (!doc) return { ...DEFAULT_INVENTORY_SETTINGS };
+  if (!doc) {
+    return {
+      ...DEFAULT_INVENTORY_SETTINGS,
+      productionTeamEmails: [...DEFAULT_PRODUCTION_TEAM_EMAILS],
+    };
+  }
   const { id, ...data } = doc;
   return {
     ...DEFAULT_INVENTORY_SETTINGS,
     ...data,
-    productionTeamEmails: parseEmailList(data.productionTeamEmails ?? DEFAULT_INVENTORY_SETTINGS.productionTeamEmails),
+    productionTeamEmails: withProductionDefaults(
+      data.productionTeamEmails ?? DEFAULT_INVENTORY_SETTINGS.productionTeamEmails
+    ),
     inventoryTeamEmails: parseEmailList(data.inventoryTeamEmails ?? DEFAULT_INVENTORY_SETTINGS.inventoryTeamEmails),
-    organisationHeadCcEmails: parseEmailList(data.organisationHeadCcEmails ?? DEFAULT_INVENTORY_SETTINGS.organisationHeadCcEmails),
+    organisationHeadCcEmails: parseEmailList(
+      data.organisationHeadCcEmails ?? DEFAULT_INVENTORY_SETTINGS.organisationHeadCcEmails
+    ),
     additionalCcEmails: parseEmailList(data.additionalCcEmails ?? DEFAULT_INVENTORY_SETTINGS.additionalCcEmails),
     bucketMap: sanitizeBucketMap(data.bucketMap),
+    autoCcOrganisationHeadUsers: data.autoCcOrganisationHeadUsers !== false,
+    preferSheetColumnC: data.preferSheetColumnC !== false,
   };
 }
 
@@ -93,11 +139,21 @@ async function saveInventorySettings(patch, userId = 'system') {
     updatedBy: userId,
   };
 
-  if (patch.productionTeamEmails !== undefined) next.productionTeamEmails = parseEmailList(patch.productionTeamEmails);
+  if (patch.productionTeamEmails !== undefined) {
+    next.productionTeamEmails = withProductionDefaults(patch.productionTeamEmails);
+  }
   if (patch.inventoryTeamEmails !== undefined) next.inventoryTeamEmails = parseEmailList(patch.inventoryTeamEmails);
-  if (patch.organisationHeadCcEmails !== undefined) next.organisationHeadCcEmails = parseEmailList(patch.organisationHeadCcEmails);
+  if (patch.organisationHeadCcEmails !== undefined) {
+    next.organisationHeadCcEmails = parseEmailList(patch.organisationHeadCcEmails);
+  }
   if (patch.additionalCcEmails !== undefined) next.additionalCcEmails = parseEmailList(patch.additionalCcEmails);
   if (patch.bucketMap !== undefined) next.bucketMap = sanitizeBucketMap(patch.bucketMap);
+  if (patch.autoCcOrganisationHeadUsers !== undefined) {
+    next.autoCcOrganisationHeadUsers = Boolean(patch.autoCcOrganisationHeadUsers);
+  }
+  if (patch.preferSheetColumnC !== undefined) {
+    next.preferSheetColumnC = Boolean(patch.preferSheetColumnC);
+  }
 
   if (patch.syncHourUtc !== undefined) {
     const h = parseInt(patch.syncHourUtc, 10);
@@ -120,7 +176,6 @@ async function saveInventorySettings(patch, userId = 'system') {
     next.emailMinIntervalMinutes = mins;
   }
 
-  // Never persist secrets in settings doc
   delete next.omsGuruApiKey;
   delete next.googleServiceAccountJson;
 
@@ -136,15 +191,18 @@ function getConnectionStatus() {
       process.env.GOOGLE_APPLICATION_CREDENTIALS
     ),
     sheetIdFromEnv: process.env.INVENTORY_GOOGLE_SHEET_ID || null,
-    inventorySource: 'google_sheet_manual_paste',
+    inventorySource: 'google_sheet_column_c',
   };
 }
 
 module.exports = {
   SETTINGS_ID,
+  DEFAULT_PRODUCTION_TEAM_EMAILS,
   DEFAULT_INVENTORY_SETTINGS,
   parseEmailList,
   sanitizeBucketMap,
+  withProductionDefaults,
+  resolveOrganisationHeadCcEmails,
   getInventorySettings,
   saveInventorySettings,
   getConnectionStatus,

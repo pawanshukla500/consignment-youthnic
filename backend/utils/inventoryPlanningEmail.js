@@ -30,7 +30,7 @@ function buildInventoryPlanningEmail({ report, dashboardUrl, subject }) {
       <td style="padding:8px;border:1px solid #e2e8f0;text-align:right;font-size:12px">${escapeHtml(r.totalPlannedQty)}</td>
       <td style="padding:8px;border:1px solid #e2e8f0;text-align:right;font-size:12px">${r.latestInventory == null ? '—' : escapeHtml(r.latestInventory)}</td>
       <td style="padding:8px;border:1px solid #e2e8f0;text-align:right;font-size:12px;color:#b91c1c;font-weight:600">${escapeHtml(r.totalShortage)}</td>
-      <td style="padding:8px;border:1px solid #e2e8f0;text-align:right;font-size:12px">${escapeHtml(r.criticalShortage)} / ${escapeHtml(r.urgentShortage)}</td>
+      <td style="padding:8px;border:1px solid #e2e8f0;text-align:right;font-size:12px;font-weight:600">${escapeHtml(r.suggestedProductionQty)}</td>
       <td style="padding:8px;border:1px solid #e2e8f0;font-size:12px">${escapeHtml((r.consignmentIds || []).join(', '))}</td>
       <td style="padding:8px;border:1px solid #e2e8f0;font-size:12px">${escapeHtml(r.recommendedAction)}</td>
     </tr>`).join('');
@@ -46,8 +46,9 @@ function buildInventoryPlanningEmail({ report, dashboardUrl, subject }) {
       <div style="padding:20px 24px">
         <p style="margin:0 0 16px;color:#334155;line-height:1.5">
           Inventory planning alert for production and inventory teams.
-          Critical and urgent SKU requirements are allocated against the latest inventory
-          pasted into Google Sheet AutoFetch (Critical → Urgent → Normal). An Excel workbook is attached.
+          Critical and urgent SKU requirements are based on Internal SKUs from consignments
+          that are created/planned but not yet fully packed. Shortage =
+          Total Planned − Available (Google Sheet Column C). Critical → Urgent → Normal allocation applies when inventory is partial.
         </p>
 
         <table style="border-collapse:collapse;width:100%;margin-bottom:18px"><tr>
@@ -77,9 +78,9 @@ function buildInventoryPlanningEmail({ report, dashboardUrl, subject }) {
               <th style="padding:8px;text-align:left">Internal SKU</th>
               <th style="padding:8px;text-align:left">Status</th>
               <th style="padding:8px;text-align:right">Planned</th>
-              <th style="padding:8px;text-align:right">Available</th>
+              <th style="padding:8px;text-align:right">Available (Col C)</th>
               <th style="padding:8px;text-align:right">Shortage</th>
-              <th style="padding:8px;text-align:right">Crit / Urg short</th>
+              <th style="padding:8px;text-align:right">Produce</th>
               <th style="padding:8px;text-align:left">Consignments</th>
               <th style="padding:8px;text-align:left">Action</th>
             </tr>

@@ -81,11 +81,18 @@ function parseSheetDateLabel(label) {
 }
 
 /**
- * Choose inventory date column:
- * 1) today's date header if present
- * 2) otherwise the newest parseable date column (leftmost among equal / newest by value)
+ * Choose inventory quantity column.
+ * Business rule: Column C (index 2) holds the latest available inventory
+ * (today’s date column on AutoFetch, or a static latest qty).
  */
-function resolveInventoryColumn(headerRow = [], todayLabel = formatSheetDate()) {
+function resolveInventoryColumn(headerRow = [], todayLabel = formatSheetDate(), options = {}) {
+  const preferColumnC = options.preferColumnC !== false;
+
+  if (preferColumnC && headerRow.length > 2) {
+    const label = String(headerRow[2] || '').trim() || 'C';
+    return { index: 2, label, reason: 'column_c' };
+  }
+
   const candidates = [];
   for (let i = 2; i < headerRow.length; i++) {
     const label = String(headerRow[i] || '').trim();
@@ -99,7 +106,6 @@ function resolveInventoryColumn(headerRow = [], todayLabel = formatSheetDate()) 
     }
   }
   if (!candidates.length) {
-    // Fallback: first data column after sku_code
     if (headerRow.length > 2) {
       return {
         index: 2,
@@ -151,9 +157,10 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName) {
 
   const header = values[0] || [];
   const todayLabel = formatSheetDate(new Date());
-  const column = resolveInventoryColumn(header, todayLabel);
+  // Prefer Column C = latest available inventory (Internal SKU in Column B)
+  const column = resolveInventoryColumn(header, todayLabel, { preferColumnC: true });
   if (!column) {
-    throw new Error(`No inventory date column found in sheet "${title}"`);
+    throw new Error(`No inventory column found in sheet "${title}" (expected Column C)`);
   }
 
   const rows = [];

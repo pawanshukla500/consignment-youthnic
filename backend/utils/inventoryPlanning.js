@@ -293,6 +293,10 @@ function applyStockToDemand(demandRows, stockBySku, options = {}) {
     );
     const status = deriveInventoryStatus(allocation, { syncFailed }, options);
     const action = recommendedAction(status, allocation);
+    const available = allocation.available;
+    const planned = demand.totalPlannedQty;
+    // Available Inventory − Total Planned Consignment Quantity (negative ⇒ shortage)
+    const inventoryBalance = available == null ? null : available - planned;
 
     return {
       internalSku: demand.internalSku,
@@ -306,6 +310,7 @@ function applyStockToDemand(demandRows, stockBySku, options = {}) {
       urgentQty: demand.urgentQty,
       normalQty: demand.normalQty,
       latestInventory: allocation.available,
+      inventoryBalance,
       inventoryAllocatedCritical: allocation.criticalCovered,
       inventoryAllocatedUrgent: allocation.urgentCovered,
       inventoryAllocatedNormal: allocation.normalCovered,
