@@ -27,9 +27,16 @@ const DEFAULT_INVENTORY_SETTINGS = {
   googleSheetId: process.env.INVENTORY_GOOGLE_SHEET_ID || '1tTOzLKp_Ybh3kIuQbzZOv6eTdVLMk-3EyzHcEjMQgk4',
   googleSheetName: process.env.INVENTORY_GOOGLE_SHEET_NAME || 'AutoFetch',
   preferSheetColumnC: true,
-  syncHourUtc: 2,
-  syncMinuteUtc: 0,
+  // Daily morning sync at 10:30 Asia/Kolkata (India) → then email the full report
+  syncTimezone: process.env.INVENTORY_SYNC_TIMEZONE || 'Asia/Kolkata',
+  syncHourLocal: Number(process.env.INVENTORY_SYNC_HOUR_LOCAL || 10),
+  syncMinuteLocal: Number(process.env.INVENTORY_SYNC_MINUTE_LOCAL || 30),
+  // Legacy UTC fields kept for older Admin UIs (10:30 IST = 05:00 UTC)
+  syncHourUtc: 5,
+  syncMinuteUtc: 30,
   syncEnabled: true,
+  sheetFetchBatchSize: Number(process.env.INVENTORY_SHEET_BATCH_SIZE || 2000),
+  sheetFetchPauseMs: Number(process.env.INVENTORY_SHEET_BATCH_PAUSE_MS || 2000),
   productionTeamEmails: [...DEFAULT_PRODUCTION_TEAM_EMAILS],
   inventoryTeamEmails: [],
   organisationHeadCcEmails: parseEmailList(process.env.INVENTORY_ORG_HEAD_CC || ''),
@@ -51,7 +58,8 @@ const DEFAULT_INVENTORY_SETTINGS = {
   emailOnCriticalOrUrgent: true,
   emailOnResolvedShortage: true,
   emailDailyReport: true,
-  emailDailyHourUtc: 3,
+  emailAfterDailySync: true,
+  emailDailyHourUtc: 5,
   emailMinIntervalMinutes: 30,
   reportRetentionDays: 90,
   openConsignmentStatuses: ['pending', 'in_progress'],
@@ -127,6 +135,21 @@ async function getInventorySettings() {
     bucketMap: sanitizeBucketMap(data.bucketMap),
     autoCcOrganisationHeadUsers: data.autoCcOrganisationHeadUsers !== false,
     preferSheetColumnC: data.preferSheetColumnC !== false,
+    emailAfterDailySync: data.emailAfterDailySync !== false,
+    emailDailyReport: data.emailDailyReport !== false,
+    syncTimezone: data.syncTimezone || DEFAULT_INVENTORY_SETTINGS.syncTimezone,
+    syncHourLocal: Number.isFinite(Number(data.syncHourLocal))
+      ? Number(data.syncHourLocal)
+      : DEFAULT_INVENTORY_SETTINGS.syncHourLocal,
+    syncMinuteLocal: Number.isFinite(Number(data.syncMinuteLocal))
+      ? Number(data.syncMinuteLocal)
+      : DEFAULT_INVENTORY_SETTINGS.syncMinuteLocal,
+    sheetFetchBatchSize: Number(data.sheetFetchBatchSize) > 0
+      ? Number(data.sheetFetchBatchSize)
+      : DEFAULT_INVENTORY_SETTINGS.sheetFetchBatchSize,
+    sheetFetchPauseMs: Number.isFinite(Number(data.sheetFetchPauseMs))
+      ? Number(data.sheetFetchPauseMs)
+      : DEFAULT_INVENTORY_SETTINGS.sheetFetchPauseMs,
   };
 }
 
@@ -164,6 +187,32 @@ async function saveInventorySettings(patch, userId = 'system') {
     const m = parseInt(patch.syncMinuteUtc, 10);
     if (Number.isNaN(m) || m < 0 || m > 59) throw new Error('syncMinuteUtc must be 0–59');
     next.syncMinuteUtc = m;
+  }
+  if (patch.syncHourLocal !== undefined) {
+    const h = parseInt(patch.syncHourLocal, 10);
+    if (Number.isNaN(h) || h < 0 || h > 23) throw new Error('syncHourLocal must be 0–23');
+    next.syncHourLocal = h;
+  }
+  if (patch.syncMinuteLocal !== undefined) {
+    const m = parseInt(patch.syncMinuteLocal, 10);
+    if (Number.isNaN(m) || m < 0 || m > 59) throw new Error('syncMinuteLocal must be 0–59');
+    next.syncMinuteLocal = m;
+  }
+  if (patch.syncTimezone !== undefined) {
+    next.syncTimezone = String(patch.syncTimezone || 'Asia/Kolkata').trim() || 'Asia/Kolkata';
+  }
+  if (patch.sheetFetchBatchSize !== undefined) {
+    const n = parseInt(patch.sheetFetchBatchSize, 10);
+    if (Number.isNaN(n) || n < 100 || n > 5000) throw new Error('sheetFetchBatchSize must be 100–5000');
+    next.sheetFetchBatchSize = n;
+  }
+  if (patch.sheetFetchPauseMs !== undefined) {
+    const n = parseInt(patch.sheetFetchPauseMs, 10);
+    if (Number.isNaN(n) || n < 0 || n > 30000) throw new Error('sheetFetchPauseMs must be 0–30000');
+    next.sheetFetchPauseMs = n;
+  }
+  if (patch.emailAfterDailySync !== undefined) {
+    next.emailAfterDailySync = Boolean(patch.emailAfterDailySync);
   }
   if (patch.reportRetentionDays !== undefined) {
     const d = parseInt(patch.reportRetentionDays, 10);
@@ -220,4 +269,42 @@ module.exports = {
   getInventorySettings,
   saveInventorySettings,
   getConnectionStatus,
+  getZonedDateParts,
+  isDailySyncSlot,
 };
+
+/**
+ * Clock parts in a target IANA timezone (default Asia/Kolkata).
+ */
+function getZonedDateParts(date = new Date(), timeZone = 'Asia/Kolkata') {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date instanceof Date ? date : new Date(date));
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  const hourRaw = get('hour');
+  // Some environments return "24" for midnight
+  const hour = hourRaw === '24' ? 0 : Number(hourRaw);
+  return {
+    timeZone,
+    year: get('year'),
+    month: get('month'),
+    day: get('day'),
+    hour,
+    minute: Number(get('minute')),
+    dateKey: `${get('year')}-${get('month')}-${get('day')}`,
+  };
+}
+
+function isDailySyncSlot(settings, date = new Date()) {
+  const tz = settings?.syncTimezone || 'Asia/Kolkata';
+  const parts = getZonedDateParts(date, tz);
+  const hour = Number(settings?.syncHourLocal ?? 10);
+  const minute = Number(settings?.syncMinuteLocal ?? 30);
+  return parts.hour === hour && parts.minute === minute;
+}

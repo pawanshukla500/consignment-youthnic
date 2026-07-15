@@ -218,13 +218,15 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
       throw new Error('Google Sheet ID is not configured');
     }
 
-    // Single pass: pick best tab + parse A:C (probe is only for /connection-test UI).
+    // Single pass: pick best tab + parse A:C in batches of 2000 with 2s pause.
     const fetchResult = await fetchInventoryFromSheet(
       settings.googleSheetId,
       settings.googleSheetName || 'AutoFetch',
       {
         preferColumnC: settings.preferSheetColumnC !== false,
         blankAsZero: true,
+        batchSize: settings.sheetFetchBatchSize || 2000,
+        pauseMs: settings.sheetFetchPauseMs != null ? settings.sheetFetchPauseMs : 2000,
       }
     );
 

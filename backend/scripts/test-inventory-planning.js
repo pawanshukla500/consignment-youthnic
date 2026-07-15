@@ -359,5 +359,80 @@ const {
   );
 }
 
+// Batched sheet read settings (2000 + pause)
+{
+  const { isDailySyncSlot, getZonedDateParts, DEFAULT_INVENTORY_SETTINGS } = require('../utils/inventorySettings');
+  assert.strictEqual(DEFAULT_INVENTORY_SETTINGS.syncHourLocal, 10);
+  assert.strictEqual(DEFAULT_INVENTORY_SETTINGS.syncMinuteLocal, 30);
+  assert.strictEqual(DEFAULT_INVENTORY_SETTINGS.sheetFetchBatchSize, 2000);
+  assert.strictEqual(DEFAULT_INVENTORY_SETTINGS.sheetFetchPauseMs, 2000);
+  const parts = getZonedDateParts(new Date('2026-07-15T05:00:00.000Z'), 'Asia/Kolkata');
+  // 05:00 UTC = 10:30 IST is wrong - 05:00 UTC = 10:30 IST yes: IST = UTC+5:30 so 05:00 UTC = 10:30 IST
+  assert.strictEqual(parts.hour, 10);
+  assert.strictEqual(parts.minute, 30);
+  assert.strictEqual(
+    isDailySyncSlot({ syncTimezone: 'Asia/Kolkata', syncHourLocal: 10, syncMinuteLocal: 30 }, new Date('2026-07-15T05:00:00.000Z')),
+    true
+  );
+  assert.strictEqual(
+    isDailySyncSlot({ syncTimezone: 'Asia/Kolkata', syncHourLocal: 10, syncMinuteLocal: 30 }, new Date('2026-07-15T05:01:00.000Z')),
+    false
+  );
+}
+
+// Email body: branded CID logo + summary only (SKU detail stays in Excel)
+{
+  const { buildInventoryPlanningEmail } = require('../utils/inventoryPlanningEmail');
+  const { LOGO_CID } = require('../utils/emailTemplates');
+  const report = {
+    summary: {
+      generatedAt: '2026-07-15T05:30:00.000Z',
+      sheetSyncStatus: 'completed',
+      lastInventorySyncAt: '2026-07-15T05:00:00.000Z',
+      activeConsignmentCount: 6,
+      totalSkusReviewed: 148,
+      totalPlannedQty: 18051,
+      totalAvailableInventory: 15304,
+      totalShortageQty: 1217,
+      totalSuggestedProductionQty: 1217,
+      criticalShortageSkuCount: 18,
+      urgentSkuCount: 3,
+      lowInventorySkuCount: 41,
+      sufficientSkuCount: 103,
+      missingInventorySkuCount: 0,
+      syncFailedSkuCount: 0,
+      earliestShipmentOrAppointmentDate: '2026-07-18',
+    },
+    syncMeta: { sheetName: 'Inventory' },
+    skus: [
+      {
+        internalSku: 'SKD21-KAASHI-WINE_L',
+        inventoryStatus: 'Critical Shortage',
+        totalPlannedQty: 52,
+        latestInventory: 0,
+        totalShortage: 52,
+        suggestedProductionQty: 52,
+        activeConsignmentCount: 2,
+        consignmentIds: ['MYNJ-A', 'MYNJ-B'],
+        recommendedAction: 'Produce 52 units immediately',
+      },
+    ],
+  };
+  const { html, text } = buildInventoryPlanningEmail({
+    report,
+    dashboardUrl: 'https://consignment.youthnic.shop/inventory-planning',
+    subject: 'Daily Inventory Planning Report',
+  });
+  assert.ok(html.includes(`cid:${LOGO_CID}`), 'email must inline logo via CID');
+  assert.ok(html.includes('Consignment App'), 'email must use branded shell');
+  assert.ok(html.includes('Excel'), 'email must point to Excel attachment');
+  assert.ok(!html.includes('SKD21-KAASHI-WINE_L'), 'SKU codes must not appear in HTML body');
+  assert.ok(!html.includes('Critical & urgent'), 'SKU tables must not appear in HTML body');
+  assert.ok(!html.includes('Produce 52 units immediately'), 'SKU action text must not appear in HTML body');
+  assert.ok(!text.includes('SKD21-KAASHI-WINE_L'), 'SKU codes must not appear in text body');
+  assert.ok(html.includes('1217') && html.includes('18'), 'summary counts remain in body');
+}
+
 console.log('Inventory planning tests passed.');
+
 
