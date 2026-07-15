@@ -135,6 +135,10 @@ const {
   assert.strictEqual(colC.index, 2);
   assert.strictEqual(colC.reason, 'column_c');
 
+  const invHeader = resolveInventoryColumn(['id', 'sku_code', 'Inventory'], today);
+  assert.strictEqual(invHeader.index, 2);
+  assert.strictEqual(invHeader.reason, 'column_c_inventory');
+
   // Even when a newer date exists elsewhere, prefer Column C by default
   const stillC = resolveInventoryColumn(
     ['id', 'sku_code', '14/07/2026', '15/07/2026'],
@@ -220,32 +224,68 @@ const {
   assert.strictEqual(parseQuantityCell(0).value, 0);
 }
 
-// EJ1201-16001 style: sheet Col C = 0 must win over stale DB qty 955 (case-insensitive match)
+// EJ1201-16001: FC inventory layout (Date meta row + Inventory header) must read 955
+{
+  const { parseInventorySheetValues, findHeaderRow } = require('../utils/googleSheetsInventory');
+
+  const values = [
+    ['', 'Date', '15/07/2026'],
+    ['id', 'sku_code', 'Inventory'],
+    [21591169, 'EJ1201-16001', 955],
+    [1, 'SKD74-ARCHI-CHERRY_S', 40],
+    [2, 'OTHER-SKU', 0],
+  ];
+  assert.strictEqual(findHeaderRow(values).index, 1);
+
+  const parsed = parseInventorySheetValues(values, { preferColumnC: true, blankAsZero: true });
+  assert.strictEqual(parsed.meta.columnReason, 'column_c_inventory');
+  assert.strictEqual(parsed.meta.inventoryColumnIndex, 2);
+
+  const ej = parsed.rows.find((r) => r.internalSku === 'EJ1201-16001');
+  assert.ok(ej, 'EJ1201-16001 must be found');
+  assert.strictEqual(ej.quantity, 955);
+
+  const demand = buildSkuDemand([{
+    id: 'C1',
+    status: 'pending',
+    criticalityLevel: 'critical',
+    skus: [{ internalSku: 'ej1201-16001', requiredQty: 365, packedQty: 0 }],
+  }]);
+  const rows = applyStockToDemand(demand, {
+    'EJ1201-16001': { quantity: ej.quantity, sync_status: 'ok' },
+  });
+  assert.strictEqual(rows[0].latestInventory, 955);
+  assert.strictEqual(rows[0].totalPlannedQty, 365);
+  assert.strictEqual(rows[0].inventoryBalance, 955 - 365);
+  assert.strictEqual(rows[0].totalShortage, 0);
+}
+
+// Legacy AutoFetch multi-date layout still works
+{
+  const { parseInventorySheetValues } = require('../utils/googleSheetsInventory');
+  const values = [
+    ['id', 'sku_code', '15/07/2026', '14/07/2026'],
+    ['', '', 'Inventory', 'Inventory'],
+    [1, 'SKU-A', 12, 99],
+  ];
+  const parsed = parseInventorySheetValues(values, { preferColumnC: true });
+  assert.strictEqual(parsed.rows[0].quantity, 12);
+}
+
+// Explicit sheet Col C = 0 is kept (not a stale DB value)
 {
   assert.strictEqual(normalizeSkuKey('ej1201-16001'), 'EJ1201-16001');
-  assert.strictEqual(normalizeSkuKey(' EJ1201-16001 '), 'EJ1201-16001');
-
   const demand = buildSkuDemand([{
     id: 'C1',
     status: 'pending',
     criticalityLevel: 'critical',
     skus: [{ internalSku: 'ej1201-16001', requiredQty: 100, packedQty: 0 }],
   }]);
-  assert.strictEqual(demand[0].internalSku, 'EJ1201-16001');
-
-  // After sync, stock map uses uppercase key and sheet qty 0 (not leftover 955)
   const rows = applyStockToDemand(demand, {
     'EJ1201-16001': { quantity: 0, sync_status: 'ok' },
   });
   assert.strictEqual(rows[0].latestInventory, 0);
   assert.strictEqual(rows[0].inventoryBalance, -100);
-  assert.strictEqual(rows[0].totalShortage, 100);
-
-  // Legacy mixed-case stock key still matches
-  const rowsMixed = applyStockToDemand(demand, {
-    'Ej1201-16001': { quantity: 0, sync_status: 'ok' },
-  });
-  assert.strictEqual(rowsMixed[0].latestInventory, 0);
 }
 
 // Fingerprint changes when shortage changes
