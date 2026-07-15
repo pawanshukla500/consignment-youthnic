@@ -49,8 +49,9 @@ function buildInlineLogo() {
 /**
  * Send email via Mailgun.
  * Retries once on transient failures. Always attaches branded logo as inline CID.
+ * Optional: cc, attachmentBuffers [{ filename, data, contentType }]
  */
-async function sendViaMailgun({ to, subject, html, text, tags = [] }) {
+async function sendViaMailgun({ to, cc, subject, html, text, tags = [], attachmentBuffers = [] }) {
   const client = getClient();
   if (!client) {
     throw new Error('Mailgun client not initialized (missing API key)');
@@ -62,6 +63,10 @@ async function sendViaMailgun({ to, subject, html, text, tags = [] }) {
   const recipients = (Array.isArray(to) ? to : [to])
     .map((v) => String(v || '').trim())
     .filter(Boolean);
+  const ccRecipients = (Array.isArray(cc) ? cc : (cc ? [cc] : []))
+    .map((v) => String(v || '').trim())
+    .filter(Boolean)
+    .filter((email) => !recipients.includes(email));
 
   if (!recipients.length) {
     throw new Error('No email recipients');
@@ -73,39 +78,45 @@ async function sendViaMailgun({ to, subject, html, text, tags = [] }) {
     throw new Error('Email html or text body is required');
   }
 
-  const messageData = {
-    from: `${FROM_NAME()} <${FROM_EMAIL()}>`,
-    to: recipients,
-    subject,
-    ...(html ? { html } : {}),
-    ...(text ? { text } : {}),
-    'o:tag': Array.isArray(tags) && tags.length ? tags : ['consignment-app'],
-    'o:tracking': 'no',
+  const buildMessageData = () => {
+    const messageData = {
+      from: `${FROM_NAME()} <${FROM_EMAIL()}>`,
+      to: recipients,
+      subject,
+      ...(html ? { html } : {}),
+      ...(text ? { text } : {}),
+      'o:tag': Array.isArray(tags) && tags.length ? tags : ['consignment-app'],
+      'o:tracking': 'no',
+    };
+    if (ccRecipients.length) messageData.cc = ccRecipients;
+
+    const logo = buildInlineLogo();
+    if (logo) {
+      messageData.inline = [logo];
+    }
+
+    if (Array.isArray(attachmentBuffers) && attachmentBuffers.length) {
+      messageData.attachment = attachmentBuffers.map((item) => ({
+        filename: item.filename || 'attachment.bin',
+        data: Buffer.isBuffer(item.data) ? item.data : Buffer.from(item.data),
+        contentType: item.contentType || 'application/octet-stream',
+      }));
+    }
+    return messageData;
   };
 
-  const logo = buildInlineLogo();
-  if (logo) {
-    messageData.inline = [logo];
-  }
-
-  const attempt = async () => client.messages.create(DOMAIN(), messageData);
+  const attempt = async () => client.messages.create(DOMAIN(), buildMessageData());
 
   try {
     const res = await attempt();
     console.log(`[Mailgun] Sent "${subject}" → ${recipients.join(', ')} (${res?.id || 'ok'})`);
-    return { statusCode: 200, body: res, recipients };
+    return { statusCode: 200, body: res, recipients, cc: ccRecipients };
   } catch (firstError) {
     console.warn(`[Mailgun] First attempt failed: ${firstError.message} — retrying once`);
-    // Rebuild stream for retry (streams are consumed on first attempt)
-    if (logo) {
-      const again = buildInlineLogo();
-      if (again) messageData.inline = [again];
-      else delete messageData.inline;
-    }
     try {
       const res = await attempt();
       console.log(`[Mailgun] Retry OK "${subject}" → ${recipients.join(', ')}`);
-      return { statusCode: 200, body: res, recipients };
+      return { statusCode: 200, body: res, recipients, cc: ccRecipients };
     } catch (secondError) {
       throw new Error(`Mailgun error: ${secondError.message}`);
     }

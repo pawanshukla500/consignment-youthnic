@@ -18,7 +18,8 @@
     "test:shipment-status": "node scripts/test-shipment-status.js",
     "test:packing-increment": "node scripts/test-packing-increment-integrity.js",
     "backup:postgres": "node scripts/backup-postgres.js",
-    "test:security": "npm run test:sanitize-user && npm run test:env-validation && npm run test:permissions && npm run test:cors && npm run test:auth-active && npm run test:login-path && npm run test:reliability && npm run test:packing-stability && npm run test:shipment-status && npm run test:packing-increment && npm run test:packing-quantity"
+    "test:inventory-planning": "node scripts/test-inventory-planning.js",
+    "test:security": "npm run test:sanitize-user && npm run test:env-validation && npm run test:permissions && npm run test:cors && npm run test:auth-active && npm run test:login-path && npm run test:reliability && npm run test:packing-stability && npm run test:shipment-status && npm run test:packing-increment && npm run test:packing-quantity && npm run test:inventory-planning"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.787.0",
@@ -29,12 +30,14 @@
     "cors": "^2.8.5",
     "csv-parser": "^3.0.0",
     "dotenv": "^16.3.1",
+    "exceljs": "^4.4.0",
     "express": "^4.18.2",
     "express-rate-limit": "^7.5.1",
     "express-validator": "^7.0.1",
     "fast-csv": "^5.0.0",
     "firebase-admin": "^12.0.0",
     "form-data": "^4.0.6",
+    "googleapis": "^173.0.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "mailgun.js": "^13.2.0",

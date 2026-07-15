@@ -1368,6 +1368,9 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
       internalShipmentNo: planned.internalShipmentNo,
       updatedAt: planned.updatedAt,
     });
+    try {
+      require('../utils/inventoryNotify').scheduleInventoryPlanningCheck('new_shortage');
+    } catch (_) { /* non-blocking */ }
   } catch (error) {
     if (error?.code === 'DOCUMENT_ALREADY_EXISTS' || error?.statusCode === 409) {
       return res.status(409).json({ error: 'Consignment ID already exists' });
@@ -1445,6 +1448,13 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
       updatedAt: enriched.updatedAt,
     });
     res.json({ consignment: enriched });
+    const planningFields = ['appointmentDate', 'scheduledDispatchDate', 'marketplaceId', 'warehouse', 'status', 'shipmentStatus'];
+    const touchedPlanning = planningFields.some((f) => updates[f] !== undefined && updates[f] !== existing[f]);
+    if (touchedPlanning) {
+      try {
+        require('../utils/inventoryNotify').scheduleInventoryPlanningCheck('priority_change');
+      } catch (_) { /* non-blocking */ }
+    }
   } catch (error) {
     sendError(res, error);
   }

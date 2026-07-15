@@ -18,6 +18,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Consignments = lazy(() => import('./pages/Consignments'))
 const ConsignmentDetail = lazy(() => import('./pages/ConsignmentDetail'))
 const Productivity = lazy(() => import('./pages/Productivity'))
+const InventoryPlanning = lazy(() => import('./pages/InventoryPlanning'))
 const Marketplaces = lazy(() => import('./pages/Marketplaces'))
 const DocketCompanies = lazy(() => import('./pages/DocketCompanies'))
 const Users = lazy(() => import('./pages/Users'))
@@ -105,6 +106,7 @@ function AppRoutes() {
           <Route path="consignments" element={<PermissionRoute permission="consignments"><Consignments /></PermissionRoute>} />
           <Route path="consignments/:id" element={<PermissionRoute permission="consignments"><ConsignmentDetail /></PermissionRoute>} />
           <Route path="productivity" element={<PermissionRoute permission="productivity"><Productivity /></PermissionRoute>} />
+          <Route path="inventory-planning" element={<PermissionRoute permission="inventoryPlanning"><InventoryPlanning /></PermissionRoute>} />
           <Route path="marketplaces" element={<PermissionRoute permission="marketplaces"><Marketplaces /></PermissionRoute>} />
           <Route path="docket-companies" element={<AdminRoute><DocketCompanies /></AdminRoute>} />
           <Route path="users" element={<AdminRoute><Users /></AdminRoute>} />

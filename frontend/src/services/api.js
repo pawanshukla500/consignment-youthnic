@@ -196,12 +196,24 @@ export const settingsAPI = {
   getLiveLogs: () => api.get('/settings/live-logs')
 };
 
-// Email API (MailerSend — all from consignment@youthnic.shop)
+// Email API (Mailgun — all from consignment@youthnic.shop)
 export const emailAPI = {
   send:               (data) => api.post('/email/send', data),
   sendWelcome:        (data) => api.post('/email/welcome', data),
   notifyConsignment:  (data) => api.post('/email/notify-consignment', data),
   resolveAddress:     (name) => api.get('/email/resolve-address', { params: { name } })
+};
+
+export const inventoryPlanningAPI = {
+  getReport: (refresh = false) => api.get('/inventory-planning/report', { params: refresh ? { refresh: 1 } : {} }),
+  getSyncStatus: () => api.get('/inventory-planning/sync/status'),
+  syncNow: () => api.post('/inventory-planning/sync'),
+  getSettings: () => api.get('/inventory-planning/settings'),
+  updateSettings: (data) => api.put('/inventory-planning/settings', data),
+  downloadExcel: () => api.get('/inventory-planning/export.xlsx', { responseType: 'blob' }),
+  sendNotify: () => api.post('/inventory-planning/notify'),
+  emailHistory: () => api.get('/inventory-planning/email-history'),
+  syncLogs: (limit) => api.get('/inventory-planning/sync/logs', { params: { limit } }),
 };
 
 export default api;

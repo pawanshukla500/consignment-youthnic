@@ -341,6 +341,84 @@ async function main() {
     ALTER TABLE boxes ADD COLUMN IF NOT EXISTS video_updated_at TIMESTAMPTZ
   `);
 
+
+  await run(pool, 'inventory_stock', `
+    CREATE TABLE IF NOT EXISTS inventory_stock (
+      internal_sku TEXT PRIMARY KEY,
+      quantity INTEGER,
+      previous_quantity INTEGER,
+      product_name TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'ok',
+      last_synced_at TIMESTAMPTZ,
+      last_success_at TIMESTAMPTZ,
+      error_message TEXT,
+      source TEXT NOT NULL DEFAULT 'omsguru',
+      manual_override BOOLEAN NOT NULL DEFAULT false,
+      override_quantity INTEGER,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+
+  await run(pool, 'inventory_sync_runs', `
+    CREATE TABLE IF NOT EXISTS inventory_sync_runs (
+      id TEXT PRIMARY KEY,
+      trigger_type TEXT NOT NULL DEFAULT 'scheduled',
+      status TEXT NOT NULL DEFAULT 'running',
+      started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      finished_at TIMESTAMPTZ,
+      skus_fetched INTEGER NOT NULL DEFAULT 0,
+      skus_updated INTEGER NOT NULL DEFAULT 0,
+      skus_failed INTEGER NOT NULL DEFAULT 0,
+      skus_skipped INTEGER NOT NULL DEFAULT 0,
+      sheet_updated BOOLEAN NOT NULL DEFAULT false,
+      error_message TEXT,
+      details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      triggered_by TEXT
+    )
+  `);
+
+  await run(pool, 'inventory_sync_sku_logs', `
+    CREATE TABLE IF NOT EXISTS inventory_sync_sku_logs (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      internal_sku TEXT NOT NULL,
+      omsguru_quantity INTEGER,
+      previous_quantity INTEGER,
+      quantity_change INTEGER,
+      sync_status TEXT NOT NULL DEFAULT 'ok',
+      error_message TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+
+  await run(pool, 'inventory_planning_snapshots', `
+    CREATE TABLE IF NOT EXISTS inventory_planning_snapshots (
+      id TEXT PRIMARY KEY,
+      generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      fingerprint TEXT NOT NULL,
+      trigger_reason TEXT,
+      summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+      skus JSONB NOT NULL DEFAULT '[]'::jsonb,
+      consignments JSONB NOT NULL DEFAULT '[]'::jsonb,
+      sync_meta JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+  `);
+
+  await run(pool, 'inventory_email_history', `
+    CREATE TABLE IF NOT EXISTS inventory_email_history (
+      id TEXT PRIMARY KEY,
+      trigger_reason TEXT NOT NULL,
+      fingerprint TEXT,
+      status TEXT NOT NULL,
+      recipients JSONB NOT NULL DEFAULT '{}'::jsonb,
+      subject TEXT,
+      snapshot_id TEXT,
+      error_message TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+
   console.log('\n--- Indexes ---');
 
   const indexes = [
@@ -356,6 +434,11 @@ async function main() {
     ['idx_skus_lookup', 'CREATE INDEX IF NOT EXISTS idx_skus_lookup ON skus(consignment_id, barcode, marketplace_sku, internal_sku)'],
     ['idx_skus_inward_status', 'CREATE INDEX IF NOT EXISTS idx_skus_inward_status ON skus (inward_status)'],
     ['idx_skus_consignment_inward', 'CREATE INDEX IF NOT EXISTS idx_skus_consignment_inward ON skus (consignment_id, inward_status)'],
+    ['idx_inventory_stock_sync', 'CREATE INDEX IF NOT EXISTS idx_inventory_stock_sync_status ON inventory_stock(sync_status)'],
+    ['idx_inventory_sync_runs_started', 'CREATE INDEX IF NOT EXISTS idx_inventory_sync_runs_started ON inventory_sync_runs(started_at DESC)'],
+    ['idx_inventory_sync_sku_logs_run', 'CREATE INDEX IF NOT EXISTS idx_inventory_sync_sku_logs_run ON inventory_sync_sku_logs(run_id)'],
+    ['idx_inventory_planning_snapshots_gen', 'CREATE INDEX IF NOT EXISTS idx_inventory_planning_snapshots_generated ON inventory_planning_snapshots(generated_at DESC)'],
+    ['idx_inventory_email_history_created', 'CREATE INDEX IF NOT EXISTS idx_inventory_email_history_created ON inventory_email_history(created_at DESC)'],
     ['idx_boxes_consignment', 'CREATE INDEX IF NOT EXISTS idx_boxes_consignment ON boxes(consignment_id, box_no)'],
     ['idx_boxes_video_status', 'CREATE INDEX IF NOT EXISTS idx_boxes_video_status ON boxes(consignment_id, video_status)'],
     ['idx_box_items_box', 'CREATE INDEX IF NOT EXISTS idx_box_items_box ON box_items(box_id)'],
