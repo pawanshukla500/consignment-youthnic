@@ -6,7 +6,7 @@
 
 const { getPool, pgEnabled } = require('../config/database');
 const { generateId, addAuditLog } = require('./helpers');
-const { fetchInventoryFromSheet, isSheetsConfigured } = require('./googleSheetsInventory');
+const { fetchInventoryFromSheet, probeSheetAccess, getSheetsCredentialStatus } = require('./googleSheetsInventory');
 const { getInventorySettings, saveInventorySettings } = require('./inventorySettings');
 const { normalizeSkuKey } = require('./inventoryPlanning');
 
@@ -159,11 +159,24 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
     );
 
     const settings = await getInventorySettings();
-    if (!isSheetsConfigured()) {
-      throw new Error('Google Sheets credentials are not configured');
+    const creds = getSheetsCredentialStatus();
+    if (!creds.ready) {
+      throw new Error(
+        creds.hint ||
+          'Google Sheets credentials are not configured. Mount GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON on Cloud Run.'
+      );
     }
     if (!settings.googleSheetId) {
       throw new Error('Google Sheet ID is not configured');
+    }
+
+    // Probe first so we never wipe stock on auth/share failures disguised as blank Col C
+    const probe = await probeSheetAccess(
+      settings.googleSheetId,
+      settings.googleSheetName || 'AutoFetch'
+    );
+    if (!probe.ok) {
+      throw new Error(probe.error || 'Google Sheets access probe failed');
     }
 
     const fetchResult = await fetchInventoryFromSheet(
@@ -176,6 +189,12 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
         blankAsZero: true,
       }
     );
+
+    if (!fetchResult.rows.length) {
+      throw new Error(
+        `Sheet "${settings.googleSheetName || 'AutoFetch'}" returned 0 SKU rows. Check sku_code in Column B.`
+      );
+    }
 
     const existing = await loadExistingStockMap(pool);
     let updated = 0;
@@ -276,6 +295,9 @@ async function runInventorySync({ triggerType = 'scheduled', triggeredBy = 'syst
       columnLetter: fetchResult.meta?.inventoryColumnLetter,
       columnReason: fetchResult.meta?.columnReason,
       preferSheetColumnC: settings.preferSheetColumnC !== false,
+      positiveQtyCount: fetchResult.meta?.positiveQtyCount,
+      serviceAccountEmail: fetchResult.meta?.serviceAccountEmail || creds.sheetsClientEmail,
+      probeSample: probe.sampleRows || [],
     });
 
     const finishedAt = new Date().toISOString();

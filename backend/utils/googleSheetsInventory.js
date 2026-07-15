@@ -13,42 +13,150 @@
 const { google } = require('googleapis');
 const { normalizeSkuKey } = require('./inventoryPlanning');
 
-function isSheetsConfigured() {
-  return Boolean(
+function getSheetsJsonRaw() {
+  return (
     process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON ||
     process.env.GOOGLE_SHEETS_CREDENTIALS_JSON ||
-    process.env.GOOGLE_APPLICATION_CREDENTIALS
+    ''
   );
 }
 
-function parseServiceAccount() {
-  let raw =
-    process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON ||
-    process.env.GOOGLE_SHEETS_CREDENTIALS_JSON ||
-    '';
-  if (!raw) return null;
+function isSheetsEnvPresent() {
+  return Boolean(String(getSheetsJsonRaw() || '').trim() || process.env.GOOGLE_APPLICATION_CREDENTIALS);
+}
 
-  // Allow base64-encoded JSON (sometimes used in secret managers)
-  const trimmed = String(raw).trim();
-  if (!trimmed.startsWith('{') && !trimmed.startsWith('"')) {
+/**
+ * Parse GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON from Cloud Run / Secret Manager.
+ * Handles: raw JSON, stringified JSON, base64 JSON, escaped newlines in private_key.
+ */
+function parseServiceAccount() {
+  let raw = getSheetsJsonRaw();
+  if (!raw || !String(raw).trim()) return null;
+
+  let text = String(raw).trim();
+  // Strip UTF-8 BOM
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1).trim();
+
+  // Base64-encoded JSON (sometimes used in secret managers)
+  if (!text.startsWith('{') && !text.startsWith('"') && !text.startsWith('[')) {
     try {
-      const decoded = Buffer.from(trimmed, 'base64').toString('utf8').trim();
-      if (decoded.startsWith('{')) raw = decoded;
+      const decoded = Buffer.from(text, 'base64').toString('utf8').trim();
+      if (decoded.startsWith('{') || decoded.startsWith('"')) text = decoded;
     } catch (_) { /* keep original */ }
   }
 
+  let parsed;
   try {
-    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    if (parsed.private_key && typeof parsed.private_key === 'string') {
-      parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
-    }
-    if (!parsed.client_email || !parsed.private_key) {
-      throw new Error('Service account JSON missing client_email or private_key');
-    }
-    return parsed;
+    parsed = JSON.parse(text);
   } catch (err) {
     throw new Error(`Invalid GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON: ${err.message}`);
   }
+
+  // Double-encoded: "{"type":"service_account",...}"
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed.trim());
+    } catch (err) {
+      throw new Error(`Invalid GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON (double-encoded): ${err.message}`);
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Invalid GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON: expected a service-account object');
+  }
+
+  if (parsed.private_key && typeof parsed.private_key === 'string') {
+    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+  }
+  if (!parsed.client_email || !parsed.private_key) {
+    throw new Error('Service account JSON missing client_email or private_key');
+  }
+  return parsed;
+}
+
+/**
+ * Inventory Planning requires an explicit Sheets service-account JSON
+ * (the account the sheet is shared with). ADC alone is not enough.
+ */
+function getSheetsCredentialStatus() {
+  const rawPresent = Boolean(String(getSheetsJsonRaw() || '').trim());
+  const hasAdcPath = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  let sheetsJsonValid = null;
+  let sheetsClientEmail = null;
+  let parseError = null;
+
+  if (rawPresent) {
+    try {
+      const sa = parseServiceAccount();
+      sheetsJsonValid = Boolean(sa?.client_email && sa?.private_key);
+      sheetsClientEmail = sa?.client_email || null;
+      if (!sheetsJsonValid) {
+        parseError = 'Service account JSON missing client_email or private_key';
+      }
+    } catch (err) {
+      sheetsJsonValid = false;
+      parseError = err.message;
+    }
+  }
+
+  const ready = sheetsJsonValid === true;
+  let hint = null;
+  if (!rawPresent && !hasAdcPath) {
+    hint =
+      'GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is missing on the Cloud Run service. Add the GitHub secret and redeploy so it syncs to GCP Secret Manager and mounts on Cloud Run.';
+  } else if (!rawPresent && hasAdcPath) {
+    hint =
+      'GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is not mounted. Inventory Planning needs that service-account JSON (the email shared on the Google Sheet), not only Application Default Credentials.';
+  } else if (sheetsJsonValid === false) {
+    hint =
+      parseError ||
+      'GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is present but invalid JSON / missing client_email or private_key.';
+  }
+
+  return {
+    ready,
+    rawPresent,
+    hasAdcPath,
+    sheetsJsonValid,
+    sheetsClientEmail,
+    parseError,
+    hint,
+  };
+}
+
+function isSheetsConfigured() {
+  // Preferred path: valid SA JSON. Fall back to ADC only when JSON is absent (local/dev).
+  const status = getSheetsCredentialStatus();
+  if (status.ready) return true;
+  if (!status.rawPresent && status.hasAdcPath) return true;
+  return false;
+}
+
+function isSheetsReady() {
+  return getSheetsCredentialStatus().ready;
+}
+
+function formatGoogleSheetsApiError(err, { spreadsheetId, clientEmail } = {}) {
+  const code = err?.code || err?.response?.status || err?.status;
+  const message = String(err?.message || err || 'Unknown Google Sheets error');
+  const lower = message.toLowerCase();
+  const shareHint = clientEmail
+    ? ` Share the spreadsheet with ${clientEmail} as Editor.`
+    : ' Share the spreadsheet with the service-account email as Editor.';
+
+  if (code === 403 || lower.includes('permission') || lower.includes('forbidden')) {
+    return `Google Sheets access denied (403).${shareHint} Also enable the Google Sheets API on the GCP project that owns this service account.`;
+  }
+  if (code === 404 || lower.includes('not found')) {
+    return `Google Sheet not found (404). Check Sheet ID ${spreadsheetId || '(missing)'} and that the AutoFetch tab exists.${shareHint}`;
+  }
+  if (lower.includes('api has not been used') || lower.includes('sheets.googleapis.com') || lower.includes('access not configured')) {
+    return `Google Sheets API is not enabled for this GCP project. Enable "Google Sheets API" in Google Cloud Console, then retry Sync.`;
+  }
+  if (lower.includes('invalid_grant') || lower.includes('invalid jwt') || lower.includes('private key')) {
+    return `Google Sheets service-account credentials are invalid (${message}). Re-paste GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON in GitHub secrets and redeploy.`;
+  }
+  return `Google Sheets error${code ? ` (${code})` : ''}: ${message}`;
 }
 
 async function getSheetsClient() {
@@ -56,20 +164,30 @@ async function getSheetsClient() {
     'https://www.googleapis.com/auth/spreadsheets.readonly',
     'https://www.googleapis.com/auth/spreadsheets',
   ];
-  const sa = parseServiceAccount();
+  const status = getSheetsCredentialStatus();
   let auth;
-  if (sa) {
+  if (status.ready) {
+    const sa = parseServiceAccount();
     auth = new google.auth.GoogleAuth({ credentials: sa, scopes });
-  } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+  } else if (status.hasAdcPath && !status.rawPresent) {
     auth = new google.auth.GoogleAuth({
       keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
       scopes,
     });
+  } else if (status.rawPresent && status.sheetsJsonValid === false) {
+    throw new Error(status.hint || 'Google Sheets service-account JSON is invalid');
   } else {
-    throw new Error('Google Sheets credentials not configured');
+    throw new Error(
+      status.hint ||
+        'Google Sheets credentials are not configured. Mount GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON on Cloud Run.'
+    );
   }
-  const client = await auth.getClient();
-  return google.sheets({ version: 'v4', auth: client });
+  try {
+    const client = await auth.getClient();
+    return google.sheets({ version: 'v4', auth: client });
+  } catch (err) {
+    throw new Error(formatGoogleSheetsApiError(err, { clientEmail: status.sheetsClientEmail }));
+  }
 }
 
 function formatSheetDate(date = new Date()) {
@@ -159,29 +277,124 @@ function parseQuantityCell(raw) {
 }
 
 /**
+ * Lightweight auth + sheet access check used by status UI and before sync writes.
+ */
+async function probeSheetAccess(spreadsheetId, sheetName = 'AutoFetch') {
+  const creds = getSheetsCredentialStatus();
+  if (!creds.ready && !(creds.hasAdcPath && !creds.rawPresent)) {
+    return {
+      ok: false,
+      error: creds.hint || 'Google Sheets credentials are not configured',
+      connection: creds,
+    };
+  }
+  if (!spreadsheetId) {
+    return { ok: false, error: 'Google Sheet ID is not configured', connection: creds };
+  }
+
+  try {
+    const sheets = await getSheetsClient();
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: 'spreadsheetId,properties.title,sheets.properties.title',
+    });
+    const titles = (meta.data.sheets || []).map((s) => s.properties?.title).filter(Boolean);
+    const title = sheetName || 'AutoFetch';
+    if (titles.length && !titles.includes(title)) {
+      return {
+        ok: false,
+        error: `Tab "${title}" not found in spreadsheet. Available tabs: ${titles.join(', ') || '(none)'}`,
+        connection: creds,
+        spreadsheetTitle: meta.data.properties?.title || null,
+        availableTabs: titles,
+      };
+    }
+
+    // Read a small sample from Column C so operators can verify qty immediately
+    const escaped = escapeSheetName(title);
+    const sampleRead = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${escaped}'!A1:C12`,
+      majorDimension: 'ROWS',
+      valueRenderOption: 'UNFORMATTED_VALUE',
+      dateTimeRenderOption: 'FORMATTED_STRING',
+    });
+    const values = sampleRead.data.values || [];
+    const sampleRows = [];
+    for (let i = 1; i < values.length && sampleRows.length < 5; i++) {
+      const row = values[i] || [];
+      const sku = String(row[1] ?? '').trim();
+      if (!sku || sku.toLowerCase() === 'sku_code' || sku.toLowerCase() === 'inventory') continue;
+      const parsed = parseQuantityCell(row[2]);
+      sampleRows.push({
+        sku,
+        columnC: parsed.ok ? parsed.value : null,
+        blank: !parsed.ok,
+      });
+    }
+
+    return {
+      ok: true,
+      connection: creds,
+      spreadsheetTitle: meta.data.properties?.title || null,
+      availableTabs: titles,
+      sheetName: title,
+      sampleRows,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: formatGoogleSheetsApiError(err, {
+        spreadsheetId,
+        clientEmail: creds.sheetsClientEmail,
+      }),
+      connection: creds,
+    };
+  }
+}
+
+/**
  * Read inventory rows from AutoFetch.
  * Blank inventory cells are returned as quantity null so sync can clear stale DB values.
  * @returns {{ rows: Array<{internalSku, quantity, displaySku}>, skipped: Array, meta: object }}
  */
 async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
-  if (!isSheetsConfigured()) {
-    throw new Error('Google Sheets is not configured');
+  const creds = getSheetsCredentialStatus();
+  if (!creds.ready && !(creds.hasAdcPath && !creds.rawPresent)) {
+    throw new Error(creds.hint || 'Google Sheets credentials are not configured');
   }
   if (!spreadsheetId) throw new Error('Google Sheet ID is required');
 
-  const sheets = await getSheetsClient();
+  let sheets;
+  try {
+    sheets = await getSheetsClient();
+  } catch (err) {
+    throw new Error(formatGoogleSheetsApiError(err, {
+      spreadsheetId,
+      clientEmail: creds.sheetsClientEmail,
+    }));
+  }
+
   const title = sheetName || 'AutoFetch';
   const escaped = escapeSheetName(title);
 
-  const read = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `'${escaped}'`,
-    majorDimension: 'ROWS',
-    valueRenderOption: 'UNFORMATTED_VALUE',
-    dateTimeRenderOption: 'FORMATTED_STRING',
-  });
+  let values;
+  try {
+    const read = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${escaped}'`,
+      majorDimension: 'ROWS',
+      valueRenderOption: 'UNFORMATTED_VALUE',
+      dateTimeRenderOption: 'FORMATTED_STRING',
+    });
+    values = read.data.values || [];
+  } catch (err) {
+    throw new Error(formatGoogleSheetsApiError(err, {
+      spreadsheetId,
+      clientEmail: creds.sheetsClientEmail,
+    }));
+  }
 
-  const values = read.data.values || [];
   if (values.length < 2) {
     throw new Error(`Sheet "${title}" has no header/data rows`);
   }
@@ -259,10 +472,10 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
     });
   }
 
+  const withQty = rows.filter((r) => Number(r.quantity) > 0).length;
   const sample = rows
-    .filter((r) => r.quantity != null)
-    .slice(0, 5)
-    .map((r) => ({ sku: r.displaySku, qty: r.quantity }));
+    .slice(0, 8)
+    .map((r) => ({ sku: r.displaySku, qty: r.quantity, blank: Boolean(r.blank) }));
 
   return {
     rows,
@@ -277,20 +490,27 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
       columnReason: column.reason,
       todayLabel,
       rowCount: rows.length,
+      positiveQtyCount: withQty,
       blankOrInvalidCount: rows.filter((r) => r.quantity == null || r.blank || r.invalid).length,
       skippedCount: skipped.length,
       sample,
       source: 'google_sheet',
+      serviceAccountEmail: creds.sheetsClientEmail,
     },
   };
 }
 
 module.exports = {
   isSheetsConfigured,
+  isSheetsReady,
+  isSheetsEnvPresent,
+  getSheetsCredentialStatus,
   parseServiceAccount,
   formatSheetDate,
   parseSheetDateLabel,
   resolveInventoryColumn,
   parseQuantityCell,
+  formatGoogleSheetsApiError,
+  probeSheetAccess,
   fetchInventoryFromSheet,
 };

@@ -20,6 +20,9 @@ sync_secret() {
 
   if [ -z "$value" ]; then
     echo "  ⏭  $name — skipped (empty)"
+    if [ "$name" = "GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON" ]; then
+      echo "  ⚠️  Inventory Planning will fail without this secret. Add GitHub secret GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON (full SA JSON)."
+    fi
     return 0
   fi
 

@@ -152,6 +152,47 @@ const {
   assert.strictEqual(colLatest.reason, 'latest_date');
 }
 
+// Service-account JSON parsing (Cloud Run / double-encoded / base64)
+{
+  const {
+    parseServiceAccount,
+    getSheetsCredentialStatus,
+    formatGoogleSheetsApiError,
+  } = require('../utils/googleSheetsInventory');
+
+  const sa = {
+    type: 'service_account',
+    client_email: 'drive-api@robust-solution-425310-t9.iam.gserviceaccount.com',
+    private_key: '-----BEGIN PRIVATE KEY-----\\nABC\\n-----END PRIVATE KEY-----\\n',
+  };
+  const prev = process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON;
+
+  process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON = JSON.stringify(sa);
+  const parsed = parseServiceAccount();
+  assert.strictEqual(parsed.client_email, sa.client_email);
+  assert.ok(parsed.private_key.includes('\n'));
+  assert.strictEqual(getSheetsCredentialStatus().ready, true);
+
+  process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON = JSON.stringify(JSON.stringify(sa));
+  assert.strictEqual(parseServiceAccount().client_email, sa.client_email);
+
+  process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON = Buffer.from(JSON.stringify(sa), 'utf8').toString('base64');
+  assert.strictEqual(parseServiceAccount().client_email, sa.client_email);
+
+  delete process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON;
+  assert.strictEqual(getSheetsCredentialStatus().ready, false);
+
+  const msg = formatGoogleSheetsApiError(
+    { code: 403, message: 'The caller does not have permission' },
+    { clientEmail: sa.client_email }
+  );
+  assert.ok(msg.includes('403'));
+  assert.ok(msg.includes(sa.client_email));
+
+  if (prev === undefined) delete process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON;
+  else process.env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON = prev;
+}
+
 // Available − Planned balance on shortage example
 {
   const demand = buildSkuDemand([{
