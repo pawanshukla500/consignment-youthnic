@@ -305,62 +305,6 @@ export default function InventoryPlanning() {
         <Metric label="Suggested production" value={summary.totalSuggestedProductionQty} tone="teal" />
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-4 flex flex-wrap gap-4 text-sm text-slate-600">
-        <div>
-          <span className="font-semibold text-slate-800">Sheet sync:</span>{' '}
-          {summary.sheetSyncStatus || summary.omsGuruSyncStatus || syncStatus?.lastSyncStatus || 'never'}
-        </div>
-        <div>
-          <span className="font-semibold text-slate-800">Last sync:</span>{' '}
-          {summary.lastInventorySyncAt
-            ? new Date(summary.lastInventorySyncAt).toLocaleString('en-GB')
-            : '—'}
-        </div>
-        <div>
-          <span className="font-semibold text-slate-800">Earliest ship/appt:</span>{' '}
-          {summary.earliestShipmentOrAppointmentDate || '—'}
-        </div>
-        <div>
-          <span className="font-semibold text-slate-800">Planned qty:</span> {summary.totalPlannedQty ?? 0}
-          {' · '}
-          <span className="font-semibold text-slate-800">Available:</span> {summary.totalAvailableInventory ?? 0}
-        </div>
-        {syncStatus?.connection && (
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
-            {syncStatus.connection.googleSheetsConfigured && syncStatus.connection.googleSheetsJsonValid !== false
-              ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Google Sheets connected</span>
-              : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> Google Sheets not configured</span>}
-            {syncStatus.connection.mailgunConfigured
-              ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Mailgun ready (auto email)</span>
-              : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> Mailgun not configured</span>}
-            <span className="text-slate-500">Inventory source: Google Sheet Column C (Inventory)</span>
-          </div>
-        )}
-        {(syncStatus?.lastSyncError || syncStatus?.latestRun?.error_message || syncStatus?.connection?.hint) && (
-          <div className="basis-full w-full rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            {syncStatus?.lastSyncError || syncStatus?.latestRun?.error_message || syncStatus?.connection?.hint}
-            {syncStatus?.connection?.googleSheetsClientEmail && (
-              <div className="mt-1 text-xs text-amber-800">
-                Service account: {syncStatus.connection.googleSheetsClientEmail} — share the sheet with this email (Editor).
-              </div>
-            )}
-            {syncStatus?.latestRun?.details?.fetchMeta?.sheetName && (
-              <div className="mt-1 text-xs text-amber-800">
-                Last sheet tab: {syncStatus.latestRun.details.fetchMeta.sheetName}
-                {syncStatus.latestRun.details.fetchMeta.spreadsheetTitle
-                  ? ` · Workbook: ${syncStatus.latestRun.details.fetchMeta.spreadsheetTitle}`
-                  : ''}
-              </div>
-            )}
-          </div>
-        )}
-        {syncStatus?.connection?.googleSheetsConfigured && !syncStatus?.lastSyncError && syncStatus?.connection?.googleSheetsClientEmail && (
-          <div className="basis-full w-full text-xs text-slate-500">
-            Sheet reader: {syncStatus.connection.googleSheetsClientEmail}
-          </div>
-        )}
-      </div>
-
       <div className="flex flex-wrap gap-2 border-b border-slate-200">
         {[
           { id: 'skus', label: 'SKU Planning' },
@@ -515,11 +459,74 @@ export default function InventoryPlanning() {
         </div>
       )}
 
-      {tab === 'settings' && isAdmin && settingsForm && (
+      {tab === 'settings' && isAdmin && (
         <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-5">
           <div className="flex items-center gap-2 text-slate-900 font-semibold">
             <Settings2 className="w-4 h-4" /> Inventory Planning configuration
           </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 flex flex-wrap gap-4 text-sm text-slate-600">
+            <div>
+              <span className="font-semibold text-slate-800">Sheet sync:</span>{' '}
+              {summary.sheetSyncStatus || summary.omsGuruSyncStatus || syncStatus?.lastSyncStatus || 'never'}
+            </div>
+            <div>
+              <span className="font-semibold text-slate-800">Last sync:</span>{' '}
+              {summary.lastInventorySyncAt
+                ? new Date(summary.lastInventorySyncAt).toLocaleString('en-GB')
+                : '—'}
+            </div>
+            <div>
+              <span className="font-semibold text-slate-800">Earliest ship/appt:</span>{' '}
+              {summary.earliestShipmentOrAppointmentDate || '—'}
+            </div>
+            <div>
+              <span className="font-semibold text-slate-800">Planned qty:</span> {summary.totalPlannedQty ?? 0}
+              {' · '}
+              <span className="font-semibold text-slate-800">Available:</span> {summary.totalAvailableInventory ?? 0}
+            </div>
+            {syncStatus?.connection && (
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+                {syncStatus.connection.googleSheetsConfigured && syncStatus.connection.googleSheetsJsonValid !== false
+                  ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Google Sheets connected</span>
+                  : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> Google Sheets not configured</span>}
+                {syncStatus.connection.mailgunConfigured
+                  ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Mailgun ready (auto email)</span>
+                  : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> Mailgun not configured</span>}
+                <span className="text-slate-500">Inventory source: Google Sheet Column C (Inventory)</span>
+              </div>
+            )}
+            {(syncStatus?.lastSyncError || syncStatus?.latestRun?.error_message || syncStatus?.connection?.hint) && (
+              <div className="basis-full w-full rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                {syncStatus?.lastSyncError || syncStatus?.latestRun?.error_message || syncStatus?.connection?.hint}
+                {syncStatus?.connection?.googleSheetsClientEmail && (
+                  <div className="mt-1 text-xs text-amber-800">
+                    Service account: {syncStatus.connection.googleSheetsClientEmail} — share the sheet with this email (Editor).
+                  </div>
+                )}
+                {syncStatus?.latestRun?.details?.fetchMeta?.sheetName && (
+                  <div className="mt-1 text-xs text-amber-800">
+                    Last sheet tab: {syncStatus.latestRun.details.fetchMeta.sheetName}
+                    {syncStatus.latestRun.details.fetchMeta.spreadsheetTitle
+                      ? ` · Workbook: ${syncStatus.latestRun.details.fetchMeta.spreadsheetTitle}`
+                      : ''}
+                  </div>
+                )}
+              </div>
+            )}
+            {syncStatus?.connection?.googleSheetsConfigured && !syncStatus?.lastSyncError && syncStatus?.connection?.googleSheetsClientEmail && (
+              <div className="basis-full w-full text-xs text-slate-500">
+                Sheet reader: {syncStatus.connection.googleSheetsClientEmail}
+              </div>
+            )}
+          </div>
+
+          {!settingsForm ? (
+            <div className="flex items-center gap-2 text-sm text-slate-500 py-4">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading admin settings…
+            </div>
+          ) : (
+            <>
           <p className="text-sm text-slate-600">
             Inventory comes from Google Sheet Column C (matched by Internal SKU / sku_code).
             The app auto-picks the workbook tab with real stock (AutoFetch, Total Inventory, etc.).
@@ -684,6 +691,8 @@ export default function InventoryPlanning() {
               <XCircle className="w-4 h-4 mt-0.5 shrink-0" />
               Last sync error: {settings.lastSyncError}
             </div>
+          )}
+            </>
           )}
         </div>
       )}
