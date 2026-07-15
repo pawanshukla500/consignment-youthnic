@@ -130,7 +130,7 @@ export default function InventoryPlanning() {
     setSyncing(true)
     try {
       await inventoryPlanningAPI.syncNow()
-      addToast('Inventory sync started — refresh in a minute', 'success')
+      addToast('Sheet sync started — refresh in a minute', 'success')
       setTimeout(() => loadReport(true), 4000)
     } catch (e) {
       addToast(e.response?.data?.error || 'Sync failed to start', 'error')
