@@ -104,10 +104,7 @@ function canConfirmStage(consignment, stage) {
     };
   }
   if (stage === 'packing_completed') {
-    const packed = Number(consignment.totalPackedQty) || 0;
-    const required = Number(consignment.totalRequiredQty) || 0;
-    const packDone = consignment.status === 'completed' || (required > 0 && packed >= required);
-    if (!packDone) {
+    if (!isPackingPhysicallyDone(consignment)) {
       return {
         ok: false,
         error: 'Packing must be finished (all units packed) before ground team can confirm packing completed.',
@@ -238,7 +235,7 @@ function applyStageConfirmation(consignment, stage, user, note = null) {
     stageConfirmations,
     tatDeadlines: refreshTatFromStage(consignment, stage),
     currentWorkflowStage: getCurrentWorkflowStage({ ...consignment, stageConfirmations }),
-    pendingAction: STAGE_LABELS[getCurrentWorkflowStage({ ...consignment, stageConfirmations })] || 'Complete',
+    pendingAction: getPendingActionLabel({ ...consignment, stageConfirmations }),
     updatedAt: new Date().toISOString(),
   };
 
@@ -267,20 +264,49 @@ function applyStageConfirmation(consignment, stage, user, note = null) {
   return { ok: true, updates };
 }
 
+function isPackingPhysicallyDone(consignment) {
+  const packed = Number(consignment?.totalPackedQty) || 0;
+  const required = Number(consignment?.totalRequiredQty) || 0;
+  return consignment?.status === 'completed' || (required > 0 && packed >= required);
+}
+
+/**
+ * Human-readable next action for list / emails.
+ * Do not use past-tense stage names when packing has not actually finished —
+ * otherwise the consignments tab shows "Packing completed" on brand-new rows.
+ */
+function getPendingActionLabel(consignment) {
+  const stage = getCurrentWorkflowStage(consignment);
+  if (!stage || stage === 'completed') return null;
+
+  if (stage === 'packing_completed') {
+    if (isPackingPhysicallyDone(consignment)) {
+      return 'Confirm packing completed';
+    }
+    const packed = Number(consignment?.totalPackedQty) || 0;
+    const status = consignment?.status || 'pending';
+    if (status === 'in_progress' || packed > 0) {
+      return 'Finish packing';
+    }
+    return 'Packing not started';
+  }
+
+  return STAGE_LABELS[stage] || null;
+}
+
 function enrichWorkflowFields(consignment) {
   if (!consignment) return consignment;
   const stageConfirmations = normalizeStageConfirmations(consignment.stageConfirmations);
-  const currentWorkflowStage = getCurrentWorkflowStage({ ...consignment, stageConfirmations });
-  const overdueStages = getOverdueStages({ ...consignment, stageConfirmations });
-  const listPriorityBucket = getListPriorityBucket({ ...consignment, stageConfirmations });
+  const withStages = { ...consignment, stageConfirmations };
+  const currentWorkflowStage = getCurrentWorkflowStage(withStages);
+  const overdueStages = getOverdueStages(withStages);
+  const listPriorityBucket = getListPriorityBucket(withStages);
   return {
     ...consignment,
     stageConfirmations,
     currentWorkflowStage,
     currentWorkflowStageLabel: STAGE_LABELS[currentWorkflowStage] || 'Complete',
-    pendingAction: currentWorkflowStage === 'completed'
-      ? null
-      : STAGE_LABELS[currentWorkflowStage],
+    pendingAction: getPendingActionLabel(withStages),
     overdueStages,
     isTatOverdue: overdueStages.length > 0,
     listPriorityBucket,
@@ -411,5 +437,7 @@ module.exports = {
   sortConsignmentsByWorkflowPriority,
   applyStageConfirmation,
   enrichWorkflowFields,
+  getPendingActionLabel,
+  isPackingPhysicallyDone,
   buildWeeklyReportSummary,
 };
