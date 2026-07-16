@@ -49,6 +49,13 @@ function shouldSendForReason(settings, triggerReason) {
   return map[triggerReason] !== false;
 }
 
+/** Production alerts go out once per day (10:30 IST scheduler) or when an admin clicks Send. */
+function allowsAutomaticEmail(triggerReason, force = false) {
+  if (force) return true;
+  if (triggerReason === 'manual') return true;
+  return triggerReason === 'daily_report';
+}
+
 function detectMaterialChange(report, previousFingerprint, settings) {
   const hasCriticalUrgent = (report.criticalUrgentSkus || []).length > 0;
   const hasShortage = (report.summary?.totalShortageQty || 0) > 0;
@@ -114,6 +121,9 @@ async function sendInventoryPlanningNotification({
   const settings = await getInventorySettings();
   if (!settings.enabled && !force) {
     return { ok: false, reason: 'disabled' };
+  }
+  if (!allowsAutomaticEmail(triggerReason, force)) {
+    return { ok: false, reason: 'daily_email_only', triggerReason };
   }
   if (!shouldSendForReason(settings, triggerReason) && !force) {
     return { ok: false, reason: 'rule_disabled', triggerReason };
@@ -304,29 +314,20 @@ async function sendInventoryPlanningNotification({
 }
 
 /**
- * Debounce packing/consignment-driven recalculation so packing stays non-blocking.
- * New consignments use a shorter delay so production is alerted quickly.
+ * Debounce consignment/packing-driven report refresh (dashboard only — no email).
+ * Inventory alert emails are sent once daily after the 10:30 IST sync + analysis.
  */
 function scheduleInventoryPlanningCheck(reason = 'quantity_change') {
   pendingReasons.add(reason);
   if (notifyTimer) clearTimeout(notifyTimer);
-  const delayMs = reason === 'new_shortage' || pendingReasons.has('new_shortage') ? 2500 : 8000;
+  const delayMs = 8000;
   notifyTimer = setTimeout(async () => {
-    const reasons = [...pendingReasons];
     pendingReasons.clear();
     notifyTimer = null;
     try {
-      const triggerReason = reasons.includes('new_shortage')
-        ? 'new_shortage'
-        : reasons.includes('priority_change')
-          ? 'priority_change'
-          : reasons[0] || 'quantity_change';
-      const report = await buildInventoryPlanningReport({ triggerReason, persist: true });
-      // New consignment / shortage alerts force send when any shortage exists
-      const force = triggerReason === 'new_shortage' && (report.summary?.totalShortageQty || 0) > 0;
-      await sendInventoryPlanningNotification({ triggerReason, report, force });
+      await buildInventoryPlanningReport({ triggerReason: reason, persist: true });
     } catch (err) {
-      console.warn('[InventoryNotify] deferred check failed:', err.message);
+      console.warn('[InventoryNotify] deferred report refresh failed:', err.message);
     }
   }, delayMs);
 }
@@ -335,4 +336,5 @@ module.exports = {
   sendInventoryPlanningNotification,
   scheduleInventoryPlanningCheck,
   detectMaterialChange,
+  allowsAutomaticEmail,
 };
