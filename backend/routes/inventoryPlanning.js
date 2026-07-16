@@ -138,19 +138,12 @@ router.post(
         });
       }
 
-      // Build report + optional email after successful sync (non-blocking for email)
+      // Build report for API response (email is daily @ 10:30 IST only)
       let report = null;
       try {
         report = await buildInventoryPlanningReport({
           triggerReason: 'sync_shortage',
           persist: true,
-        });
-        setImmediate(() => {
-          sendInventoryPlanningNotification({
-            triggerReason: 'sync_shortage',
-            report,
-            force: (report.summary?.totalShortageQty || 0) > 0,
-          }).catch((err) => console.warn('[InventoryPlanning] post-sync notify failed:', err.message));
         });
       } catch (err) {
         console.warn('[InventoryPlanning] post-sync report failed:', err.message);

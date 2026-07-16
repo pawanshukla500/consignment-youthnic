@@ -531,7 +531,8 @@ export default function InventoryPlanning() {
             Inventory comes from Google Sheet Column C (matched by Internal SKU / sku_code).
             The app auto-picks the workbook tab with real stock (AutoFetch, Total Inventory, etc.).
             Demand = remaining qty on consignments created or under packing, not fully packed.
-            Shortage email goes to the Production team; Organisation Head is CC’d automatically.
+            Shortage email goes to the Production team once daily at 10:30 IST after sync + analysis.
+            Organisation Head is CC’d automatically. Use Send email for an on-demand report.
           </p>
 
           <div className="grid md:grid-cols-2 gap-4">
@@ -633,9 +634,8 @@ export default function InventoryPlanning() {
               ['enabled', 'Feature enabled'],
               ['syncEnabled', 'Scheduled daily sheet sync at 10:30 IST'],
               ['autoCcOrganisationHeadUsers', 'Auto-CC Organisation Head users when Cc list is empty'],
-              ['emailDailyReport', 'Daily email report'],
-              ['emailAfterDailySync', 'Email full report right after morning sync'],
-              ['emailOnResolvedShortage', 'Notify when shortage resolves'],
+              ['emailDailyReport', 'Daily email report (10:30 IST)'],
+              ['emailAfterDailySync', 'Send report right after morning sync (recommended)'],
               ['treatMissingInventoryAsZero', 'Treat missing inventory as zero'],
               ['preferSheetColumnC', 'Prefer Google Sheet Column C for available qty'],
             ].map(([key, label]) => (
