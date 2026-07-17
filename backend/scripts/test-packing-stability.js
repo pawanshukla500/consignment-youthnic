@@ -51,6 +51,33 @@ assert.ok(packingStationSrc.includes('inspectChunkWriteSettlements'), 'must insp
 assert.ok(packingStationSrc.includes('storage_failed') || packingStationSrc.includes('STORAGE_FAILED'), 'must surface storage_failed');
 assert.ok(videoServiceSrc.includes('removeEventListener'), 'video service must remove listeners on stop');
 
+// Continuous packing / large-video reliability contracts
+const videoConfigSrc = fs.readFileSync(
+  path.join(__dirname, '..', '..', 'frontend', 'src', 'utils', 'videoUploadConfig.js'),
+  'utf8'
+);
+const videoQueueSrc = fs.readFileSync(
+  path.join(__dirname, '..', '..', 'frontend', 'src', 'utils', 'videoQueue.js'),
+  'utf8'
+);
+const uploadsSrc = fs.readFileSync(path.join(__dirname, '..', 'routes', 'uploads.js'), 'utf8');
+const storageSrc = fs.readFileSync(path.join(__dirname, '..', 'utils', 'storage.js'), 'utf8');
+
+assert.ok(videoConfigSrc.includes('maxConcurrentUploads'), 'must configure concurrent video uploads');
+assert.ok(videoConfigSrc.includes('maxVideoBytes'), 'must configure 200MB video ceiling');
+assert.ok(workerSrc.includes('VIDEO_UPLOAD_CONFIG') || workerSrc.includes('maxConcurrentUploads'), 'worker must use upload config');
+assert.ok(workerSrc.includes('list-parts') || workerSrc.includes('saveMultipartProgress'), 'worker must support multipart resume');
+assert.ok(workerSrc.includes('verifying') || workerSrc.includes('VERIFYING'), 'worker must emit verifying status');
+assert.ok(workerSrc.includes('markVideoUploaded(entry.id, { verified: true })')
+  || workerSrc.includes('verified: true'), 'local delete only after verification');
+assert.ok(videoQueueSrc.includes('verified') && videoQueueSrc.includes('VERIFY_REQUIRED'), 'queue must refuse unverified deletes');
+assert.ok(packingStationSrc.includes('requireUploaded: false'), 'next box must not wait on cloud upload');
+assert.ok(packingStationSrc.includes('requireUploaded: true'), 'finish must wait for uploads');
+assert.ok(packingStationSrc.includes('boxVideoStatuses') || packingStationSrc.includes('Box videos'), 'UI must show per-box upload statuses');
+assert.ok(uploadsSrc.includes('list-parts') || uploadsSrc.includes('listMultipartParts'), 'API must list multipart parts for resume');
+assert.ok(storageSrc.includes('ListPartsCommand') || storageSrc.includes('listMultipartParts'), 'storage must implement ListParts');
+assert.ok(uploadsSrc.includes('verifying'), 'video-status API must accept verifying');
+
 const { rebuildSessionSkuTotalsFromBoxes } = require('../utils/packingQuantities');
 
 // Simulate persist-failure rollback semantics

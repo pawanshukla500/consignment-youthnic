@@ -10,12 +10,28 @@ import {
   finalizeRecordingSession,
   unlockOutstandingForImmediateRetry,
   pruneDuplicateBoxVideos,
+  patchVideoQueueEntry,
+  saveMultipartProgress,
+  getVideoQueueStatusSnapshot,
+  getOutstandingVideos,
 } from '../utils/videoQueue'
+import { VIDEO_STATUS, VIDEO_UPLOAD_CONFIG, backoffMs, uploadTimeoutForBytes } from '../utils/videoUploadConfig'
+import {
+  assertVideoSizeAllowed,
+  buildClientUploadId,
+  canDeleteLocalVideo,
+  mergeCompletedParts,
+  missingMultipartParts,
+  shouldUseMultipart,
+} from '../utils/videoUploadPipeline'
 
-const PART_SIZE = 8 * 1024 * 1024 // 8 MiB — R2/S3 min part is 5 MiB (except last)
-const PARALLEL_PARTS = 4
-const MULTIPART_THRESHOLD = 8 * 1024 * 1024
-const QUEUE_POLL_MS = 2500
+const PART_SIZE = VIDEO_UPLOAD_CONFIG.partSizeBytes
+const PARALLEL_PARTS = VIDEO_UPLOAD_CONFIG.parallelParts
+const MULTIPART_THRESHOLD = VIDEO_UPLOAD_CONFIG.multipartThresholdBytes
+const QUEUE_POLL_MS = VIDEO_UPLOAD_CONFIG.queuePollMs
+const MAX_CONCURRENT = VIDEO_UPLOAD_CONFIG.maxConcurrentUploads
+const MAX_PART_ATTEMPTS = VIDEO_UPLOAD_CONFIG.maxPartAttempts
+const METADATA_RETRIES = VIDEO_UPLOAD_CONFIG.metadataRetries
 
 let config = {
   apiUrl: '',
@@ -29,12 +45,44 @@ let queuedProcessOpts = null
 const pendingDrainRequestIds = new Set()
 /** After a CORS/network failure, prefer same-origin proxy for the rest of the session. */
 let preferProxyUpload = false
+/** In-flight entry ids for concurrency control within one process cycle. */
+const activeUploadIds = new Set()
 
 async function notify() {
   const pending = await getQueueCount()
   const failed = await getFailedCount()
-  postMessage({ type: 'STATUS', payload: { pending, failed, uploading: running } })
-  return { pending, failed }
+  let items = []
+  try {
+    items = await getVideoQueueStatusSnapshot()
+  } catch { /* ignore */ }
+  postMessage({
+    type: 'STATUS',
+    payload: {
+      pending,
+      failed,
+      uploading: running || activeUploadIds.size > 0,
+      activeCount: activeUploadIds.size,
+      items,
+    },
+  })
+  return { pending, failed, items }
+}
+
+function emitItemStatus(entry, status, extra = {}) {
+  postMessage({
+    type: 'ITEM_STATUS',
+    payload: {
+      id: entry.id,
+      boxNo: entry.metadata?.boxNo,
+      consignmentId: entry.metadata?.consignmentId,
+      fileName: entry.metadata?.fileName,
+      status,
+      progress: Number(extra.progress ?? entry.progress) || 0,
+      retries: Number(entry.retries) || 0,
+      lastError: extra.lastError || entry.lastError || null,
+      ...extra,
+    },
+  })
 }
 
 async function apiFetch(endpoint, options = {}) {
@@ -57,16 +105,6 @@ async function apiFetch(endpoint, options = {}) {
     throw new Error(errorMsg)
   }
   return res.json()
-}
-
-function backoffMs(retries) {
-  return Math.min(12_000, 400 * Math.pow(1.55, Math.max(0, retries)))
-}
-
-function uploadTimeoutForBytes(byteLength = 0) {
-  const mb = Math.max(0, Number(byteLength) || 0) / (1024 * 1024)
-  const ms = Math.round(90_000 + mb * 2_500)
-  return Math.min(20 * 60 * 1000, Math.max(60_000, ms))
 }
 
 function buildVideoStoragePath(metadata, fileName, entryId) {
@@ -179,9 +217,11 @@ async function uploadSingleDirect(file, metadata, entryId, timeoutMs) {
     contentType: file.type,
     timeoutMs,
     onProgress: (loaded, total) => {
+      const progress = Math.round((loaded / total) * 100)
+      void patchVideoQueueEntry(entryId, { progress })
       postMessage({
         type: 'ITEM_PROGRESS',
-        payload: { id: entryId, progress: Math.round((loaded / total) * 100) },
+        payload: { id: entryId, progress, status: VIDEO_STATUS.UPLOADING },
       })
     },
   })
@@ -203,76 +243,102 @@ async function uploadSingleProxy(file, metadata, entryId, timeoutMs) {
     timeoutMs,
     expectJson: true,
     onProgress: (loaded, total) => {
+      const progress = Math.round((loaded / total) * 100)
+      void patchVideoQueueEntry(entryId, { progress })
       postMessage({
         type: 'ITEM_PROGRESS',
-        payload: { id: entryId, progress: Math.round((loaded / total) * 100) },
+        payload: { id: entryId, progress, status: VIDEO_STATUS.UPLOADING },
       })
     },
   })
   return storagePath
 }
 
-async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProxy }) {
-  const storagePath = buildVideoStoragePath(metadata, file.name, entryId)
-  const created = await apiFetch('/uploads/multipart/create', {
-    method: 'POST',
-    body: JSON.stringify({
-      storagePath,
-      mimeType: file.type,
-      consignmentId: metadata.consignmentId,
-    }),
-  })
-  const uploadId = created.uploadId
-  const finalPath = created.storagePath || storagePath
-  if (!uploadId) throw new Error('Failed to start multipart upload')
+async function listRemoteCompletedParts(storagePath, uploadId, consignmentId) {
+  try {
+    const listed = await apiFetch('/uploads/multipart/list-parts', {
+      method: 'POST',
+      body: JSON.stringify({ storagePath, uploadId, consignmentId }),
+    })
+    return mergeCompletedParts([], listed.parts || [])
+  } catch {
+    return []
+  }
+}
 
-  const partCount = Math.ceil(file.size / PART_SIZE)
-  const partNumbers = Array.from({ length: partCount }, (_, i) => i + 1)
+async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProxy, resume = null }) {
+  const storagePath = resume?.storagePath || buildVideoStoragePath(metadata, file.name, entryId)
+  let uploadId = resume?.uploadId || null
+  let finalPath = storagePath
+  let completedParts = mergeCompletedParts(resume?.completedParts || [])
+
+  if (!uploadId) {
+    const created = await apiFetch('/uploads/multipart/create', {
+      method: 'POST',
+      body: JSON.stringify({
+        storagePath,
+        mimeType: file.type,
+        consignmentId: metadata.consignmentId,
+      }),
+    })
+    uploadId = created.uploadId
+    finalPath = created.storagePath || storagePath
+    if (!uploadId) throw new Error('Failed to start multipart upload')
+  } else if (!completedParts.length) {
+    completedParts = await listRemoteCompletedParts(finalPath, uploadId, metadata.consignmentId)
+  }
+
+  await saveMultipartProgress(entryId, {
+    uploadId,
+    storagePath: finalPath,
+    useProxy: Boolean(useProxy),
+    completedParts,
+  })
+
+  const missing = missingMultipartParts(file.size, completedParts, PART_SIZE)
+  const partNumbers = missing.map((p) => p.partNumber)
   let urlByPart = new Map()
 
-  if (!useProxy) {
-    try {
-      const signed = await apiFetch('/uploads/multipart/sign-parts', {
-        method: 'POST',
-        body: JSON.stringify({
-          storagePath: finalPath,
-          uploadId,
-          consignmentId: metadata.consignmentId,
-          partNumbers,
-        }),
-      })
-      urlByPart = new Map((signed.parts || []).map((p) => [Number(p.partNumber), p.uploadUrl]))
-    } catch (err) {
-      try {
-        await apiFetch('/uploads/multipart/abort', {
-          method: 'POST',
-          body: JSON.stringify({
-            storagePath: finalPath,
-            uploadId,
-            consignmentId: metadata.consignmentId,
-          }),
-        })
-      } catch { /* ignore */ }
-      throw err
-    }
+  if (!useProxy && partNumbers.length) {
+    const signed = await apiFetch('/uploads/multipart/sign-parts', {
+      method: 'POST',
+      body: JSON.stringify({
+        storagePath: finalPath,
+        uploadId,
+        consignmentId: metadata.consignmentId,
+        partNumbers,
+      }),
+    })
+    urlByPart = new Map((signed.parts || []).map((p) => [Number(p.partNumber), p.uploadUrl]))
   }
 
+  const partCount = Math.ceil(file.size / PART_SIZE)
   const loadedByPart = new Array(partCount).fill(0)
-  const reportProgress = () => {
+  for (const part of completedParts) {
+    const start = (part.partNumber - 1) * PART_SIZE
+    const end = Math.min(file.size, start + PART_SIZE)
+    loadedByPart[part.partNumber - 1] = end - start
+  }
+
+  const reportProgress = async () => {
     const loaded = loadedByPart.reduce((sum, n) => sum + n, 0)
     const percent = Math.max(0, Math.min(99, Math.round((loaded / file.size) * 100)))
-    postMessage({ type: 'ITEM_PROGRESS', payload: { id: entryId, progress: percent } })
+    await patchVideoQueueEntry(entryId, { progress: percent })
+    postMessage({
+      type: 'ITEM_PROGRESS',
+      payload: { id: entryId, progress: percent, status: VIDEO_STATUS.UPLOADING },
+    })
   }
+  await reportProgress()
 
   try {
-    const completed = await mapPool(partNumbers, PARALLEL_PARTS, async (partNumber) => {
-      const start = (partNumber - 1) * PART_SIZE
-      const end = Math.min(file.size, start + PART_SIZE)
-      const blob = file.slice(start, end)
+    const newlyCompleted = await mapPool(missing, PARALLEL_PARTS, async (partPlan) => {
+      const partNumber = partPlan.partNumber
+      const blob = file.slice(partPlan.start, partPlan.end)
       const partTimeout = Math.max(45_000, Math.round(timeoutMs * (blob.size / file.size) * PARALLEL_PARTS))
 
       let lastErr = null
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < MAX_PART_ATTEMPTS; attempt++) {
         try {
           let result
           if (useProxy) {
@@ -290,7 +356,7 @@ async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProx
               expectJson: true,
               onProgress: (loaded) => {
                 loadedByPart[partNumber - 1] = loaded
-                reportProgress()
+                void reportProgress()
               },
             })
           } else {
@@ -300,7 +366,7 @@ async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProx
               timeoutMs: partTimeout,
               onProgress: (loaded) => {
                 loadedByPart[partNumber - 1] = loaded
-                reportProgress()
+                void reportProgress()
               },
             })
           }
@@ -308,17 +374,29 @@ async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProx
           const etag = String(result.json?.etag || result.etag || '').replace(/"/g, '')
           if (!etag) throw new Error(`Missing ETag for part ${partNumber}`)
           loadedByPart[partNumber - 1] = blob.size
-          reportProgress()
+          const merged = mergeCompletedParts(completedParts, [{ partNumber, etag }])
+          completedParts = merged
+          await saveMultipartProgress(entryId, {
+            uploadId,
+            storagePath: finalPath,
+            useProxy: Boolean(useProxy),
+            completedParts: merged,
+          })
+          await reportProgress()
           return { partNumber, etag }
         } catch (err) {
           lastErr = err
           loadedByPart[partNumber - 1] = 0
-          reportProgress()
-          if (attempt < 2) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)))
+          await reportProgress()
+          if (attempt < MAX_PART_ATTEMPTS - 1) {
+            await new Promise((r) => setTimeout(r, 400 * (attempt + 1)))
+          }
         }
       }
       throw lastErr || new Error(`Part ${partNumber} failed`)
     })
+
+    completedParts = mergeCompletedParts(completedParts, newlyCompleted)
 
     await apiFetch('/uploads/multipart/complete', {
       method: 'POST',
@@ -326,74 +404,123 @@ async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProx
         storagePath: finalPath,
         uploadId,
         consignmentId: metadata.consignmentId,
-        parts: completed,
+        parts: completedParts,
       }),
     })
 
-    postMessage({ type: 'ITEM_PROGRESS', payload: { id: entryId, progress: 100 } })
+    // Clear multipart state — object is fully assembled in R2
+    await patchVideoQueueEntry(entryId, {
+      multipart: null,
+      storagePath: finalPath,
+      storageUrl: 'r2://uploaded',
+      progress: 100,
+    })
+
+    postMessage({
+      type: 'ITEM_PROGRESS',
+      payload: { id: entryId, progress: 100, status: VIDEO_STATUS.VERIFYING },
+    })
     return finalPath
   } catch (err) {
-    try {
-      await apiFetch('/uploads/multipart/abort', {
-        method: 'POST',
-        body: JSON.stringify({
-          storagePath: finalPath,
-          uploadId,
-          consignmentId: metadata.consignmentId,
-        }),
-      })
-    } catch { /* ignore */ }
+    // Keep multipart progress for resume — do NOT abort on transient failures
+    await saveMultipartProgress(entryId, {
+      uploadId,
+      storagePath: finalPath,
+      useProxy: Boolean(useProxy),
+      completedParts,
+    })
     throw err
   }
 }
 
-async function uploadBytesToR2(file, metadata, entryId, timeoutMs) {
-  const useMultipart = file.size >= MULTIPART_THRESHOLD
+async function uploadBytesToR2(file, metadata, entryId, timeoutMs, resume = null) {
+  const useMultipart = shouldUseMultipart(file.size, MULTIPART_THRESHOLD)
+  const useProxy = preferProxyUpload || Boolean(resume?.useProxy)
 
-  if (preferProxyUpload) {
+  if (useProxy) {
     console.log(`[Worker] Using same-origin proxy upload for Box #${metadata.boxNo}`)
     return useMultipart
-      ? uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProxy: true })
+      ? uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProxy: true, resume })
       : uploadSingleProxy(file, metadata, entryId, timeoutMs)
   }
 
   try {
     if (useMultipart) {
-      return await uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProxy: false })
+      return await uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProxy: false, resume })
     }
     return await uploadSingleDirect(file, metadata, entryId, timeoutMs)
   } catch (err) {
     if (!isCorsOrNetworkError(err)) {
-      // Multipart may fail for missing ETag expose — still try proxy.
       if (!/etag|cors|network/i.test(err.message || '')) throw err
     }
     preferProxyUpload = true
     console.warn('[Worker] Direct R2 PUT blocked — switching to same-origin proxy:', err.message)
     return useMultipart
-      ? uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProxy: true })
+      ? uploadMultipartCore(file, metadata, entryId, timeoutMs, {
+          useProxy: true,
+          resume: resume || null,
+        })
       : uploadSingleProxy(file, metadata, entryId, timeoutMs)
   }
 }
 
 async function uploadOneVideo(entry) {
   const { blob, metadata } = entry
+  assertVideoSizeAllowed(blob?.size || 0)
+
   const file = new File([blob], metadata.fileName, { type: metadata.mimeType || 'video/webm' })
   const fileMb = file.size / (1024 * 1024)
   const timeoutMs = uploadTimeoutForBytes(file.size)
+  const clientUploadId = buildClientUploadId(metadata, entry.id)
+
+  await patchVideoQueueEntry(entry.id, { status: VIDEO_STATUS.UPLOADING, progress: entry.progress || 0 })
+  emitItemStatus(entry, VIDEO_STATUS.UPLOADING)
+  postMessage({
+    type: 'CURRENT_UPLOAD',
+    payload: {
+      id: entry.id,
+      boxNo: metadata?.boxNo,
+      fileName: metadata?.fileName,
+      status: VIDEO_STATUS.UPLOADING,
+      progress: entry.progress || 0,
+    },
+  })
 
   let uploadPath = entry.storagePath
 
   if (!uploadPath) {
     console.log(`[Worker] Uploading Box #${metadata.boxNo} (${fileMb.toFixed(1)} MB)`)
-    uploadPath = await uploadBytesToR2(file, metadata, entry.id, timeoutMs)
+    uploadPath = await uploadBytesToR2(
+      file,
+      metadata,
+      entry.id,
+      timeoutMs,
+      entry.multipart || null,
+    )
     await saveUploadedFileInfo(entry.id, 'r2://uploaded', uploadPath)
   }
 
-  const uploadUrl = entry.storageUrl || 'r2://uploaded'
-  postMessage({ type: 'ITEM_PROGRESS', payload: { id: entry.id, progress: 100 } })
+  // Bytes are in R2 — verify via metadata finalize (server HeadObject)
+  await patchVideoQueueEntry(entry.id, {
+    status: VIDEO_STATUS.VERIFYING,
+    progress: 100,
+    multipart: null,
+  })
+  emitItemStatus(entry, VIDEO_STATUS.VERIFYING, { progress: 100 })
+  postMessage({
+    type: 'CURRENT_UPLOAD',
+    payload: {
+      id: entry.id,
+      boxNo: metadata?.boxNo,
+      fileName: metadata?.fileName,
+      status: VIDEO_STATUS.VERIFYING,
+      progress: 100,
+    },
+  })
 
+  const uploadUrl = entry.storageUrl || 'r2://uploaded'
   let lastMetaError = null
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < METADATA_RETRIES; attempt++) {
     try {
       const response = await apiFetch('/uploads/metadata', {
         method: 'POST',
@@ -407,14 +534,31 @@ async function uploadOneVideo(entry) {
           mimeType: file.type,
           boxNo: String(metadata.boxNo),
           description: metadata.description || `Box ${metadata.boxNo} packing video`,
-          clientUploadId: String(metadata.sessionId || entry.id),
+          clientUploadId,
           uploadQueueId: String(entry.id),
         }),
       })
-      return response.file
+
+      const fileRecord = response.file || {}
+      const storageVerified = Boolean(
+        fileRecord.storageVerified
+        || fileRecord.storageVerifiedAt
+        || response.verified
+        || fileRecord.id
+      )
+      const metadataSaved = Boolean(fileRecord.id)
+
+      if (!canDeleteLocalVideo({ metadataSaved, storageVerified })) {
+        throw new Error('Server did not confirm R2 verification for uploaded video')
+      }
+
+      // Only delete IndexedDB after verified metadata exists
+      await markVideoUploaded(entry.id, { verified: true })
+      emitItemStatus(entry, VIDEO_STATUS.COMPLETED, { progress: 100 })
+      return fileRecord
     } catch (e) {
       lastMetaError = e
-      if (attempt < 4) {
+      if (attempt < METADATA_RETRIES - 1) {
         await new Promise((r) => setTimeout(r, 500 * (attempt + 1)))
       }
     }
@@ -477,7 +621,6 @@ async function processVideoQueue(opts = {}) {
       retryFailed: Boolean(opts.retryFailed || queuedProcessOpts?.retryFailed),
       forceNow: Boolean(opts.forceNow || queuedProcessOpts?.forceNow),
     }
-    // Drain response will be emitted when the in-flight run completes.
     return null
   }
 
@@ -511,37 +654,59 @@ async function processVideoQueue(opts = {}) {
       const pending = await getPendingVideos()
       await notify()
 
-      for (const video of pending) {
+      // Concurrent uploads (default 2) so next boxes keep packing while videos drain
+      await mapPool(pending, MAX_CONCURRENT, async (video) => {
+        if (activeUploadIds.has(video.id)) return
+        activeUploadIds.add(video.id)
         try {
-          postMessage({
-            type: 'CURRENT_UPLOAD',
-            payload: { id: video.id, boxNo: video.metadata?.boxNo, fileName: video.metadata?.fileName },
-          })
-
           await uploadOneVideo(video)
-          await markVideoUploaded(video.id)
           uploadedIds.push(String(video.id))
-
-          postMessage({ type: 'ITEM_DONE', payload: { id: video.id, metadata: video.metadata } })
-          postMessage({ type: 'CURRENT_UPLOAD', payload: null })
+          postMessage({
+            type: 'ITEM_DONE',
+            payload: {
+              id: video.id,
+              metadata: video.metadata,
+              status: VIDEO_STATUS.COMPLETED,
+            },
+          })
           await notify()
         } catch (e) {
           const nextAttemptAt = Date.now() + backoffMs(video.retries || 0)
           const isFailed = await incrementRetry(video.id, nextAttemptAt, e.message)
-          if (isFailed) failedIds.push(String(video.id))
+          if (isFailed) {
+            failedIds.push(String(video.id))
+            emitItemStatus(video, VIDEO_STATUS.FAILED, { lastError: e.message })
+          } else {
+            emitItemStatus(video, VIDEO_STATUS.RETRYING, { lastError: e.message })
+          }
 
-          postMessage({ type: 'ITEM_ERROR', payload: { id: video.id, error: e.message, isFailed } })
-          postMessage({ type: 'CURRENT_UPLOAD', payload: null })
+          postMessage({
+            type: 'ITEM_ERROR',
+            payload: {
+              id: video.id,
+              error: e.message,
+              isFailed,
+              status: isFailed ? VIDEO_STATUS.FAILED : VIDEO_STATUS.RETRYING,
+              boxNo: video.metadata?.boxNo,
+            },
+          })
           await notify()
+        } finally {
+          activeUploadIds.delete(video.id)
+          postMessage({ type: 'CURRENT_UPLOAD', payload: null })
         }
-      }
+      })
     } while (queuedProcessOpts)
 
     const status = await notify()
     const pendingIds = []
     try {
-      const stillPending = await getPendingVideos()
-      for (const v of stillPending) pendingIds.push(String(v.id))
+      const stillOutstanding = await getOutstandingVideos()
+      for (const v of stillOutstanding) {
+        if (v.status !== VIDEO_STATUS.FAILED && v.status !== VIDEO_STATUS.STORAGE_FAILED) {
+          pendingIds.push(String(v.id))
+        }
+      }
     } catch { /* ignore */ }
 
     result = buildWorkerResponse({
@@ -576,7 +741,6 @@ async function processVideoQueue(opts = {}) {
         retryable: true,
       },
     })
-    // Do not rethrow — callers need a structured status; reportFailure is via result.error
   } finally {
     running = false
     await notify().catch(() => {})
@@ -628,6 +792,12 @@ self.onmessage = async (e) => {
       let finalizeResult
       try {
         finalizeResult = await finalizeRecordingSession(payload.sessionId)
+        if (finalizeResult?.queueId != null) {
+          emitItemStatus(
+            { id: finalizeResult.queueId, metadata: finalizeResult.metadata, retries: 0 },
+            VIDEO_STATUS.QUEUED,
+          )
+        }
         postMessage({
           type: 'FINALIZE_DONE',
           payload: buildWorkerResponse({
@@ -640,7 +810,8 @@ self.onmessage = async (e) => {
           }),
         })
         await notify()
-        await processVideoQueue({ forceNow: true })
+        // Do not await full drain — packing next box must not block on upload
+        void processVideoQueue({ forceNow: true })
       } catch (err) {
         console.error('[Worker] Finalize error:', err)
         postMessage({

@@ -17,6 +17,7 @@ const {
   generateSignedPartUrls,
   completeMultipartUpload,
   abortMultipartUpload,
+  listMultipartParts,
   uploadPartBuffer,
   uploadBuffer,
 } = require('../utils/storage');
@@ -323,6 +324,27 @@ router.post('/multipart/abort', authenticateToken, requirePermission('packing', 
   }
 });
 
+/** List uploaded parts so a restarted browser can resume multipart without re-uploading. */
+router.post('/multipart/list-parts', authenticateToken, requirePermission('packing', 'register uploads'), async (req, res) => {
+  try {
+    const { storagePath, uploadId, consignmentId } = req.body;
+    if (!storagePath || !uploadId || !consignmentId) {
+      return res.status(400).json({ error: 'storagePath, uploadId, and consignmentId are required.' });
+    }
+    if (!isStoragePathForConsignment(storagePath, consignmentId)) {
+      return res.status(403).json({
+        error: 'Storage path does not belong to this consignment.',
+        code: 'STORAGE_PATH_MISMATCH',
+      });
+    }
+    const result = await listMultipartParts(storagePath, uploadId);
+    res.json(result);
+  } catch (error) {
+    console.error('Error listing multipart parts:', error);
+    res.status(500).json({ error: 'Failed to list multipart parts.', message: error.message });
+  }
+});
+
 /**
  * Same-origin multipart part upload (no browser→R2 CORS required).
  * Body: raw octets. Query: storagePath, uploadId, partNumber, consignmentId
@@ -581,7 +603,18 @@ router.post('/metadata', authenticateToken, requirePermission('packing', 'regist
 router.post('/video-status', authenticateToken, requirePermission('packing', 'update video status'), async (req, res) => {
   try {
     const { consignmentId, boxNo, status, queueId, error } = req.body || {};
-    const allowed = new Set(['recording', 'queued', 'uploading', 'uploaded', 'metadata_saved', 'failed']);
+    const allowed = new Set([
+      'recording',
+      'queued',
+      'uploading',
+      'retrying',
+      'verifying',
+      'uploaded',
+      'metadata_saved',
+      'completed',
+      'failed',
+      'storage_failed',
+    ]);
     if (!consignmentId || !boxNo || !allowed.has(status)) {
       return res.status(400).json({ error: 'consignmentId, boxNo, and a valid status are required.' });
     }

@@ -1,8 +1,10 @@
 /**
  * Global video upload service — runs app-wide (not tied to Packing Station mount).
  * Uses a Web Worker for blob merge + background upload so the packing UI stays responsive.
+ * Operators can pack the next box while prior videos upload/verify in the background.
  */
 import { finalizeRecordingSession } from '../utils/videoQueue'
+import { VIDEO_UPLOAD_CONFIG } from '../utils/videoUploadConfig'
 import {
   createDrainResult,
   createDrainWaiterRegistry,
@@ -23,6 +25,9 @@ let state = {
   failed: 0,
   uploading: false,
   current: null,
+  /** Per-queue-item statuses for packing UI: [{ id, boxNo, status, progress, ... }] */
+  items: [],
+  activeCount: 0,
 }
 
 function notify() {
@@ -61,7 +66,7 @@ export async function processVideoUploadQueue(opts = {}) {
     retryFailed = false,
     wait = false,
     forceNow = false,
-    timeoutMs = 5 * 60 * 1000,
+    timeoutMs = VIDEO_UPLOAD_CONFIG.drainSliceTimeoutMs,
   } = opts
 
   if (!worker) {
@@ -115,33 +120,94 @@ export async function finalizeRecordingSessionInWorker(sessionId) {
   })
 }
 
+function upsertItem(detail) {
+  if (!detail?.id) return state.items
+  const next = [...(state.items || [])]
+  const idx = next.findIndex((item) => item.id === detail.id)
+  const row = {
+    ...(idx >= 0 ? next[idx] : {}),
+    ...detail,
+  }
+  if (idx >= 0) next[idx] = row
+  else next.push(row)
+  // Drop completed items from the live strip after a short retention window on next STATUS
+  return next.filter((item) => item.status !== 'completed')
+}
+
 function handleWorkerMessage(e) {
   const { type, payload } = e.data || {}
   switch (type) {
     case 'STATUS':
-      state = { ...state, pending: payload.pending, failed: payload.failed, uploading: payload.uploading }
+      state = {
+        ...state,
+        pending: payload.pending,
+        failed: payload.failed,
+        uploading: payload.uploading,
+        activeCount: payload.activeCount || 0,
+        items: Array.isArray(payload.items) ? payload.items : state.items,
+      }
       notify()
       break
     case 'CURRENT_UPLOAD':
       state = {
         ...state,
         current: payload
-          ? { ...payload, progress: state.current?.id === payload.id ? state.current.progress : 0 }
+          ? {
+              ...payload,
+              progress: state.current?.id === payload.id ? state.current.progress : (payload.progress || 0),
+            }
           : null,
       }
       notify()
       break
+    case 'ITEM_STATUS':
+      state = { ...state, items: upsertItem(payload) }
+      notify()
+      window.dispatchEvent(new CustomEvent('video-upload-status', { detail: payload }))
+      break
     case 'ITEM_PROGRESS':
       if (state.current && state.current.id === payload.id) {
-        state.current = { ...state.current, progress: payload.progress }
-        notify()
+        state.current = {
+          ...state.current,
+          progress: payload.progress,
+          status: payload.status || state.current.status,
+        }
       }
+      state = {
+        ...state,
+        items: upsertItem({
+          id: payload.id,
+          progress: payload.progress,
+          status: payload.status || 'uploading',
+        }),
+      }
+      notify()
       window.dispatchEvent(new CustomEvent('video-upload-progress', { detail: payload }))
       break
     case 'ITEM_DONE':
+      state = {
+        ...state,
+        items: upsertItem({
+          id: payload.id,
+          boxNo: payload.metadata?.boxNo,
+          status: 'completed',
+          progress: 100,
+        }),
+      }
+      notify()
       window.dispatchEvent(new CustomEvent('video-upload-done', { detail: payload }))
       break
     case 'ITEM_ERROR':
+      state = {
+        ...state,
+        items: upsertItem({
+          id: payload.id,
+          boxNo: payload.boxNo,
+          status: payload.status || (payload.isFailed ? 'failed' : 'retrying'),
+          lastError: payload.error,
+        }),
+      }
+      notify()
       window.dispatchEvent(new CustomEvent('video-upload-error', { detail: payload }))
       break
     case 'FINALIZE_DONE':

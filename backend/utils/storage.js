@@ -18,6 +18,7 @@ const {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
+  ListPartsCommand,
 } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { requireR2, r2Configured, bucketName, getR2Status } = require('../config/r2');
@@ -454,6 +455,35 @@ async function abortMultipartUpload(storagePath, uploadId) {
   return { ok: true };
 }
 
+/** List already-uploaded parts for resumable multipart after browser/worker restart. */
+async function listMultipartParts(storagePath, uploadId) {
+  const { client, bucket } = requireR2();
+  const parts = [];
+  let partNumberMarker = undefined;
+  let isTruncated = true;
+
+  while (isTruncated) {
+    const result = await client.send(new ListPartsCommand({
+      Bucket: bucket,
+      Key: storagePath,
+      UploadId: uploadId,
+      PartNumberMarker: partNumberMarker,
+      MaxParts: 1000,
+    }));
+    for (const part of result.Parts || []) {
+      const partNumber = Number(part.PartNumber);
+      const etag = String(part.ETag || '').replace(/"/g, '');
+      if (partNumber && etag) parts.push({ partNumber, etag, size: Number(part.Size) || 0 });
+    }
+    isTruncated = Boolean(result.IsTruncated);
+    partNumberMarker = result.NextPartNumberMarker;
+    if (!isTruncated) break;
+  }
+
+  parts.sort((a, b) => a.partNumber - b.partNumber);
+  return { storagePath, uploadId, parts };
+}
+
 async function resolveReadableUrl(record, options = {}) {
   const storagePath = resolveStoragePath(record);
   if (storagePath) {
@@ -501,6 +531,7 @@ module.exports = {
   generateSignedPartUrls,
   completeMultipartUpload,
   abortMultipartUpload,
+  listMultipartParts,
   uploadPartBuffer,
   bucketName,
   r2Configured,
