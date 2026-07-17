@@ -53,7 +53,6 @@ const FULL_ACCESS_PERMISSIONS = {
 }
 
 const DEPARTMENT_OPTIONS = [
-  { key: '', label: '— Select department —' },
   { key: 'packing', label: 'Packing Team' },
   { key: 'ground_team', label: 'Ground Team' },
   { key: 'invoice', label: 'Invoice Creation Team' },
@@ -67,9 +66,49 @@ const emptyForm = () => ({
   email: '',
   password: '',
   role: 'user',
-  department: '',
+  departments: [],
   permissions: { ...DEFAULT_PERMISSIONS },
 })
+
+function userDepartments(u) {
+  if (Array.isArray(u?.departments) && u.departments.length) return u.departments
+  if (u?.department) return [u.department]
+  if (u?.role === 'admin' || u?.role === 'organization_head') return ['management']
+  return []
+}
+
+function DepartmentMultiSelect({ value = [], onChange, disabled }) {
+  const selected = Array.isArray(value) ? value : []
+  const toggle = (key) => {
+    if (disabled) return
+    if (selected.includes(key)) onChange(selected.filter((k) => k !== key))
+    else onChange([...selected, key])
+  }
+  return (
+    <div className="space-y-1.5 min-w-[160px]">
+      {DEPARTMENT_OPTIONS.map((d) => {
+        const active = selected.includes(d.key)
+        return (
+          <label
+            key={d.key}
+            className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-[11px] cursor-pointer ${
+              active ? 'border-primary-200 bg-primary-50 text-primary-900' : 'border-slate-200 bg-white text-slate-700'
+            } ${disabled ? 'opacity-60 cursor-not-allowed' : 'hover:border-slate-300'}`}
+          >
+            <input
+              type="checkbox"
+              checked={active}
+              disabled={disabled}
+              onChange={() => toggle(d.key)}
+              className="rounded border-slate-300"
+            />
+            <span className="font-medium">{d.label}</span>
+          </label>
+        )
+      })}
+    </div>
+  )
+}
 
 const permissionsForRole = (role, current = {}) => {
   if (role === 'admin' || role === 'organization_head') {
@@ -159,7 +198,7 @@ export default function Users() {
   const [selected, setSelected] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [editing, setEditing] = useState(null)
-  const [editForm, setEditForm] = useState({ name: '', email: '', role: 'user', department: '', permissions: {} })
+  const [editForm, setEditForm] = useState({ name: '', email: '', role: 'user', departments: [], permissions: {} })
   const [showChangePwd, setShowChangePwd] = useState(null)
   const [pwdForm, setPwdForm] = useState({ newPassword: '', confirmPassword: '' })
   const [form, setForm] = useState(emptyForm)
@@ -233,7 +272,7 @@ export default function Users() {
       name: u.name,
       email: u.email,
       role: u.role || 'user',
-      department: u.department || (u.role === 'admin' || u.role === 'organization_head' ? 'management' : ''),
+      departments: userDepartments(u),
       permissions: permissionsForRole(u.role || 'user', u.permissions || {}),
     })
   }
@@ -398,21 +437,23 @@ export default function Users() {
                         </span>
                       )}
                     </td>
-                    <td>
+                    <td className="max-w-[220px]">
                       {editing === u.id ? (
-                        <select
-                          value={editForm.department || ''}
-                          onChange={(e) => setEditForm({ ...editForm, department: e.target.value })}
-                          className="inp py-1.5 text-xs w-auto min-w-[140px]"
-                        >
-                          {DEPARTMENT_OPTIONS.map((d) => (
-                            <option key={d.key || 'none'} value={d.key}>{d.label}</option>
-                          ))}
-                        </select>
+                        <DepartmentMultiSelect
+                          value={editForm.departments}
+                          onChange={(departments) => setEditForm({ ...editForm, departments })}
+                          disabled={isSubmitting}
+                        />
                       ) : (
-                        <span className="text-[10px] text-slate-600">
-                          {DEPARTMENT_OPTIONS.find((d) => d.key === u.department)?.label || '—'}
-                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          {userDepartments(u).length ? userDepartments(u).map((key) => (
+                            <span key={key} className="text-[9px] font-medium px-1.5 py-px rounded bg-slate-100 text-slate-700">
+                              {DEPARTMENT_OPTIONS.find((d) => d.key === key)?.label || key}
+                            </span>
+                          )) : (
+                            <span className="text-[10px] text-slate-400">—</span>
+                          )}
+                        </div>
                       )}
                     </td>
                     <td className="max-w-[280px]">
@@ -578,10 +619,13 @@ export default function Users() {
                 value={form.role}
                 onChange={(e) => {
                   const role = e.target.value
+                  const nextDepartments = role === 'admin' || role === 'organization_head'
+                    ? Array.from(new Set(['management', ...(form.departments || [])]))
+                    : form.departments
                   setForm({
                     ...form,
                     role,
-                    department: role === 'admin' || role === 'organization_head' ? 'management' : form.department,
+                    departments: nextDepartments,
                     permissions: permissionsForRole(role, form.permissions),
                   })
                 }}
@@ -593,18 +637,14 @@ export default function Users() {
               </select>
             </div>
             <div>
-              <label className="block text-[11px] font-medium text-slate-600 mb-1">Department</label>
-              <select
-                value={form.department}
-                onChange={(e) => setForm({ ...form, department: e.target.value })}
-                className="inp py-1.5 text-xs"
-              >
-                {DEPARTMENT_OPTIONS.map((d) => (
-                  <option key={d.key || 'none'} value={d.key}>{d.label}</option>
-                ))}
-              </select>
+              <label className="block text-[11px] font-medium text-slate-600 mb-1">Departments</label>
+              <DepartmentMultiSelect
+                value={form.departments}
+                onChange={(departments) => setForm({ ...form, departments })}
+                disabled={isSubmitting}
+              />
               <p className="text-[10px] text-slate-500 mt-1">
-                Controls automatic workflow assignment (invoice, dispatch, inward).
+                A person can belong to multiple teams (e.g. Invoice + Inward). Used for workflow assignment and stage access.
               </p>
             </div>
           </div>

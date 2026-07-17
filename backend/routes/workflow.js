@@ -28,7 +28,10 @@ const {
 const {
   userCanConfirmStage,
   departmentLabel,
+  departmentLabels,
   listDepartmentOptions,
+  getUserDepartments,
+  userInDepartment,
   NEXT_ASSIGNMENT_DEPARTMENT,
 } = require('../utils/departments');
 
@@ -40,12 +43,14 @@ async function getUserEmail(userId) {
   if (!userId) return null;
   const user = await firestoreHelpers.getDocument('users', userId);
   if (!user || user.isActive === false) return null;
+  const departments = getUserDepartments(user);
   return {
     email: user.email,
     name: user.name || user.email,
     id: user.id,
     role: user.role,
-    department: normalizeDepartment(user.department),
+    department: departments[0] || null,
+    departments,
   };
 }
 
@@ -56,7 +61,7 @@ async function listUsersByDepartment(departmentKey) {
   return users.filter(
     (u) => u.isActive !== false
       && u.email
-      && (normalizeDepartment(u.department) === dept || (dept === 'management' && ['admin', 'organization_head'].includes(u.role)))
+      && (userInDepartment(u, dept) || (dept === 'management' && ['admin', 'organization_head'].includes(u.role)))
   );
 }
 
@@ -516,15 +521,20 @@ router.get('/assignees', authenticateToken, requireAnyPermission(['consignments'
     const users = await firestoreHelpers.getCollection('users');
     const list = users
       .filter((u) => u.isActive !== false && u.email)
-      .filter((u) => !deptFilter || normalizeDepartment(u.department) === deptFilter)
-      .map((u) => ({
-        id: u.id,
-        name: u.name || u.email,
-        email: u.email,
-        role: u.role || 'user',
-        department: normalizeDepartment(u.department),
-        departmentLabel: departmentLabel(u.department),
-      }))
+      .filter((u) => !deptFilter || userInDepartment(u, deptFilter))
+      .map((u) => {
+        const departments = getUserDepartments(u);
+        return {
+          id: u.id,
+          name: u.name || u.email,
+          email: u.email,
+          role: u.role || 'user',
+          department: departments[0] || null,
+          departments,
+          departmentLabel: departments[0] ? departmentLabel(departments[0]) : null,
+          departmentLabels: departmentLabels(departments),
+        };
+      })
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
     res.json({ users: list, departments: listDepartmentOptions() });
   } catch (error) {
