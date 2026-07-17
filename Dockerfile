@@ -5,7 +5,7 @@
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ─── Stage 1: Build Frontend (Alpine is fine — no native modules) ────────────
-FROM node:20-alpine AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 
 # Vite bakes VITE_* at build time. Pass via --build-arg (CI) — do not rely on
 # frontend/.env.production alone (gitignored / excluded from Docker context).
@@ -45,9 +45,10 @@ COPY frontend/ ./
 RUN npm run build
 
 # ─── Stage 2: Production Backend (slim = Debian, required for Firebase gRPC) ─
-# DO NOT use node:20-alpine here — Firebase Admin SDK uses gRPC which needs
+# DO NOT use Alpine here — Firebase Admin SDK uses gRPC which needs
 # glibc (Debian/Ubuntu). Alpine uses musl libc and breaks native modules.
-FROM node:20-slim AS production
+# Node 22+: required by AWS SDK for JavaScript v3 after early Jan 2027.
+FROM node:22-slim AS production
 
 WORKDIR /app/backend
 
