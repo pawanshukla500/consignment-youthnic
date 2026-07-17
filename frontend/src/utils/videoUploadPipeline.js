@@ -2,7 +2,12 @@
  * Pure helpers for packing-station video upload reliability.
  * Used by the worker and by stress/recovery simulations (no IndexedDB/R2 I/O).
  */
-import { VIDEO_STATUS, VIDEO_UPLOAD_CONFIG, backoffMs } from './videoUploadConfig'
+import {
+  VIDEO_STATUS,
+  VIDEO_UPLOAD_CONFIG,
+  backoffMs,
+  recordingReserveBytes,
+} from './videoUploadConfig'
 
 /** Normalize legacy `pending` rows to the production status vocabulary. */
 export function normalizeQueueStatus(status) {
@@ -10,29 +15,190 @@ export function normalizeQueueStatus(status) {
   return status
 }
 
+export function isSupersededStatus(status) {
+  return normalizeQueueStatus(status) === VIDEO_STATUS.SUPERSEDED
+}
+
+/** Any local evidence still retained (including superseded). */
 export function isOutstandingStatus(status) {
   const s = normalizeQueueStatus(status)
   return (
     s === VIDEO_STATUS.QUEUED
     || s === VIDEO_STATUS.UPLOADING
+    || s === VIDEO_STATUS.MULTIPART_UPLOADING
+    || s === VIDEO_STATUS.MULTIPART_COMPLETING
+    || s === VIDEO_STATUS.OBJECT_UPLOADED
     || s === VIDEO_STATUS.RETRYING
     || s === VIDEO_STATUS.VERIFYING
     || s === VIDEO_STATUS.FAILED
     || s === VIDEO_STATUS.STORAGE_FAILED
+    || s === VIDEO_STATUS.SUPERSEDED
   )
+}
+
+/** Active (non-superseded) unfinished rows that block finish / count toward queue caps. */
+export function isActiveOutstandingStatus(status) {
+  return isOutstandingStatus(status) && !isSupersededStatus(status)
 }
 
 export function isUploadReady(entry, now = Date.now()) {
   const status = normalizeQueueStatus(entry?.status)
+  if (isSupersededStatus(status)) return false
   if (status === VIDEO_STATUS.FAILED || status === VIDEO_STATUS.STORAGE_FAILED) return false
-  if (status === VIDEO_STATUS.UPLOADING || status === VIDEO_STATUS.VERIFYING) return false
+  if (
+    status === VIDEO_STATUS.UPLOADING
+    || status === VIDEO_STATUS.MULTIPART_UPLOADING
+    || status === VIDEO_STATUS.MULTIPART_COMPLETING
+    || status === VIDEO_STATUS.OBJECT_UPLOADED
+    || status === VIDEO_STATUS.VERIFYING
+  ) {
+    return false
+  }
   if (status !== VIDEO_STATUS.QUEUED && status !== VIDEO_STATUS.RETRYING) return false
   if (entry?.nextAttemptAt && entry.nextAttemptAt > now) return false
   return true
 }
 
-export function canDeleteLocalVideo({ metadataSaved, storageVerified } = {}) {
-  return Boolean(metadataSaved && storageVerified)
+/**
+ * Local Blob may be deleted only when the server returns verified === true.
+ * fileRecord.id alone is never sufficient.
+ */
+export function canDeleteLocalVideo({ verified } = {}) {
+  return verified === true
+}
+
+/**
+ * Mark older same-box entries as superseded (pure). Never deletes blobs.
+ * Returns { keep, superseded[] }.
+ */
+export function planSupersedeForBox(entries, keepId = null) {
+  const sameBox = [...(entries || [])].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+  if (sameBox.length <= 1) {
+    return { keep: sameBox[0] || null, superseded: [] }
+  }
+  const keep = keepId != null
+    ? sameBox.find((v) => v.id === keepId) || sameBox[0]
+    : sameBox[0]
+  const superseded = sameBox.filter((v) => v.id !== keep?.id && !isSupersededStatus(v.status))
+  return { keep, superseded }
+}
+
+/**
+ * Multipart crash-recovery decision after ListParts / HeadObject probes.
+ * listResult: { ok, code, parts } | null
+ * headResult: { ok, size, contentType, etag } | null
+ */
+export function decideMultipartRecovery({
+  expectedSize,
+  expectedMime,
+  expectedPath,
+  listResult,
+  headResult,
+} = {}) {
+  if (listResult?.ok) {
+    return {
+      action: 'resume_parts',
+      completedParts: listResult.parts || [],
+      reason: 'active_multipart',
+    }
+  }
+
+  const code = String(listResult?.code || '')
+  const message = String(listResult?.message || '')
+  const noSuchUpload = /nosuchupload|expired|aborted/i.test(`${code} ${message}`)
+
+  if (listResult && !listResult.ok && !noSuchUpload) {
+    return {
+      action: 'retry_list',
+      reason: 'list_parts_error',
+      error: listResult.message || code || 'ListParts failed',
+    }
+  }
+
+  // Upload ID gone — check if object already assembled
+  if (headResult?.ok) {
+    const sizeOk = Number(headResult.size) === Number(expectedSize) && Number(expectedSize) > 0
+    const mimeBase = String(headResult.contentType || '').split(';')[0].trim().toLowerCase()
+    const expectedBase = String(expectedMime || '').split(';')[0].trim().toLowerCase()
+    const mimeOk = !expectedBase || mimeBase === expectedBase || mimeBase.startsWith('video/')
+    const pathOk = !expectedPath || headResult.storagePath === expectedPath
+    if (sizeOk && mimeOk && pathOk) {
+      return {
+        action: 'finalize_metadata',
+        reason: 'object_already_complete',
+        storagePath: headResult.storagePath || expectedPath,
+        etag: headResult.etag || null,
+      }
+    }
+    return {
+      action: 'restart_multipart',
+      reason: 'object_invalid',
+      clearMultipart: true,
+      preserveBlob: true,
+    }
+  }
+
+  return {
+    action: 'restart_multipart',
+    reason: noSuchUpload ? 'upload_gone' : 'object_missing',
+    clearMultipart: true,
+    preserveBlob: true,
+  }
+}
+
+/**
+ * Hard backpressure before starting a recording. Never deletes evidence to make room.
+ */
+export function evaluateRecordingBackpressure({
+  queueCount = 0,
+  queueBytes = 0,
+  freeMb = null,
+  quotaSupported = true,
+  config = VIDEO_UPLOAD_CONFIG,
+} = {}) {
+  const reserveBytes = recordingReserveBytes(config)
+  const reserveMb = reserveBytes / (1024 * 1024)
+  const maxBytes = config.maxQueuedBytesMb * 1024 * 1024
+  const blockers = []
+  const actions = []
+
+  if (queueCount >= config.maxQueuedVideos) {
+    blockers.push(
+      `Local video queue has ${queueCount} active videos (limit ${config.maxQueuedVideos}).`
+    )
+    actions.push('Wait for uploads to finish, or use Retry / stay online until the queue drains.')
+    actions.push('Do not discard videos unless an administrator explicitly confirms discard.')
+  }
+
+  if (queueBytes + reserveBytes > maxBytes) {
+    blockers.push(
+      `Local video cache is ~${(queueBytes / (1024 * 1024)).toFixed(0)} MB; `
+      + `need ~${reserveMb.toFixed(0)} MB free within the ${config.maxQueuedBytesMb} MB budget.`
+    )
+    actions.push('Finish uploading queued videos to free browser storage before recording again.')
+  }
+
+  if (quotaSupported && freeMb != null && freeMb < reserveMb) {
+    blockers.push(
+      `Browser reports only ~${Number(freeMb).toFixed(0)} MB free; `
+      + `need ~${reserveMb.toFixed(0)} MB reserved for a full box video.`
+    )
+    actions.push('Free disk space on this computer, close other tabs, then retry.')
+    actions.push('Keep this packing tab open so uploads can finish and free IndexedDB space.')
+  }
+
+  if (!quotaSupported) {
+    // Cannot measure — still enforce queue count/bytes; warn operator
+    actions.push('Browser storage estimate unavailable — queue limits still apply.')
+  }
+
+  return {
+    allowed: blockers.length === 0,
+    blockers,
+    actions: [...new Set(actions)],
+    reserveBytes,
+    reserveMb,
+  }
 }
 
 export function buildClientUploadId(metadata, entryId) {
@@ -271,7 +437,7 @@ export function simulateContinuousPackingUpload({
       entry.storageVerified = true
     }
 
-    if (!canDeleteLocalVideo(entry)) {
+    if (!canDeleteLocalVideo({ verified: entry.storageVerified === true && entry.metadataSaved === true })) {
       prematureDeletes += 1
       return false
     }

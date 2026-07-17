@@ -66,31 +66,199 @@ function buildPublicObjectUrl(storagePath) {
   return null;
 }
 
-/** Ensure client-uploaded files exist in the R2 bucket. */
-async function finalizeClientStorageUpload(storagePath) {
+const APPROVED_VIDEO_MIME_BASES = new Set([
+  'video/webm',
+  'video/mp4',
+  'video/quicktime',
+  'video/x-msvideo',
+]);
+
+/**
+ * Pure integrity evaluation against a HeadObject meta payload.
+ * Used by verifyStorageObject and unit tests (no network).
+ */
+function evaluateStorageObjectIntegrity(storagePath, meta, expectations = {}, verifiedAt = new Date().toISOString()) {
+  const expectedSize = expectations.expectedSize != null ? Number(expectations.expectedSize) : null;
+  const expectedMime = String(expectations.expectedMime || expectations.mimeType || '').split(';')[0].trim().toLowerCase();
+  const expectedKey = String(expectations.expectedKey || storagePath || '');
+  const requireVideoMime = expectations.requireVideoMime !== false;
+
+  if (!storagePath) {
+    return {
+      ok: false,
+      code: 'STORAGE_PATH_MISSING',
+      error: 'Storage path is required.',
+      verification: { expectedSize, expectedKey, verifiedAt },
+    };
+  }
+
+  if (expectedKey && storagePath !== expectedKey) {
+    return {
+      ok: false,
+      code: 'STORAGE_PATH_MISMATCH',
+      error: 'Object key does not match the authorized expected key.',
+      verification: {
+        actualKey: storagePath,
+        expectedKey,
+        verifiedAt,
+      },
+    };
+  }
+
+  if (!meta) {
+    return {
+      ok: false,
+      code: 'STORAGE_OBJECT_MISSING',
+      error: 'Uploaded file was not found in storage.',
+      verification: {
+        actualSize: null,
+        expectedSize,
+        contentType: null,
+        etag: null,
+        expectedKey,
+        verifiedAt,
+      },
+    };
+  }
+
+  const actualSize = Number(meta.size || 0);
+  const contentType = String(meta.metadata?.contentType || '').split(';')[0].trim().toLowerCase();
+  const etag = String(meta.metadata?.etag || '').replace(/"/g, '') || null;
+  const versionId = meta.metadata?.versionId || null;
+  const checksum = meta.metadata?.checksum || meta.metadata?.checksumsha256 || null;
+
+  const verification = {
+    actualSize,
+    expectedSize,
+    contentType,
+    etag,
+    versionId,
+    checksum,
+    expectedKey,
+    verifiedAt,
+  };
+
+  if (!Number.isFinite(actualSize) || actualSize <= 0) {
+    return {
+      ok: false,
+      code: 'STORAGE_OBJECT_EMPTY',
+      error: 'Uploaded object has zero or invalid length.',
+      verification,
+    };
+  }
+
+  if (expectedSize != null && Number.isFinite(expectedSize)) {
+    if (actualSize < expectedSize) {
+      return {
+        ok: false,
+        code: 'STORAGE_OBJECT_TRUNCATED',
+        error: `Object size ${actualSize} is smaller than expected ${expectedSize}.`,
+        verification,
+      };
+    }
+    if (actualSize > expectedSize) {
+      return {
+        ok: false,
+        code: 'STORAGE_OBJECT_OVERSIZED',
+        error: `Object size ${actualSize} is larger than expected ${expectedSize}.`,
+        verification,
+      };
+    }
+  }
+
+  if (requireVideoMime) {
+    const mimeOk = APPROVED_VIDEO_MIME_BASES.has(contentType)
+      || (expectedMime && contentType === expectedMime);
+    if (!mimeOk) {
+      return {
+        ok: false,
+        code: 'STORAGE_MIME_MISMATCH',
+        error: `Object content type "${contentType || 'unknown'}" is not an approved video MIME type.`,
+        verification,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    verified: true,
+    storagePath,
+    verification,
+  };
+}
+
+/**
+ * Strict R2 object integrity check — HeadObject existence alone is not enough.
+ * @returns {{ ok: true, verification, storagePath, storageUrl, storageProvider } | { ok: false, code, error, verification }}
+ */
+async function verifyStorageObject(storagePath, expectations = {}) {
+  const verifiedAt = new Date().toISOString();
+  const expectedSize = expectations.expectedSize != null ? Number(expectations.expectedSize) : null;
+  const expectedKey = String(expectations.expectedKey || storagePath || '');
+
+  if (!r2Configured || !storagePath) {
+    return {
+      ok: false,
+      code: 'STORAGE_NOT_CONFIGURED',
+      error: 'Object storage is not configured.',
+      verification: { expectedSize, expectedKey, verifiedAt },
+    };
+  }
+
+  let meta;
+  try {
+    meta = await getStorageFileMeta(storagePath, { throwOnError: true });
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'HEAD_OBJECT_FAILED',
+      error: error.message || 'HeadObject failed',
+      verification: { expectedSize, expectedKey, verifiedAt },
+    };
+  }
+
+  const evaluated = evaluateStorageObjectIntegrity(storagePath, meta, expectations, verifiedAt);
+  if (!evaluated.ok) return evaluated;
+
+  const signed = await getSignedReadUrl(storagePath, READ_URL_TTL_SECONDS * 1000);
+  return {
+    ...evaluated,
+    storageUrl: signed || buildPublicObjectUrl(storagePath) || storagePath,
+    storageProvider: 'r2',
+    downloadToken: null,
+  };
+}
+
+/** Ensure client-uploaded files exist and match expected integrity constraints. */
+async function finalizeClientStorageUpload(storagePath, expectations = {}) {
   if (!r2Configured || !storagePath) return null;
 
   try {
-    const meta = await getStorageFileMeta(storagePath);
-    if (!meta) {
-      console.warn('[Storage] Client uploaded file does not exist in R2:', storagePath);
-      return null;
+    const requireVideoMime = expectations.requireVideoMime;
+    const result = await verifyStorageObject(storagePath, {
+      ...expectations,
+      expectedKey: expectations.expectedKey || storagePath,
+      requireVideoMime: requireVideoMime == null
+        ? Boolean(expectations.expectedMime || expectations.mimeType || expectations.expectedSize != null)
+        : requireVideoMime,
+    });
+    if (!result.ok) {
+      console.warn('[Storage] finalizeClientStorageUpload rejected:', result.code, result.error);
+      const err = new Error(result.error);
+      err.code = result.code;
+      err.verification = result.verification;
+      err.statusCode = 400;
+      throw err;
     }
-
-    const signed = await getSignedReadUrl(storagePath, READ_URL_TTL_SECONDS * 1000);
-    return {
-      storagePath,
-      storageUrl: signed || buildPublicObjectUrl(storagePath) || storagePath,
-      storageProvider: 'r2',
-      downloadToken: null,
-    };
+    return result;
   } catch (error) {
+    if (error.code && error.verification) throw error;
     console.error('[Storage] finalizeClientStorageUpload failed:', error.message);
     return null;
   }
 }
 
-async function getStorageFileMeta(storagePath) {
+async function getStorageFileMeta(storagePath, { throwOnError = false } = {}) {
   if (!r2Configured || !storagePath) return null;
   try {
     const { client, bucket } = requireR2();
@@ -103,6 +271,8 @@ async function getStorageFileMeta(storagePath) {
         contentType: result.ContentType || 'application/octet-stream',
         size: result.ContentLength,
         etag: result.ETag,
+        versionId: result.VersionId || null,
+        checksum: result.ChecksumSHA256 || result.ChecksumCRC32 || null,
         ...result.Metadata,
       },
       size: Number(result.ContentLength || 0),
@@ -110,6 +280,12 @@ async function getStorageFileMeta(storagePath) {
   } catch (error) {
     if (isNotFoundStorageError(error)) return null;
     console.warn('[Storage] HeadObject failed:', storagePath, error.message);
+    if (throwOnError) {
+      const err = new Error(error.message || 'HeadObject failed');
+      err.code = 'HEAD_OBJECT_FAILED';
+      err.cause = error;
+      throw err;
+    }
     return null;
   }
 }
@@ -455,6 +631,16 @@ async function abortMultipartUpload(storagePath, uploadId) {
   return { ok: true };
 }
 
+function isNoSuchUploadError(error) {
+  const code = error?.name || error?.Code || error?.code || '';
+  const status = error?.$metadata?.httpStatusCode;
+  return (
+    code === 'NoSuchUpload' ||
+    status === 404 ||
+    /nosuchupload|no such upload|upload.*(expired|aborted)/i.test(error?.message || '')
+  );
+}
+
 /** List already-uploaded parts for resumable multipart after browser/worker restart. */
 async function listMultipartParts(storagePath, uploadId) {
   const { client, bucket } = requireR2();
@@ -462,26 +648,43 @@ async function listMultipartParts(storagePath, uploadId) {
   let partNumberMarker = undefined;
   let isTruncated = true;
 
-  while (isTruncated) {
-    const result = await client.send(new ListPartsCommand({
-      Bucket: bucket,
-      Key: storagePath,
-      UploadId: uploadId,
-      PartNumberMarker: partNumberMarker,
-      MaxParts: 1000,
-    }));
-    for (const part of result.Parts || []) {
-      const partNumber = Number(part.PartNumber);
-      const etag = String(part.ETag || '').replace(/"/g, '');
-      if (partNumber && etag) parts.push({ partNumber, etag, size: Number(part.Size) || 0 });
+  try {
+    while (isTruncated) {
+      const result = await client.send(new ListPartsCommand({
+        Bucket: bucket,
+        Key: storagePath,
+        UploadId: uploadId,
+        PartNumberMarker: partNumberMarker,
+        MaxParts: 1000,
+      }));
+      for (const part of result.Parts || []) {
+        const partNumber = Number(part.PartNumber);
+        const etag = String(part.ETag || '').replace(/"/g, '');
+        if (partNumber && etag) parts.push({ partNumber, etag, size: Number(part.Size) || 0 });
+      }
+      isTruncated = Boolean(result.IsTruncated);
+      partNumberMarker = result.NextPartNumberMarker;
+      if (!isTruncated) break;
     }
-    isTruncated = Boolean(result.IsTruncated);
-    partNumberMarker = result.NextPartNumberMarker;
-    if (!isTruncated) break;
-  }
 
-  parts.sort((a, b) => a.partNumber - b.partNumber);
-  return { storagePath, uploadId, parts };
+    parts.sort((a, b) => a.partNumber - b.partNumber);
+    return { ok: true, storagePath, uploadId, parts };
+  } catch (error) {
+    if (isNoSuchUploadError(error)) {
+      return {
+        ok: false,
+        code: 'NoSuchUpload',
+        message: error.message || 'Multipart upload does not exist',
+        storagePath,
+        uploadId,
+        parts: [],
+      };
+    }
+    const err = new Error(error.message || 'Failed to list multipart parts');
+    err.code = 'LIST_PARTS_FAILED';
+    err.cause = error;
+    throw err;
+  }
 }
 
 async function resolveReadableUrl(record, options = {}) {
@@ -520,6 +723,8 @@ module.exports = {
   resolveReadableUrl,
   enrichFileRecord,
   finalizeClientStorageUpload,
+  verifyStorageObject,
+  evaluateStorageObjectIntegrity,
   getStorageFileMeta,
   createStorageReadStream,
   uploadFromLocal,

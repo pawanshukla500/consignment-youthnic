@@ -14,11 +14,16 @@ export const VIDEO_UPLOAD_CONFIG = Object.freeze({
   maxVideoBytes: 200 * 1024 * 1024,
   /** Soft warn while recording. */
   warnVideoBytes: 80 * 1024 * 1024,
+  /**
+   * Controlled stop margin before max — finalize current recording so it remains uploadable.
+   * (Multi-segment continuation requires an approved schema change — see docs.)
+   */
+  softStopBytes: 190 * 1024 * 1024,
   /** How many box videos may upload at once from one browser. */
   maxConcurrentUploads: 2,
-  /** Max unfinished videos kept in IndexedDB before operator warning. */
+  /** Max unfinished active (non-superseded) videos in IndexedDB. */
   maxQueuedVideos: 40,
-  /** Approx local blob budget warning (MB). */
+  /** Approx local blob budget hard cap (MB) including superseded evidence. */
   maxQueuedBytesMb: 2500,
   /** Attempts per queue item before status=failed. */
   maxUploadRetries: 20,
@@ -28,8 +33,13 @@ export const VIDEO_UPLOAD_CONFIG = Object.freeze({
   queuePollMs: 2500,
   /** Metadata finalize retries after bytes land in R2. */
   metadataRetries: 6,
-  /** Minimum free browser storage (MB) recommended before long recording. */
+  /** Minimum free browser storage (MB) before starting a long recording. */
   minFreeStorageMb: 250,
+  /**
+   * Reserve factor when checking free space before recording:
+   * expectedMax * (chunkAssembly + queueBlob + safety) ≈ 2.5x max video.
+   */
+  recordingReserveFactor: 2.5,
   /** Finish drain overall deadline. */
   finishDrainTimeoutMs: 10 * 60 * 1000,
   /** Single drain wait slice. */
@@ -41,11 +51,35 @@ export const VIDEO_STATUS = Object.freeze({
   STORAGE_FAILED: 'storage_failed',
   QUEUED: 'queued',
   UPLOADING: 'uploading',
+  MULTIPART_UPLOADING: 'multipart_uploading',
+  MULTIPART_COMPLETING: 'multipart_completing',
+  OBJECT_UPLOADED: 'object_uploaded',
   RETRYING: 'retrying',
   VERIFYING: 'verifying',
   COMPLETED: 'completed',
   FAILED: 'failed',
+  /** Replaced by a newer local recording for the same box — blob retained until replacement verified. */
+  SUPERSEDED: 'superseded',
 })
+
+export const APPROVED_VIDEO_MIME_TYPES = Object.freeze([
+  'video/webm',
+  'video/mp4',
+  'video/quicktime',
+  'video/x-msvideo',
+  'video/webm;codecs=vp8',
+  'video/webm;codecs=vp9',
+  'video/mp4;codecs=avc1.42E01E',
+])
+
+export function isApprovedVideoMime(mimeType = '') {
+  const base = String(mimeType || '').split(';')[0].trim().toLowerCase()
+  if (!base) return false
+  return APPROVED_VIDEO_MIME_TYPES.some((allowed) => {
+    const allowedBase = allowed.split(';')[0].trim().toLowerCase()
+    return allowedBase === base
+  })
+}
 
 export function backoffMs(retries) {
   return Math.min(30_000, 500 * Math.pow(1.6, Math.max(0, retries || 0)))
@@ -56,4 +90,9 @@ export function uploadTimeoutForBytes(byteLength = 0) {
   // ~90s base + 3s/MB, capped at 25 minutes for ~200 MB on slow links
   const ms = Math.round(90_000 + mb * 3_000)
   return Math.min(25 * 60 * 1000, Math.max(90_000, ms))
+}
+
+/** Bytes that must be free before starting a new max-sized recording. */
+export function recordingReserveBytes(config = VIDEO_UPLOAD_CONFIG) {
+  return Math.ceil(config.maxVideoBytes * config.recordingReserveFactor)
 }

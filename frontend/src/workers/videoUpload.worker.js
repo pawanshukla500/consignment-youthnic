@@ -14,12 +14,15 @@ import {
   saveMultipartProgress,
   getVideoQueueStatusSnapshot,
   getOutstandingVideos,
+  listPendingMultipartAborts,
+  clearPendingMultipartAbort,
 } from '../utils/videoQueue'
 import { VIDEO_STATUS, VIDEO_UPLOAD_CONFIG, backoffMs, uploadTimeoutForBytes } from '../utils/videoUploadConfig'
 import {
   assertVideoSizeAllowed,
   buildClientUploadId,
   canDeleteLocalVideo,
+  decideMultipartRecovery,
   mergeCompletedParts,
   missingMultipartParts,
   shouldUseMultipart,
@@ -255,14 +258,82 @@ async function uploadSingleProxy(file, metadata, entryId, timeoutMs) {
 }
 
 async function listRemoteCompletedParts(storagePath, uploadId, consignmentId) {
+  const url = `${config.apiUrl}/uploads/multipart/list-parts`
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
+  }
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ storagePath, uploadId, consignmentId }),
+  })
+  const body = await res.json().catch(() => null)
+  if (res.ok && body?.ok !== false) {
+    return {
+      ok: true,
+      parts: mergeCompletedParts([], body.parts || []),
+      code: null,
+      message: null,
+    }
+  }
+  return {
+    ok: false,
+    parts: [],
+    code: body?.code || (res.status === 404 ? 'NoSuchUpload' : 'LIST_PARTS_FAILED'),
+    message: body?.error || body?.message || `ListParts HTTP ${res.status}`,
+  }
+}
+
+async function headRemoteObject(storagePath, consignmentId, expectedSize, mimeType) {
+  const url = `${config.apiUrl}/uploads/object-head`
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
+  }
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ storagePath, consignmentId, expectedSize, mimeType }),
+  })
+  const body = await res.json().catch(() => null)
+  if (res.ok && body?.ok) {
+    return {
+      ok: true,
+      size: body.verification?.actualSize,
+      contentType: body.verification?.contentType,
+      etag: body.verification?.etag,
+      storagePath: body.storagePath || storagePath,
+    }
+  }
+  return {
+    ok: false,
+    code: body?.code || 'HEAD_OBJECT_FAILED',
+    message: body?.error || body?.message || `HeadObject HTTP ${res.status}`,
+  }
+}
+
+async function abortOrphanedMultipartUploads() {
   try {
-    const listed = await apiFetch('/uploads/multipart/list-parts', {
-      method: 'POST',
-      body: JSON.stringify({ storagePath, uploadId, consignmentId }),
-    })
-    return mergeCompletedParts([], listed.parts || [])
-  } catch {
-    return []
+    const jobs = await listPendingMultipartAborts()
+    for (const job of jobs) {
+      try {
+        await apiFetch('/uploads/multipart/abort', {
+          method: 'POST',
+          body: JSON.stringify({
+            storagePath: job.storagePath,
+            uploadId: job.uploadId,
+            consignmentId: job.consignmentId,
+          }),
+        })
+      } catch (err) {
+        console.warn('[Worker] Multipart abort deferred:', err.message)
+        continue
+      }
+      await clearPendingMultipartAbort(job.id)
+    }
+  } catch (err) {
+    console.warn('[Worker] Pending multipart abort scan failed:', err.message)
   }
 }
 
@@ -271,6 +342,38 @@ async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProx
   let uploadId = resume?.uploadId || null
   let finalPath = storagePath
   let completedParts = mergeCompletedParts(resume?.completedParts || [])
+
+  if (uploadId) {
+    const listed = await listRemoteCompletedParts(finalPath, uploadId, metadata.consignmentId)
+    if (listed.ok) {
+      completedParts = mergeCompletedParts(completedParts, listed.parts)
+    } else {
+      const head = await headRemoteObject(finalPath, metadata.consignmentId, file.size, file.type)
+      const decision = decideMultipartRecovery({
+        expectedSize: file.size,
+        expectedMime: file.type,
+        expectedPath: finalPath,
+        listResult: listed,
+        headResult: head,
+      })
+      if (decision.action === 'retry_list') {
+        throw new Error(decision.error || 'ListParts failed — will retry without clearing local Blob')
+      }
+      if (decision.action === 'finalize_metadata') {
+        await saveUploadedFileInfo(entryId, 'r2://uploaded', decision.storagePath || finalPath)
+        await patchVideoQueueEntry(entryId, {
+          status: VIDEO_STATUS.OBJECT_UPLOADED,
+          multipart: null,
+          progress: 100,
+        })
+        return decision.storagePath || finalPath
+      }
+      // restart_multipart — clear stale session, keep Blob
+      uploadId = null
+      completedParts = []
+      await saveMultipartProgress(entryId, null)
+    }
+  }
 
   if (!uploadId) {
     const created = await apiFetch('/uploads/multipart/create', {
@@ -284,8 +387,6 @@ async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProx
     uploadId = created.uploadId
     finalPath = created.storagePath || storagePath
     if (!uploadId) throw new Error('Failed to start multipart upload')
-  } else if (!completedParts.length) {
-    completedParts = await listRemoteCompletedParts(finalPath, uploadId, metadata.consignmentId)
   }
 
   await saveMultipartProgress(entryId, {
@@ -293,7 +394,7 @@ async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProx
     storagePath: finalPath,
     useProxy: Boolean(useProxy),
     completedParts,
-  })
+  }, VIDEO_STATUS.MULTIPART_UPLOADING)
 
   const missing = missingMultipartParts(file.size, completedParts, PART_SIZE)
   const partNumbers = missing.map((p) => p.partNumber)
@@ -398,6 +499,16 @@ async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProx
 
     completedParts = mergeCompletedParts(completedParts, newlyCompleted)
 
+    await patchVideoQueueEntry(entryId, {
+      status: VIDEO_STATUS.MULTIPART_COMPLETING,
+      multipart: {
+        uploadId,
+        storagePath: finalPath,
+        useProxy: Boolean(useProxy),
+        completedParts,
+      },
+    })
+
     await apiFetch('/uploads/multipart/complete', {
       method: 'POST',
       body: JSON.stringify({
@@ -408,17 +519,18 @@ async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProx
       }),
     })
 
-    // Clear multipart state — object is fully assembled in R2
+    // Object assembled in R2 — persist before metadata so crash recovery can HeadObject
     await patchVideoQueueEntry(entryId, {
       multipart: null,
       storagePath: finalPath,
       storageUrl: 'r2://uploaded',
       progress: 100,
+      status: VIDEO_STATUS.OBJECT_UPLOADED,
     })
 
     postMessage({
       type: 'ITEM_PROGRESS',
-      payload: { id: entryId, progress: 100, status: VIDEO_STATUS.VERIFYING },
+      payload: { id: entryId, progress: 100, status: VIDEO_STATUS.OBJECT_UPLOADED },
     })
     return finalPath
   } catch (err) {
@@ -428,7 +540,7 @@ async function uploadMultipartCore(file, metadata, entryId, timeoutMs, { useProx
       storagePath: finalPath,
       useProxy: Boolean(useProxy),
       completedParts,
-    })
+    }, VIDEO_STATUS.RETRYING)
     throw err
   }
 }
@@ -540,21 +652,19 @@ async function uploadOneVideo(entry) {
       })
 
       const fileRecord = response.file || {}
-      const storageVerified = Boolean(
-        fileRecord.storageVerified
-        || fileRecord.storageVerifiedAt
-        || response.verified
-        || fileRecord.id
-      )
-      const metadataSaved = Boolean(fileRecord.id)
-
-      if (!canDeleteLocalVideo({ metadataSaved, storageVerified })) {
-        throw new Error('Server did not confirm R2 verification for uploaded video')
+      // fileRecord.id alone is NEVER proof of R2 verification
+      if (!canDeleteLocalVideo({ verified: response.verified === true })) {
+        throw new Error(
+          response.error
+          || 'Server did not return verified:true after R2 integrity check'
+        )
       }
 
-      // Only delete IndexedDB after verified metadata exists
+      await patchVideoQueueEntry(entry.id, { status: VIDEO_STATUS.VERIFYING, progress: 100 })
+      // Only delete IndexedDB when response.verified === true
       await markVideoUploaded(entry.id, { verified: true })
       emitItemStatus(entry, VIDEO_STATUS.COMPLETED, { progress: 100 })
+      void abortOrphanedMultipartUploads()
       return fileRecord
     } catch (e) {
       lastMetaError = e
@@ -619,6 +729,7 @@ async function processVideoQueue(opts = {}) {
       ...(queuedProcessOpts || {}),
       ...opts,
       retryFailed: Boolean(opts.retryFailed || queuedProcessOpts?.retryFailed),
+      immediateRetry: Boolean(opts.immediateRetry || queuedProcessOpts?.immediateRetry || opts.retryFailed || queuedProcessOpts?.retryFailed),
       forceNow: Boolean(opts.forceNow || queuedProcessOpts?.forceNow),
     }
     return null
@@ -649,10 +760,14 @@ async function processVideoQueue(opts = {}) {
         await resetFailedToPending()
       }
 
-      await unlockOutstandingForImmediateRetry()
+      // Immediate unlock ONLY for explicit retry / online / finish — never every poll
+      if (runOpts.immediateRetry || runOpts.retryFailed) {
+        await unlockOutstandingForImmediateRetry()
+      }
 
       const pending = await getPendingVideos()
       await notify()
+      void abortOrphanedMultipartUploads()
 
       // Concurrent uploads (default 2) so next boxes keep packing while videos drain
       await mapPool(pending, MAX_CONCURRENT, async (video) => {
@@ -833,6 +948,7 @@ self.onmessage = async (e) => {
     case 'PROCESS_QUEUE': {
       await processVideoQueue({
         retryFailed: payload?.retryFailed,
+        immediateRetry: Boolean(payload?.immediateRetry || payload?.retryFailed),
         forceNow: true,
         requestId: payload?.requestId || null,
       })
