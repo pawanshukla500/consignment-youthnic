@@ -3,6 +3,11 @@
  * Uses a Web Worker for blob merge + background upload so the packing UI stays responsive.
  */
 import { finalizeRecordingSession } from '../utils/videoQueue'
+import {
+  createDrainResult,
+  createDrainWaiterRegistry,
+  isTerminalSuccess,
+} from './videoDrainWaiter'
 
 let worker = null
 const listeners = new Set()
@@ -11,7 +16,7 @@ let visibilityHandler = null
 let authTokenHandler = null
 
 const pendingFinalize = new Map()
-const pendingDrain = new Map()
+const drainWaiters = createDrainWaiterRegistry()
 
 let state = {
   pending: 0,
@@ -32,17 +37,22 @@ export function subscribeVideoUploadStatus(fn) {
 
 function settleFinalize(requestId, result) {
   const pending = pendingFinalize.get(requestId)
-  if (!pending) return
+  if (!pending || pending.settled) return
+  pending.settled = true
   pendingFinalize.delete(requestId)
-  if (result?.ok === false) pending.reject(new Error(result.error || 'Finalize failed'))
-  else pending.resolve(result?.result || null)
+  if (pending.timer) clearTimeout(pending.timer)
+  if (result?.ok === false) {
+    const err = new Error(result.error?.message || result.error || 'Finalize failed')
+    err.code = result.error?.code || 'FINALIZE_FAILED'
+    err.retryable = Boolean(result.error?.retryable)
+    pending.reject(err)
+  } else {
+    pending.resolve(result?.result || null)
+  }
 }
 
 function settleDrain(requestId, result) {
-  const pending = pendingDrain.get(requestId)
-  if (!pending) return
-  pendingDrain.delete(requestId)
-  pending.resolve(result || { done: true })
+  return drainWaiters.settle(requestId, result)
 }
 
 /** Kick the upload worker (or no-op) and optionally wait until the queue drain finishes. */
@@ -55,24 +65,26 @@ export async function processVideoUploadQueue(opts = {}) {
   } = opts
 
   if (!worker) {
-    return { done: true, skipped: true }
+    return createDrainResult({
+      ok: true,
+      uploadedIds: [],
+      failedIds: [],
+      pendingIds: [],
+      missingIds: [],
+    })
   }
 
   if (!wait) {
     worker.postMessage({ type: 'PROCESS_QUEUE', payload: { retryFailed, forceNow } })
-    return { done: true }
+    return createDrainResult({ ok: true, done: true })
   }
 
-  const requestId = `drain_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      settleDrain(requestId, { done: false, timedOut: true })
-    }, timeoutMs)
-    pendingDrain.set(requestId, (result) => {
-      clearTimeout(timer)
-      resolve(result)
+  return new Promise((resolve, reject) => {
+    const requestId = drainWaiters.register({ resolve, reject, timeoutMs })
+    worker.postMessage({
+      type: 'PROCESS_QUEUE',
+      payload: { retryFailed, forceNow: true, requestId },
     })
-    worker.postMessage({ type: 'PROCESS_QUEUE', payload: { retryFailed, forceNow: true, requestId } })
   })
 }
 
@@ -87,17 +99,72 @@ export async function finalizeRecordingSessionInWorker(sessionId) {
   const requestId = `fin_${sessionId}_${Date.now()}`
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      if (pendingFinalize.has(requestId)) {
-        pendingFinalize.delete(requestId)
-        reject(new Error('Video finalize timed out'))
-      }
+      settleFinalize(requestId, {
+        ok: false,
+        error: { code: 'FINALIZE_TIMEOUT', message: 'Video finalize timed out', retryable: true },
+      })
     }, 120000)
     pendingFinalize.set(requestId, {
-      resolve: (value) => { clearTimeout(timer); resolve(value) },
-      reject: (err) => { clearTimeout(timer); reject(err) },
+      resolve,
+      reject,
+      timer,
+      createdAt: Date.now(),
+      settled: false,
     })
     worker.postMessage({ type: 'FINALIZE_SESSION', payload: { sessionId, requestId } })
   })
+}
+
+function handleWorkerMessage(e) {
+  const { type, payload } = e.data || {}
+  switch (type) {
+    case 'STATUS':
+      state = { ...state, pending: payload.pending, failed: payload.failed, uploading: payload.uploading }
+      notify()
+      break
+    case 'CURRENT_UPLOAD':
+      state = {
+        ...state,
+        current: payload
+          ? { ...payload, progress: state.current?.id === payload.id ? state.current.progress : 0 }
+          : null,
+      }
+      notify()
+      break
+    case 'ITEM_PROGRESS':
+      if (state.current && state.current.id === payload.id) {
+        state.current = { ...state.current, progress: payload.progress }
+        notify()
+      }
+      window.dispatchEvent(new CustomEvent('video-upload-progress', { detail: payload }))
+      break
+    case 'ITEM_DONE':
+      window.dispatchEvent(new CustomEvent('video-upload-done', { detail: payload }))
+      break
+    case 'ITEM_ERROR':
+      window.dispatchEvent(new CustomEvent('video-upload-error', { detail: payload }))
+      break
+    case 'FINALIZE_DONE':
+      settleFinalize(payload.requestId, payload)
+      break
+    case 'QUEUE_DRAINED':
+      settleDrain(payload.requestId, createDrainResult({
+        ok: payload.ok !== false
+          && !(payload.failedIds || []).length
+          && !(payload.pendingIds || []).length,
+        requestId: payload.requestId,
+        uploadedIds: payload.uploadedIds || [],
+        failedIds: payload.failedIds || [],
+        pendingIds: payload.pendingIds || [],
+        missingIds: payload.missingIds || [],
+        pending: payload.pending,
+        failed: payload.failed,
+        error: payload.error || null,
+      }))
+      break
+    default:
+      break
+  }
 }
 
 export function initVideoUploadService() {
@@ -110,39 +177,19 @@ export function initVideoUploadService() {
 
   worker.postMessage({ type: 'INIT', payload: { token, apiUrl } })
 
-  worker.onmessage = (e) => {
-    const { type, payload } = e.data
-    switch (type) {
-      case 'STATUS':
-        state = { ...state, pending: payload.pending, failed: payload.failed, uploading: payload.uploading }
-        notify()
-        break
-      case 'CURRENT_UPLOAD':
-        state = { ...state, current: payload ? { ...payload, progress: state.current?.id === payload.id ? state.current.progress : 0 } : null }
-        notify()
-        break
-      case 'ITEM_PROGRESS':
-        if (state.current && state.current.id === payload.id) {
-          state.current = { ...state.current, progress: payload.progress }
-          notify()
-        }
-        window.dispatchEvent(new CustomEvent('video-upload-progress', { detail: payload }))
-        break
-      case 'ITEM_DONE':
-        window.dispatchEvent(new CustomEvent('video-upload-done', { detail: payload }))
-        break
-      case 'ITEM_ERROR':
-        window.dispatchEvent(new CustomEvent('video-upload-error', { detail: payload }))
-        break
-      case 'FINALIZE_DONE':
-        settleFinalize(payload.requestId, payload)
-        break
-      case 'QUEUE_DRAINED':
-        settleDrain(payload.requestId, { done: true, pending: payload.pending, failed: payload.failed })
-        break
-      default:
-        break
-    }
+  worker.onmessage = handleWorkerMessage
+  worker.onerror = (err) => {
+    console.error('[VideoUpload] Worker error:', err)
+    drainWaiters.rejectAll({
+      code: 'WORKER_EXCEPTION',
+      message: err?.message || 'Video upload worker exception',
+    })
+  }
+  worker.onmessageerror = () => {
+    drainWaiters.rejectAll({
+      code: 'WORKER_MESSAGE_ERROR',
+      message: 'Video upload worker message error',
+    })
   }
 
   onlineHandler = () => processVideoUploadQueue({ wait: false, forceNow: true })
@@ -174,7 +221,20 @@ export function stopVideoUploadService() {
     authTokenHandler = null
   }
   if (worker) {
-    worker.postMessage({ type: 'STOP' })
+    try {
+      worker.postMessage({ type: 'STOP' })
+    } catch { /* ignore */ }
+    drainWaiters.rejectAll({
+      code: 'WORKER_TERMINATED',
+      message: 'Video upload worker terminated',
+    })
+    for (const [requestId, pending] of pendingFinalize.entries()) {
+      settleFinalize(requestId, {
+        ok: false,
+        error: { code: 'WORKER_TERMINATED', message: 'Video upload worker terminated', retryable: true },
+      })
+      void pending
+    }
     worker.terminate()
     worker = null
   }
@@ -183,3 +243,5 @@ export function stopVideoUploadService() {
 export function getVideoQueueSnapshot() {
   return state
 }
+
+export { createDrainResult, isTerminalSuccess, drainWaiters as __drainWaitersForTests }
