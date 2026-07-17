@@ -38,7 +38,10 @@ function issueAppToken(user) {
       name: user.name,
       role: user.role,
       permissions,
-      department: user.department || null,
+      department: user.department || (Array.isArray(user.departments) ? user.departments[0] : null) || null,
+      departments: Array.isArray(user.departments)
+        ? user.departments
+        : (user.department ? [user.department] : []),
       firebaseUid: user.firebaseUid || user.firebase_uid || null,
       warehouseId: user.warehouseId || user.warehouse_id || user.warehouse || null,
       tokenVersion: currentTokenVersion(user),
@@ -132,7 +135,10 @@ function loginResponse(sessionUser) {
       name: safe.name,
       role: safe.role,
       permissions,
-      department: safe.department || null,
+      department: safe.department || (Array.isArray(safe.departments) ? safe.departments[0] : null) || null,
+      departments: Array.isArray(safe.departments)
+        ? safe.departments
+        : (safe.department ? [safe.department] : []),
       firebaseUid: safe.firebaseUid || null,
       warehouseId: safe.warehouseId || null,
     }
@@ -504,7 +510,15 @@ router.get('/me', authenticateToken, async (req, res) => {
           ...decoded,
           role,
           permissions,
-          department: dbUser.department || decoded.department || null,
+          department: dbUser.department
+            || (Array.isArray(dbUser.departments) ? dbUser.departments[0] : null)
+            || decoded.department
+            || null,
+          departments: Array.isArray(dbUser.departments) && dbUser.departments.length
+            ? dbUser.departments
+            : (dbUser.department
+              ? [dbUser.department]
+              : (Array.isArray(decoded.departments) ? decoded.departments : [])),
           firebaseUid: dbUser.firebaseUid || decoded.firebaseUid || null,
           warehouseId: dbUser.warehouseId || dbUser.warehouse_id || dbUser.warehouse || decoded.warehouseId || null,
         }),
