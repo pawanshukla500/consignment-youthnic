@@ -37,13 +37,23 @@ export const DEPARTMENT_OPTIONS = [
   { key: 'management', label: 'Admin / Management' },
 ]
 
+export function getUserDepartmentsClient(user) {
+  if (!user) return []
+  if (Array.isArray(user.departments) && user.departments.length) {
+    return [...new Set(user.departments.map((d) => String(d || '').toLowerCase()).filter(Boolean))]
+  }
+  if (user.department) return [String(user.department).toLowerCase()]
+  if (user.role === 'admin' || user.role === 'organization_head') return ['management']
+  return []
+}
+
 export function userCanConfirmStageClient(user, stage, consignment = null) {
   if (!user) return false
   if (user.role === 'admin' || user.role === 'organization_head') return true
-  const dept = String(user.department || '').toLowerCase()
-  if (dept === 'management') return true
+  const depts = getUserDepartmentsClient(user)
+  if (depts.includes('management')) return true
   const allowed = STAGE_DEPARTMENTS[stage] || []
-  if (dept && allowed.includes(dept)) return true
+  if (depts.some((dept) => allowed.includes(dept))) return true
   if (consignment?.groundTeamUserId && consignment.groundTeamUserId === user.id) {
     return ['packing_completed', 'ready_for_dispatch', 'dispatched'].includes(stage)
   }

@@ -32,12 +32,35 @@ function packingDoneShort() {
 }
 
 // --- Department gates ---
+const {
+  normalizeDepartments,
+  getUserDepartments,
+  userInDepartment,
+} = require('../utils/departments');
+
 assert.strictEqual(normalizeDepartment('Invoice Creation Team'), null);
 assert.strictEqual(normalizeDepartment('invoice_team'), 'invoice');
 assert.ok(userCanConfirmStage(baseUser, 'packing_completed'));
 assert.ok(!userCanConfirmStage(baseUser, 'invoice_created'));
 assert.ok(userCanConfirmStage(invoiceUser, 'invoice_created'));
 assert.ok(userCanConfirmStage({ role: 'admin' }, 'dispatched'));
+
+// Multi-department membership (e.g. Aditya on Invoice + Inward)
+{
+  const multi = {
+    id: 'u-aditya',
+    role: 'user',
+    departments: ['invoice', 'inward'],
+  };
+  assert.deepStrictEqual(getUserDepartments(multi), ['invoice', 'inward']);
+  assert.ok(userCanConfirmStage(multi, 'invoice_created'));
+  assert.ok(userCanConfirmStage(multi, 'inward_completed'));
+  assert.ok(!userCanConfirmStage(multi, 'dispatched'));
+  assert.ok(userInDepartment(multi, 'inward'));
+  assert.deepStrictEqual(normalizeDepartments('invoice, inward'), ['invoice', 'inward']);
+  // Legacy singular field still works
+  assert.deepStrictEqual(getUserDepartments({ department: 'ground_team' }), ['ground_team']);
+}
 
 // --- Short packing blocked without reason ---
 {

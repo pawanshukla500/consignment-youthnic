@@ -494,7 +494,9 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
               <option value="">Select person…</option>
               {assignees.map((u) => (
                 <option key={u.id} value={u.id}>
-                  {u.name} ({u.email}){u.departmentLabel ? ` · ${u.departmentLabel}` : ''}
+                  {u.name} ({u.email}){(u.departmentLabels?.length
+                    ? ` · ${u.departmentLabels.join(', ')}`
+                    : (u.departmentLabel ? ` · ${u.departmentLabel}` : ''))}
                 </option>
               ))}
             </select>
