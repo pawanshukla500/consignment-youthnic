@@ -834,8 +834,8 @@ const ConsignmentDetail = () => {
     // Pending report focuses on what's LEFT (no packed column).
     // Packed report shows the completed items with how they were boxed.
     const headers = type === 'pending'
-      ? ['#', 'Marketplace SKU', 'Internal SKU', 'Required', 'Pending (to pack)']
-      : ['#', 'Marketplace SKU', 'Internal SKU', 'Required', 'Packed', 'Box wise Qty', 'Box number'];
+      ? ['#', 'Barcode SKU', 'Marketplace SKU', 'Internal SKU', 'Required', 'Pending (to pack)']
+      : ['#', 'Barcode SKU', 'Marketplace SKU', 'Internal SKU', 'Required', 'Packed', 'Box wise Qty', 'Box number'];
 
     const csvRows = [];
     pushCsvRow(headers);
@@ -844,9 +844,10 @@ const ConsignmentDetail = () => {
     rows.forEach((r, i) => {
       const packedFromBoxes = r.packedFromBoxes || 0;
       const pendingFromBoxes = Math.max(0, (r.required || 0) - packedFromBoxes);
+      const barcodeSku = r.marketplaceBarcode || r.barcode || '';
       totRequired += r.required; totPacked += packedFromBoxes; totPending += pendingFromBoxes;
       if (type === 'pending') {
-        pushCsvRow([i + 1, r.marketplaceSku, r.internalSku, r.required, pendingFromBoxes]);
+        pushCsvRow([i + 1, barcodeSku, r.marketplaceSku, r.internalSku, r.required, pendingFromBoxes]);
       } else {
         const boxEntries = [], boxNumbers = [];
         pivotData.boxes.forEach(b => {
@@ -854,7 +855,7 @@ const ConsignmentDetail = () => {
           if (qty > 0) { boxEntries.push(qty); boxNumbers.push(b.boxNo); }
         });
         pushCsvRow([
-          i + 1, r.marketplaceSku, r.internalSku,
+          i + 1, barcodeSku, r.marketplaceSku, r.internalSku,
           r.required, packedFromBoxes, boxEntries.join(','), boxNumbers.join(',')
         ]);
       }
@@ -862,9 +863,9 @@ const ConsignmentDetail = () => {
 
     // Totals row
     if (type === 'pending') {
-      pushCsvRow(['', '', 'TOTAL', totRequired, totPending]);
+      pushCsvRow(['', '', '', 'TOTAL', totRequired, totPending]);
     } else {
-      pushCsvRow(['', '', 'TOTAL', totRequired, totPacked, '', '']);
+      pushCsvRow(['', '', '', 'TOTAL', totRequired, totPacked, '', '']);
     }
 
     const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
@@ -1791,7 +1792,7 @@ const ConsignmentDetail = () => {
                     {/* Group headers */}
                     <tr>
                       <th
-                        colSpan={3}
+                        colSpan={4}
                         className="sticky top-0 z-20 bg-slate-800 text-white text-left px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider border-r border-slate-600"
                       >
                         SKU Details
@@ -1815,6 +1816,7 @@ const ConsignmentDetail = () => {
                     {/* Sub headers */}
                     <tr className="bg-slate-100">
                       <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">#</th>
+                      <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">Barcode SKU</th>
                       <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">Marketplace SKU</th>
                       <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-r border-slate-200 whitespace-nowrap">Internal SKU</th>
                       <th className="text-center px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap bg-slate-50">Required</th>
@@ -1835,9 +1837,17 @@ const ConsignmentDetail = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {pivotData.rows.map((row, idx) => (
+                    {pivotData.rows.map((row, idx) => {
+                      const barcodeSku = row.marketplaceBarcode || row.barcode || '';
+                      return (
                       <tr key={row.skuId} className={`${row.remaining === 0 ? 'bg-emerald-50/40' : row.remaining < 0 ? 'bg-red-50/40' : 'bg-white'} hover:bg-slate-50/80`}>
                         <td className="px-3 py-2.5 text-xs text-slate-400">{idx + 1}</td>
+                        <td className="px-3 py-2.5 font-mono text-xs text-slate-800 max-w-[200px] truncate" title={barcodeSku || '—'}>
+                          {barcodeSku || '—'}
+                          {row.marketplaceBarcodeType ? (
+                            <span className="ml-1 text-[9px] font-semibold uppercase text-slate-400">{row.marketplaceBarcodeType}</span>
+                          ) : null}
+                        </td>
                         <td className="px-3 py-2.5 font-mono text-xs text-slate-700 max-w-[180px] truncate" title={row.marketplaceSku}>{row.marketplaceSku}</td>
                         <td className="px-3 py-2.5 font-medium text-slate-900 text-xs border-r border-slate-100 max-w-[160px] truncate" title={row.internalSku}>{row.internalSku}</td>
                         <td className="px-3 py-2.5 text-center font-semibold text-slate-700 text-xs bg-slate-50/40">{row.required}</td>
@@ -1864,7 +1874,8 @@ const ConsignmentDetail = () => {
                         })}
                         <td className="px-3 py-2.5 text-center font-bold text-slate-900 text-xs bg-slate-50/60">{row.totalInBoxes || row.packedFromBoxes || 0}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
