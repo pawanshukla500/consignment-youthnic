@@ -1,14 +1,7 @@
 import JsBarcode from 'jsbarcode'
+import { escapeHtml, openEscapedPrintWindow } from './printHtml'
 
 const ROWS_PER_PAGE = 28
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
 
 /**
  * Build 4×6 shipment box label HTML (text only — no graphical barcode).
@@ -77,13 +70,12 @@ export function buildShipmentBoxLabelHtml({ consignmentId, internalShipmentNo, s
 }
 
 export function openShipmentLabelPrintWindow(innerHtml, title = 'Shipment Label') {
-  const w = window.open('', '_blank', 'width=600,height=800')
-  if (!w) return false
-  w.document.write(`<!DOCTYPE html>
+  const safeTitle = escapeHtml(title)
+  const w = openEscapedPrintWindow(`<!DOCTYPE html>
     <html>
       <head>
         <meta charset="utf-8">
-        <title>${title}</title>
+        <title>${safeTitle}</title>
         <style>
           @page { size: 4in 6in; margin: 0; }
           body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #0f172a; }
@@ -124,9 +116,8 @@ export function openShipmentLabelPrintWindow(innerHtml, title = 'Shipment Label'
           <button onclick="window.print()" style="padding:8px 20px;font-size:12px;cursor:pointer">Print 4×6 Label</button>
         </div>
       </body>
-    </html>`)
-  w.document.close()
-  return true
+    </html>`, { width: 600, height: 800 })
+  return Boolean(w)
 }
 
 export function printShipmentBoxLabel(consignment, box) {
