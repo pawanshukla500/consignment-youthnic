@@ -38,6 +38,7 @@ function issueAppToken(user) {
       name: user.name,
       role: user.role,
       permissions,
+      department: user.department || null,
       firebaseUid: user.firebaseUid || user.firebase_uid || null,
       warehouseId: user.warehouseId || user.warehouse_id || user.warehouse || null,
       tokenVersion: currentTokenVersion(user),
@@ -131,6 +132,7 @@ function loginResponse(sessionUser) {
       name: safe.name,
       role: safe.role,
       permissions,
+      department: safe.department || null,
       firebaseUid: safe.firebaseUid || null,
       warehouseId: safe.warehouseId || null,
     }
@@ -502,6 +504,7 @@ router.get('/me', authenticateToken, async (req, res) => {
           ...decoded,
           role,
           permissions,
+          department: dbUser.department || decoded.department || null,
           firebaseUid: dbUser.firebaseUid || decoded.firebaseUid || null,
           warehouseId: dbUser.warehouseId || dbUser.warehouse_id || dbUser.warehouse || decoded.warehouseId || null,
         }),

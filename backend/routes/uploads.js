@@ -467,7 +467,7 @@ router.put(
 );
 
 // Save file metadata after a direct client upload to Cloudflare R2
-router.post('/metadata', authenticateToken, requirePermission('packing', 'register uploads'), async (req, res) => {
+router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'consignments'], 'register uploads'), async (req, res) => {
   try {
     const {
       consignmentId,
@@ -617,6 +617,8 @@ router.post('/metadata', authenticateToken, requirePermission('packing', 'regist
       fileRecord.active = true;
     } else if (fileType === 'video') {
       fileRecord.active = true;
+    } else if (purpose) {
+      fileRecord.purpose = String(purpose).trim().toLowerCase();
     }
     if (fileType === 'video' || isRemovalVideo) {
       fileRecord.storageVerified = Boolean(verification);
@@ -631,11 +633,18 @@ router.post('/metadata', authenticateToken, requirePermission('packing', 'regist
       const idField = (fileType === 'video' || isRemovalVideo) ? 'videoIds' : 'documentIds';
       const ids = new Set(consignment[idField] || []);
       ids.add(fileId);
-      await firestoreHelpers.setDocument('consignments', consignmentId, {
-        ...consignment,
+      const consignmentPatch = {
         [idField]: Array.from(ids),
-        updatedAt: now()
-      });
+        updatedAt: now(),
+      };
+      const docPurpose = fileRecord.purpose || '';
+      if (docPurpose === 'invoice') {
+        consignmentPatch.invoiceDocumentId = fileId;
+        consignmentPatch.invoiceUploadedAt = now();
+      } else if (docPurpose === 'docket') {
+        consignmentPatch.docketDocumentId = fileId;
+      }
+      await firestoreHelpers.setDocument('consignments', consignmentId, consignmentPatch);
     }
 
     if (fileType === 'video' && !isRemovalVideo && boxNo) {

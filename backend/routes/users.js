@@ -11,6 +11,7 @@ const pgHelpers = require('../utils/pgHelpers');
 const { normalizePermissions, diffPermissions } = require('../utils/permissions');
 const { sanitizeUserForStorage, sanitizeUserForApi } = require('../utils/sanitizeUser');
 const { sendPasswordResetEmail } = require('../utils/passwordReset');
+const { normalizeDepartment } = require('../utils/departments');
 
 function cleanProfileUrl(value) {
   const text = String(value || '').trim();
@@ -257,7 +258,7 @@ router.get('/', authenticateToken, requireRole('admin'), async (req, res) => {
 // Create user (admin only)
 router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
-    const { name, email, password, role = 'user', permissions = {} } = req.body;
+    const { name, email, password, role = 'user', permissions = {}, department = null } = req.body;
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'Name, email, and password are required.' });
     }
@@ -269,6 +270,10 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
       return res.status(409).json({ error: 'User with this email already exists.' });
     }
 
+    const resolvedDepartment = role === 'admin' || role === 'organization_head'
+      ? (normalizeDepartment(department) || 'management')
+      : normalizeDepartment(department);
+
     const id = generateId();
     // Plain password is used only to create the Firebase Auth account — never stored in documents.
     const userData = sanitizeUserForStorage({
@@ -276,6 +281,7 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
       name,
       email: normalizedEmail,
       role,
+      department: resolvedDepartment,
       isActive: true,
       permissions: normalizePermissions(role, permissions),
       createdAt: now(),
@@ -328,7 +334,7 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
 router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, role, permissions, password, isActive } = req.body;
+    const { name, email, role, permissions, password, isActive, department } = req.body;
 
     if (id === DEFAULT_USER.id && req.user.id !== DEFAULT_USER.id) {
       return res.status(403).json({ error: 'Cannot modify default admin.' });
@@ -341,6 +347,14 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
     if (name !== undefined) updateData.name = name;
     if (email !== undefined) updateData.email = normalizeEmail(email);
     if (role !== undefined) updateData.role = role;
+    if (department !== undefined) {
+      const nextRole = role !== undefined ? role : existing.role;
+      updateData.department = nextRole === 'admin' || nextRole === 'organization_head'
+        ? (normalizeDepartment(department) || 'management')
+        : normalizeDepartment(department);
+    } else if (role !== undefined && (role === 'admin' || role === 'organization_head') && !existing.department) {
+      updateData.department = 'management';
+    }
     if (permissions !== undefined || role !== undefined) {
       updateData.permissions = normalizePermissions(role || existing.role, {
         ...(existing.permissions || {}),

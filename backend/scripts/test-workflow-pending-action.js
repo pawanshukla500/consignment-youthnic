@@ -6,6 +6,7 @@ const {
   enrichWorkflowFields,
   getPendingActionLabel,
   canConfirmStage,
+  applyStageConfirmation,
 } = require('../utils/consignmentWorkflow');
 
 {
@@ -32,7 +33,7 @@ const {
     totalRequiredQty: 100,
     stageConfirmations: {},
   };
-  assert.strictEqual(getPendingActionLabel(c), 'Finish packing');
+  assert.strictEqual(getPendingActionLabel(c), 'Finish packing (or confirm short packing)');
   assert.strictEqual(enrichWorkflowFields(c).listPriorityBucket, 'active');
 }
 
@@ -51,14 +52,16 @@ const {
 {
   const c = {
     status: 'completed',
-    shipmentStatus: 'Ready',
+    shipmentStatus: 'Under Packing',
     totalPackedQty: 100,
     totalRequiredQty: 100,
-    stageConfirmations: {
-      packing_completed: { confirmedAt: '2026-07-01T00:00:00.000Z' },
-    },
+    stageConfirmations: {},
   };
-  assert.strictEqual(getPendingActionLabel(c), 'Ready for invoice creation');
+  const result = applyStageConfirmation(c, 'packing_completed', { id: 'u', name: 'T' }, null, {});
+  assert.ok(result.ok);
+  const next = { ...c, ...result.updates };
+  assert.strictEqual(getPendingActionLabel(next), 'Upload invoice & mark invoice completed');
+  assert.ok(next.stageConfirmations.ready_for_invoice.confirmedAt);
 }
 
 {

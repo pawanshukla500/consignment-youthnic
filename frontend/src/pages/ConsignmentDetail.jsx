@@ -2001,63 +2001,139 @@ const ConsignmentDetail = () => {
           )}
 
           {activeTab === 'documents' && (
-            <div>
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
-                <h3 className="text-lg font-semibold text-slate-900">Documents</h3>
-                <label className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 cursor-pointer transition-colors text-sm">
-                  <Upload className="w-4 h-4" />
-                  {uploading ? 'Uploading...' : 'Upload Document'}
-                  <input
-                    type="file"
-                    accept=".pdf,.doc,.docx,.xlsx,.xls,.csv"
-                    className="hidden"
-                    onChange={(e) => handleFileUpload(e, 'document')}
-                    disabled={uploading}
-                  />
-                </label>
-              </div>
-              <div className="space-y-3">
-                {consignment.documents?.length > 0 ? (
-                  consignment.documents.map((doc) => (
-                    <div key={doc.id} className="flex items-center justify-between p-4 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
-                      <div className="flex items-center gap-3">
-                        <FileText className="w-8 h-8 text-primary-600" />
-                        <div>
-                          <p className="text-sm font-medium text-slate-900">{doc.originalName}</p>
-                          <p className="text-xs text-slate-500">
-                            {new Date(doc.uploadedAt).toLocaleDateString()} - {(doc.size / 1024).toFixed(1)} KB
-                          </p>
+            <div className="space-y-6">
+              {consignment?.stageConfirmations?.packing_completed?.confirmedAt && !consignment?.stageConfirmations?.invoice_created?.confirmedAt && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-4">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-2">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">Invoice upload</h3>
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        Invoice Creation Team must upload the invoice document before marking Invoice completed in the workflow panel.
+                      </p>
+                    </div>
+                    <label className="flex items-center gap-2 px-3 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 cursor-pointer transition-colors text-xs font-semibold">
+                      <Upload className="w-3.5 h-3.5" />
+                      {uploading ? 'Uploading…' : 'Upload invoice'}
+                      <input
+                        type="file"
+                        accept=".pdf,.doc,.docx,.xlsx,.xls,.csv,.png,.jpg,.jpeg"
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0]
+                          if (!file) return
+                          try {
+                            setUploading(true)
+                            await uploadFileToStorage(file, id, 'document', '', undefined, {
+                              purpose: 'invoice',
+                              description: 'Forward invoice',
+                            })
+                            addToast('Invoice document uploaded', 'success')
+                            fetchConsignment({ silent: true })
+                          } catch (error) {
+                            addToast('Invoice upload failed: ' + (error.response?.data?.error || error.message || 'Unknown error'), 'error')
+                          } finally {
+                            setUploading(false)
+                            e.target.value = ''
+                          }
+                        }}
+                        disabled={uploading}
+                      />
+                    </label>
+                  </div>
+                  {consignment.invoiceDocumentId ? (
+                    <p className="text-xs text-emerald-700 font-medium">
+                      Invoice document attached · confirm Invoice created in the workflow panel
+                      {consignment.forwardInvoiceNo ? ` · ${consignment.forwardInvoiceNo}` : ''}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-amber-800">No invoice document on file yet.</p>
+                  )}
+                </div>
+              )}
+
+              {consignment?.invoice && (
+                <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs grid sm:grid-cols-3 gap-2">
+                  <div>
+                    <div className="text-[10px] uppercase text-slate-500 font-semibold">Invoice number</div>
+                    <div className="font-semibold text-slate-900 mt-0.5">{consignment.invoice.number || consignment.forwardInvoiceNo || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase text-slate-500 font-semibold">Invoice date</div>
+                    <div className="font-semibold text-slate-900 mt-0.5">{consignment.invoice.date || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase text-slate-500 font-semibold">Amount</div>
+                    <div className="font-semibold text-slate-900 mt-0.5">{consignment.invoice.amount != null ? consignment.invoice.amount : '—'}</div>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
+                  <h3 className="text-lg font-semibold text-slate-900">Documents</h3>
+                  <label className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 cursor-pointer transition-colors text-sm">
+                    <Upload className="w-4 h-4" />
+                    {uploading ? 'Uploading...' : 'Upload Document'}
+                    <input
+                      type="file"
+                      accept=".pdf,.doc,.docx,.xlsx,.xls,.csv"
+                      className="hidden"
+                      onChange={(e) => handleFileUpload(e, 'document')}
+                      disabled={uploading}
+                    />
+                  </label>
+                </div>
+                <div className="space-y-3">
+                  {consignment.documents?.length > 0 ? (
+                    consignment.documents.map((doc) => (
+                      <div key={doc.id} className="flex items-center justify-between p-4 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
+                        <div className="flex items-center gap-3">
+                          <FileText className="w-8 h-8 text-primary-600" />
+                          <div>
+                            <p className="text-sm font-medium text-slate-900">
+                              {doc.originalName}
+                              {doc.purpose === 'invoice' && (
+                                <span className="ml-2 text-[10px] font-semibold uppercase text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">Invoice</span>
+                              )}
+                              {doc.purpose === 'docket' && (
+                                <span className="ml-2 text-[10px] font-semibold uppercase text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">Docket</span>
+                              )}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              {new Date(doc.uploadedAt).toLocaleDateString()} - {(doc.size / 1024).toFixed(1)} KB
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openDocument(doc)}
+                            className="p-2 text-slate-400 hover:text-primary-600 transition-colors"
+                            title="Open"
+                          >
+                            <ExternalLink className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => downloadDocument(doc)}
+                            className="p-2 text-slate-400 hover:text-emerald-600 transition-colors"
+                            title="Download"
+                          >
+                            <Download className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setDeleteFile({ id: doc.id, type: 'document', name: doc.originalName })}
+                            className="p-2 text-slate-400 hover:text-red-600 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openDocument(doc)}
-                          className="p-2 text-slate-400 hover:text-primary-600 transition-colors"
-                          title="Open"
-                        >
-                          <ExternalLink className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => downloadDocument(doc)}
-                          className="p-2 text-slate-400 hover:text-emerald-600 transition-colors"
-                          title="Download"
-                        >
-                          <Download className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => setDeleteFile({ id: doc.id, type: 'document', name: doc.originalName })}
-                          className="p-2 text-slate-400 hover:text-red-600 transition-colors"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-center py-8 text-slate-400">No documents uploaded</div>
-                )}
+                    ))
+                  ) : (
+                    <div className="text-center py-8 text-slate-400">No documents uploaded</div>
+                  )}
+                </div>
               </div>
             </div>
           )}

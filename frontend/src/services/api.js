@@ -89,11 +89,14 @@ export const consignmentsAPI = {
 
 export const workflowAPI = {
   getStages: () => api.get('/workflow/stages'),
-  getAssignees: () => api.get('/workflow/assignees'),
+  getDepartments: () => api.get('/workflow/departments'),
+  getAssignees: (params) => api.get('/workflow/assignees', { params }),
   assignGroundTeam: (id, data) => api.post(`/workflow/${id}/assign-ground-team`, data),
   confirmStage: (id, data) => api.post(`/workflow/${id}/confirm-stage`, data),
   managementBoard: () => api.get('/workflow/management-board'),
   runTatCheck: () => api.post('/workflow/run-tat-check'),
+  orgHeadSummary: () => api.get('/workflow/org-head/summary'),
+  sendWeeklyReport: (data) => api.post('/workflow/org-head/send-weekly-report', data),
 };
 
 // Uploads API

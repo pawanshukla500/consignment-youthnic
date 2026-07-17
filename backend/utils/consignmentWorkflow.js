@@ -2,11 +2,18 @@
  * Consignment operational workflow: stage gates, TAT, list priority, escalations.
  *
  * Stages (in order — each requires confirmation before the next):
- *   packing_completed → ready_for_invoice → invoice_created → ready_for_dispatch → dispatched
+ *   packing_completed → ready_for_invoice → invoice_created →
+ *   ready_for_dispatch → dispatched → inward_completed
  *
- * Packing station can still pack freely; invoice/dispatch logistics are gated
- * until ground team confirms packing_completed.
+ * Short packing is allowed when the operator supplies actual packed qty + short reason.
+ * Department-based auto-assignment runs after key stage confirmations.
  */
+
+const {
+  NEXT_ASSIGNMENT_DEPARTMENT,
+  normalizeDepartment,
+  departmentLabel,
+} = require('./departments');
 
 const STAGE_ORDER = [
   'packing_completed',
@@ -14,14 +21,16 @@ const STAGE_ORDER = [
   'invoice_created',
   'ready_for_dispatch',
   'dispatched',
+  'inward_completed',
 ];
 
 const STAGE_LABELS = {
   packing_completed: 'Packing completed',
-  ready_for_invoice: 'Ready for invoice creation',
+  ready_for_invoice: 'Ready for invoice',
   invoice_created: 'Invoice created',
   ready_for_dispatch: 'Ready for dispatch',
   dispatched: 'Dispatched',
+  inward_completed: 'Inward completed',
 };
 
 /** Default TAT hours per stage (from assignment / previous confirmation). */
@@ -31,6 +40,7 @@ const DEFAULT_TAT_HOURS = {
   invoice_created: 24,
   ready_for_dispatch: 24,
   dispatched: 48,
+  inward_completed: 72,
 };
 
 const LIST_BUCKETS = {
@@ -39,12 +49,20 @@ const LIST_BUCKETS = {
   packed_pending_invoice: 3,
   ready_for_dispatch: 4,
   shipped: 5,
-  inwarded: 6,
+  inward_pending: 6,
+  inwarded: 7,
+  archived: 8,
 };
 
 function emptyStageConfirmations() {
   return STAGE_ORDER.reduce((acc, key) => {
-    acc[key] = { confirmedAt: null, confirmedByUserId: null, confirmedByName: null, note: null };
+    acc[key] = {
+      confirmedAt: null,
+      confirmedByUserId: null,
+      confirmedByName: null,
+      note: null,
+      details: null,
+    };
     return acc;
   }, {});
 }
@@ -59,6 +77,7 @@ function normalizeStageConfirmations(raw) {
         confirmedByUserId: raw[key].confirmedByUserId || null,
         confirmedByName: raw[key].confirmedByName || null,
         note: raw[key].note || null,
+        details: raw[key].details || null,
       };
     }
   }
@@ -71,6 +90,9 @@ function isStageConfirmed(consignment, stage) {
 }
 
 function getCurrentWorkflowStage(consignment) {
+  if (consignment?.operationalStatus === 'archived' || consignment?.isArchived) {
+    return 'archived';
+  }
   for (const stage of STAGE_ORDER) {
     if (!isStageConfirmed(consignment, stage)) return stage;
   }
@@ -83,13 +105,39 @@ function getPreviousStage(stage) {
   return STAGE_ORDER[idx - 1];
 }
 
+function getPackingTotals(consignment) {
+  const planned = Number(consignment?.totalRequiredQty) || 0;
+  const packed = Number(consignment?.totalPackedQty) || 0;
+  return { planned, packed, short: Math.max(0, planned - packed) };
+}
+
+function isPackingPhysicallyDone(consignment) {
+  const { planned, packed } = getPackingTotals(consignment);
+  return consignment?.status === 'completed' || (planned > 0 && packed >= planned);
+}
+
+function hasInvoiceDocument(consignment) {
+  if (consignment?.invoiceDocumentId || consignment?.invoice?.documentId) return true;
+  const docs = consignment?.documents || consignment?.documentIds || [];
+  if (Array.isArray(docs) && docs.some((d) => {
+    if (!d) return false;
+    if (typeof d === 'string') return false;
+    const purpose = String(d.purpose || d.type || d.description || '').toLowerCase();
+    return purpose.includes('invoice');
+  })) return true;
+  return Boolean(consignment?.invoiceUploadedAt && consignment?.invoiceDocumentId);
+}
+
 /**
  * Whether confirming `stage` is allowed.
- * packing_completed also requires pack status completed (or all qty packed).
+ * packing_completed allows short pack when payload.allowShortPack + shortReason provided.
  */
-function canConfirmStage(consignment, stage) {
+function canConfirmStage(consignment, stage, payload = {}) {
   if (!STAGE_ORDER.includes(stage)) {
     return { ok: false, error: 'Unknown workflow stage.' };
+  }
+  if (consignment?.operationalStatus === 'archived' || consignment?.isArchived) {
+    return { ok: false, error: 'Archived consignments cannot change workflow stages.', code: 'ARCHIVED' };
   }
   if (isStageConfirmed(consignment, stage)) {
     return { ok: false, error: 'This stage is already confirmed.' };
@@ -103,22 +151,129 @@ function canConfirmStage(consignment, stage) {
       requiredStage: prev,
     };
   }
+
   if (stage === 'packing_completed') {
-    if (!isPackingPhysicallyDone(consignment)) {
+    const { planned, packed, short } = getPackingTotals(consignment);
+    const fullyDone = isPackingPhysicallyDone(consignment);
+    const allowShort = Boolean(payload.allowShortPack);
+    const shortReason = String(payload.shortReason || payload.reason || '').trim();
+    const actualPacked = payload.actualPackedQty != null
+      ? Number(payload.actualPackedQty)
+      : packed;
+
+    if (packed <= 0 && !(actualPacked > 0)) {
       return {
         ok: false,
-        error: 'Packing must be finished (all units packed) before ground team can confirm packing completed.',
+        error: 'No packed quantity recorded yet. Pack units before confirming packing completed.',
+        code: 'PACKING_EMPTY',
+      };
+    }
+
+    if (!fullyDone && !allowShort) {
+      return {
+        ok: false,
+        error: 'Packing is short of planned quantity. Confirm short packing with a reason, or finish packing all units.',
         code: 'PACKING_INCOMPLETE',
+        plannedQty: planned,
+        packedQty: packed,
+        shortQty: short,
+      };
+    }
+
+    if (!fullyDone && allowShort && !shortReason) {
+      return {
+        ok: false,
+        error: 'A reason is required when confirming packing completed with short quantity.',
+        code: 'SHORT_REASON_REQUIRED',
+        plannedQty: planned,
+        packedQty: packed,
+        shortQty: short,
+      };
+    }
+
+    if (actualPacked > planned && planned > 0) {
+      return {
+        ok: false,
+        error: 'Actual packed quantity cannot exceed planned shipment quantity.',
+        code: 'PACKED_EXCEEDS_PLANNED',
       };
     }
   }
-  if (stage === 'invoice_created' && !String(consignment.forwardInvoiceNo || '').trim()) {
-    return {
-      ok: false,
-      error: 'Enter forward invoice number on the consignment before confirming invoice created.',
-      code: 'INVOICE_MISSING',
-    };
+
+  if (stage === 'invoice_created') {
+    const invoiceNo = String(payload.invoiceNumber || consignment.forwardInvoiceNo || '').trim();
+    if (!invoiceNo) {
+      return {
+        ok: false,
+        error: 'Invoice number is required before confirming invoice created.',
+        code: 'INVOICE_MISSING',
+      };
+    }
+    const hasDoc = Boolean(payload.invoiceDocumentId) || hasInvoiceDocument({
+      ...consignment,
+      invoiceDocumentId: payload.invoiceDocumentId || consignment.invoiceDocumentId,
+    });
+    if (!hasDoc) {
+      return {
+        ok: false,
+        error: 'Upload the invoice document before marking invoice completed.',
+        code: 'INVOICE_DOCUMENT_REQUIRED',
+      };
+    }
   }
+
+  if (stage === 'dispatched') {
+    const docketNo = String(payload.docketNo || consignment.docketNo || '').trim();
+    const courier = String(payload.docketCompany || consignment.docketCompany || '').trim();
+    if (!docketNo) {
+      return {
+        ok: false,
+        error: 'Docket ID is required before marking dispatched.',
+        code: 'DOCKET_REQUIRED',
+      };
+    }
+    if (!courier) {
+      return {
+        ok: false,
+        error: 'Courier / transport company is required before marking dispatched.',
+        code: 'COURIER_REQUIRED',
+      };
+    }
+  }
+
+  if (stage === 'inward_completed') {
+    const dispatchedQty = Number(
+      payload.dispatchedQty
+      ?? consignment.dispatchDetails?.dispatchedQty
+      ?? consignment.totalPackedQty
+      ?? 0
+    );
+    const inwardQty = Number(
+      payload.inwardQty
+      ?? consignment.inwardDetails?.receivedQty
+      ?? consignment.unitsInwarded
+      ?? consignment.unitsReceived
+      ?? 0
+    );
+    if (!(inwardQty > 0)) {
+      return {
+        ok: false,
+        error: 'Record inward received quantity before completing inward tracking.',
+        code: 'INWARD_QTY_REQUIRED',
+      };
+    }
+    // Allow complete when inward matches dispatched/packed, or operator confirms with variance reason
+    if (dispatchedQty > 0 && inwardQty !== dispatchedQty && !String(payload.inwardVarianceReason || '').trim()) {
+      return {
+        ok: false,
+        error: 'Inward quantity differs from dispatched quantity — provide a variance / dispute reason.',
+        code: 'INWARD_VARIANCE_REASON_REQUIRED',
+        dispatchedQty,
+        inwardQty,
+      };
+    }
+  }
+
   return { ok: true };
 }
 
@@ -180,18 +335,22 @@ function getOverdueStages(consignment, now = Date.now()) {
 }
 
 function getListPriorityBucket(consignment) {
+  if (consignment?.operationalStatus === 'archived' || consignment?.isArchived) {
+    return 'archived';
+  }
   const ship = consignment.shipmentStatus || 'Planned';
   const pack = consignment.status || 'pending';
-  const inwarded = Boolean(consignment.dateOfInward);
   const packingDone = isStageConfirmed(consignment, 'packing_completed') || pack === 'completed';
   const invoiceReady = isStageConfirmed(consignment, 'ready_for_invoice');
   const invoiceDone = isStageConfirmed(consignment, 'invoice_created');
   const readyDispatch = isStageConfirmed(consignment, 'ready_for_dispatch') || ship === 'Ready';
   const dispatched = isStageConfirmed(consignment, 'dispatched')
     || ['In Transit', 'Forwarded'].includes(ship);
+  const inwardDone = isStageConfirmed(consignment, 'inward_completed')
+    || Boolean(consignment.dateOfInward);
 
-  if (inwarded || ship === 'Missed') return 'inwarded';
-  if (dispatched) return 'shipped';
+  if (inwardDone || ship === 'Missed') return 'inwarded';
+  if (dispatched) return 'inward_pending';
   if (readyDispatch && invoiceDone) return 'ready_for_dispatch';
   if (packingDone && (!invoiceDone || invoiceReady)) return 'packed_pending_invoice';
   if (pack === 'in_progress' || ship === 'Under Packing') return 'active';
@@ -208,7 +367,6 @@ function sortConsignmentsByWorkflowPriority(items = []) {
     const ra = getListPriorityRank(a);
     const rb = getListPriorityRank(b);
     if (ra !== rb) return ra - rb;
-    // Within bucket: escalated first, then earliest TAT, then dispatch criticality date
     const ea = a.isEscalated ? 0 : 1;
     const eb = b.isEscalated ? 0 : 1;
     if (ea !== eb) return ea - eb;
@@ -219,65 +377,212 @@ function sortConsignmentsByWorkflowPriority(items = []) {
   });
 }
 
-function applyStageConfirmation(consignment, stage, user, note = null) {
-  const gate = canConfirmStage(consignment, stage);
+function buildStageDetails(stage, consignment, payload = {}) {
+  if (stage === 'packing_completed') {
+    const { planned, packed } = getPackingTotals(consignment);
+    const actual = payload.actualPackedQty != null ? Number(payload.actualPackedQty) : packed;
+    const shortQty = Math.max(0, planned - actual);
+    return {
+      plannedQty: planned,
+      actualPackedQty: actual,
+      shortQty,
+      shortReason: shortQty > 0 ? String(payload.shortReason || payload.reason || '').trim() : null,
+      allowShortPack: Boolean(payload.allowShortPack) || shortQty > 0,
+    };
+  }
+  if (stage === 'invoice_created') {
+    return {
+      invoiceNumber: String(payload.invoiceNumber || consignment.forwardInvoiceNo || '').trim(),
+      invoiceDate: payload.invoiceDate || null,
+      invoiceAmount: payload.invoiceAmount != null ? Number(payload.invoiceAmount) : null,
+      invoiceDocumentId: payload.invoiceDocumentId || consignment.invoiceDocumentId || null,
+    };
+  }
+  if (stage === 'dispatched') {
+    const packed = Number(consignment.totalPackedQty) || 0;
+    return {
+      docketNo: String(payload.docketNo || consignment.docketNo || '').trim(),
+      docketCompany: String(payload.docketCompany || consignment.docketCompany || '').trim(),
+      dispatchDate: payload.dispatchDate || new Date().toISOString().slice(0, 10),
+      boxCount: payload.boxCount != null ? Number(payload.boxCount) : (consignment.boxCount || null),
+      dispatchedQty: payload.dispatchedQty != null ? Number(payload.dispatchedQty) : packed,
+      docketDocumentId: payload.docketDocumentId || null,
+    };
+  }
+  if (stage === 'inward_completed') {
+    const dispatchedQty = Number(
+      payload.dispatchedQty
+      ?? consignment.dispatchDetails?.dispatchedQty
+      ?? consignment.totalPackedQty
+      ?? 0
+    );
+    const inwardQty = Number(payload.inwardQty ?? 0);
+    return {
+      dispatchedQty,
+      receivedQty: inwardQty,
+      pendingQty: Math.max(0, dispatchedQty - inwardQty),
+      varianceQty: inwardQty - dispatchedQty,
+      inwardDate: payload.inwardDate || new Date().toISOString().slice(0, 10),
+      inwardStatus: inwardQty === dispatchedQty
+        ? 'matched'
+        : (inwardQty < dispatchedQty ? 'short' : 'excess'),
+      varianceReason: String(payload.inwardVarianceReason || '').trim() || null,
+      disputeDetails: String(payload.disputeDetails || '').trim() || null,
+    };
+  }
+  return payload.details || null;
+}
+
+function applyStageConfirmation(consignment, stage, user, note = null, payload = {}) {
+  const gate = canConfirmStage(consignment, stage, payload);
   if (!gate.ok) return { ok: false, ...gate };
 
+  const details = buildStageDetails(stage, consignment, payload);
   const stageConfirmations = normalizeStageConfirmations(consignment.stageConfirmations);
+  const confirmedAt = new Date().toISOString();
   stageConfirmations[stage] = {
-    confirmedAt: new Date().toISOString(),
+    confirmedAt,
     confirmedByUserId: user?.id || null,
     confirmedByName: user?.name || user?.email || null,
-    note: note || null,
+    note: note || payload.note || null,
+    details,
   };
 
+  // Auto-advance machine stages that do not need a separate human click
+  const autoStages = [];
+  if (stage === 'packing_completed' && !stageConfirmations.ready_for_invoice?.confirmedAt) {
+    stageConfirmations.ready_for_invoice = {
+      confirmedAt,
+      confirmedByUserId: 'system',
+      confirmedByName: 'System',
+      note: 'Auto-advanced after packing completed — assigned to Invoice Creation Team',
+      details: { auto: true },
+    };
+    autoStages.push('ready_for_invoice');
+  }
+  if (stage === 'invoice_created' && !stageConfirmations.ready_for_dispatch?.confirmedAt) {
+    stageConfirmations.ready_for_dispatch = {
+      confirmedAt,
+      confirmedByUserId: 'system',
+      confirmedByName: 'System',
+      note: 'Auto-advanced after invoice completed — ready for dispatch team',
+      details: { auto: true },
+    };
+    autoStages.push('ready_for_dispatch');
+  }
+
+  const nextConsignment = { ...consignment, stageConfirmations };
   const updates = {
     stageConfirmations,
     tatDeadlines: refreshTatFromStage(consignment, stage),
-    currentWorkflowStage: getCurrentWorkflowStage({ ...consignment, stageConfirmations }),
-    pendingAction: getPendingActionLabel({ ...consignment, stageConfirmations }),
-    updatedAt: new Date().toISOString(),
+    currentWorkflowStage: getCurrentWorkflowStage(nextConsignment),
+    pendingAction: getPendingActionLabel(nextConsignment),
+    updatedAt: confirmedAt,
+    assignedDepartment: null,
   };
 
-  // Keep shipmentStatus aligned with confirmed logistics stages
-  if (stage === 'packing_completed' && !['Ready', 'In Transit', 'Forwarded'].includes(consignment.shipmentStatus)) {
-    // Stay Under Packing until ready_for_invoice / invoice — packing done ops-wise
-    updates.workflowPackingConfirmedAt = updates.stageConfirmations.packing_completed.confirmedAt;
-  }
-  if (stage === 'ready_for_dispatch') {
-    updates.shipmentStatus = 'Ready';
-  }
-  if (stage === 'dispatched') {
-    updates.shipmentStatus = 'In Transit';
-    if (!consignment.actualDispatchDate) {
-      updates.actualDispatchDate = new Date().toISOString().slice(0, 10);
+  if (stage === 'packing_completed') {
+    updates.workflowPackingConfirmedAt = confirmedAt;
+    updates.packingCompletion = {
+      ...details,
+      completedByUserId: user?.id || null,
+      completedByName: user?.name || user?.email || null,
+      completedAt: confirmedAt,
+    };
+    if (details.shortQty > 0) {
+      updates.status = 'completed'; // operational packing closed for short-dispatch path
+    } else if (isPackingPhysicallyDone(consignment)) {
+      updates.status = 'completed';
     }
   }
 
-  // Clear escalation when progress is made
+  if (stage === 'invoice_created') {
+    updates.forwardInvoiceNo = details.invoiceNumber;
+    updates.invoice = {
+      number: details.invoiceNumber,
+      date: details.invoiceDate,
+      amount: details.invoiceAmount,
+      documentId: details.invoiceDocumentId,
+      uploadedByUserId: user?.id || null,
+      uploadedByName: user?.name || user?.email || null,
+      uploadedAt: confirmedAt,
+    };
+    updates.invoiceDocumentId = details.invoiceDocumentId;
+    updates.invoiceUploadedAt = confirmedAt;
+  }
+
+  if (autoStages.includes('ready_for_dispatch') || stage === 'ready_for_dispatch') {
+    updates.shipmentStatus = 'Ready';
+  }
+
+  if (stage === 'dispatched') {
+    updates.shipmentStatus = 'In Transit';
+    updates.docketNo = details.docketNo;
+    updates.docketCompany = details.docketCompany;
+    updates.actualDispatchDate = details.dispatchDate;
+    updates.dispatchDetails = {
+      ...details,
+      completedByUserId: user?.id || null,
+      completedByName: user?.name || user?.email || null,
+      completedAt: confirmedAt,
+    };
+    updates.unitsShipped = details.dispatchedQty;
+  }
+
+  if (stage === 'inward_completed') {
+    updates.dateOfInward = details.inwardDate;
+    updates.unitsInwarded = details.receivedQty;
+    updates.unitsReceived = details.receivedQty;
+    updates.inwardDetails = {
+      ...details,
+      completedByUserId: user?.id || null,
+      completedByName: user?.name || user?.email || null,
+      completedAt: confirmedAt,
+    };
+    // Auto-archive when inward matches (or variance accepted)
+    updates.operationalStatus = 'archived';
+    updates.isArchived = true;
+    updates.archivedAt = confirmedAt;
+    updates.archivedReason = details.inwardStatus === 'matched'
+      ? 'Inward quantity verified — moved to archive'
+      : 'Inward completed with recorded variance — moved to archive';
+  }
+
+  const assignDept = NEXT_ASSIGNMENT_DEPARTMENT[stage];
+  if (assignDept) {
+    updates.assignedDepartment = assignDept;
+    updates.assignedDepartmentLabel = departmentLabel(assignDept);
+    updates.departmentAssignedAt = confirmedAt;
+  }
+
   if (consignment.isEscalated) {
     updates.isEscalated = false;
     updates.escalationLevel = 0;
     updates.escalationReason = null;
   }
 
-  return { ok: true, updates };
-}
+  // Recompute labels after auto-stages
+  const finalSnap = { ...consignment, ...updates, stageConfirmations };
+  updates.currentWorkflowStage = getCurrentWorkflowStage(finalSnap);
+  updates.pendingAction = getPendingActionLabel(finalSnap);
 
-function isPackingPhysicallyDone(consignment) {
-  const packed = Number(consignment?.totalPackedQty) || 0;
-  const required = Number(consignment?.totalRequiredQty) || 0;
-  return consignment?.status === 'completed' || (required > 0 && packed >= required);
+  return {
+    ok: true,
+    updates,
+    autoStages,
+    assignDepartment: assignDept || null,
+  };
 }
 
 /**
  * Human-readable next action for list / emails.
- * Do not use past-tense stage names when packing has not actually finished —
- * otherwise the consignments tab shows "Packing completed" on brand-new rows.
  */
 function getPendingActionLabel(consignment) {
+  if (consignment?.operationalStatus === 'archived' || consignment?.isArchived) {
+    return null;
+  }
   const stage = getCurrentWorkflowStage(consignment);
-  if (!stage || stage === 'completed') return null;
+  if (!stage || stage === 'completed' || stage === 'archived') return null;
 
   if (stage === 'packing_completed') {
     if (isPackingPhysicallyDone(consignment)) {
@@ -286,10 +591,14 @@ function getPendingActionLabel(consignment) {
     const packed = Number(consignment?.totalPackedQty) || 0;
     const status = consignment?.status || 'pending';
     if (status === 'in_progress' || packed > 0) {
-      return 'Finish packing';
+      return 'Finish packing (or confirm short packing)';
     }
     return 'Packing not started';
   }
+
+  if (stage === 'invoice_created') return 'Upload invoice & mark invoice completed';
+  if (stage === 'dispatched') return 'Enter docket details & mark dispatched';
+  if (stage === 'inward_completed') return 'Record inward quantities';
 
   return STAGE_LABELS[stage] || null;
 }
@@ -301,16 +610,26 @@ function enrichWorkflowFields(consignment) {
   const currentWorkflowStage = getCurrentWorkflowStage(withStages);
   const overdueStages = getOverdueStages(withStages);
   const listPriorityBucket = getListPriorityBucket(withStages);
+  const packing = getPackingTotals(withStages);
   return {
     ...consignment,
     stageConfirmations,
     currentWorkflowStage,
-    currentWorkflowStageLabel: STAGE_LABELS[currentWorkflowStage] || 'Complete',
+    currentWorkflowStageLabel: currentWorkflowStage === 'archived'
+      ? 'Archived'
+      : (STAGE_LABELS[currentWorkflowStage] || 'Complete'),
     pendingAction: getPendingActionLabel(withStages),
     overdueStages,
     isTatOverdue: overdueStages.length > 0,
     listPriorityBucket,
     listPriorityRank: LIST_BUCKETS[listPriorityBucket],
+    isArchived: Boolean(consignment.operationalStatus === 'archived' || consignment.isArchived),
+    operationalStatus: consignment.operationalStatus || (consignment.isArchived ? 'archived' : 'active'),
+    packingTotals: packing,
+    assignedDepartment: consignment.assignedDepartment || null,
+    assignedDepartmentLabel: consignment.assignedDepartmentLabel
+      || departmentLabel(consignment.assignedDepartment)
+      || null,
     workflowStages: STAGE_ORDER.map((key) => ({
       key,
       label: STAGE_LABELS[key],
@@ -352,8 +671,8 @@ function buildWeeklyReportSummary(consignments = []) {
       pendingInvoice += 1;
     }
     if (bucket === 'ready_for_dispatch') packed += 1;
-    if (bucket === 'shipped') dispatched += 1;
-    if (bucket === 'inwarded') inwarded += 1;
+    if (bucket === 'inward_pending' || bucket === 'shipped') dispatched += 1;
+    if (bucket === 'inwarded' || bucket === 'archived') inwarded += 1;
     if (c.isTatOverdue || c.isEscalated) delayed += 1;
 
     const assignee = c.groundTeamUserId || c.groundTeamName || 'Unassigned';
@@ -419,6 +738,23 @@ function buildWeeklyReportSummary(consignments = []) {
   };
 }
 
+function canArchiveConsignment(consignment) {
+  if (consignment?.operationalStatus === 'archived' || consignment?.isArchived) {
+    return { ok: false, error: 'Already archived.', code: 'ALREADY_ARCHIVED' };
+  }
+  if (isStageConfirmed(consignment, 'inward_completed')) {
+    return { ok: true };
+  }
+  if (consignment?.dateOfInward && isStageConfirmed(consignment, 'dispatched')) {
+    return { ok: true, reason: 'legacy_inward_date' };
+  }
+  return {
+    ok: false,
+    error: 'Complete inward tracking before archiving.',
+    code: 'INWARD_REQUIRED',
+  };
+}
+
 module.exports = {
   STAGE_ORDER,
   STAGE_LABELS,
@@ -439,5 +775,9 @@ module.exports = {
   enrichWorkflowFields,
   getPendingActionLabel,
   isPackingPhysicallyDone,
+  getPackingTotals,
+  hasInvoiceDocument,
+  canArchiveConsignment,
   buildWeeklyReportSummary,
+  normalizeDepartment,
 };

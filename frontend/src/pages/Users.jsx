@@ -52,11 +52,22 @@ const FULL_ACCESS_PERMISSIONS = {
   editBoxQuantities: true,
 }
 
+const DEPARTMENT_OPTIONS = [
+  { key: '', label: '— Select department —' },
+  { key: 'packing', label: 'Packing Team' },
+  { key: 'ground_team', label: 'Ground Team' },
+  { key: 'invoice', label: 'Invoice Creation Team' },
+  { key: 'dispatch', label: 'Dispatch Team' },
+  { key: 'inward', label: 'Inward Tracking Team' },
+  { key: 'management', label: 'Admin / Management' },
+]
+
 const emptyForm = () => ({
   name: '',
   email: '',
   password: '',
   role: 'user',
+  department: '',
   permissions: { ...DEFAULT_PERMISSIONS },
 })
 
@@ -148,7 +159,7 @@ export default function Users() {
   const [selected, setSelected] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [editing, setEditing] = useState(null)
-  const [editForm, setEditForm] = useState({ name: '', email: '', role: 'user', permissions: {} })
+  const [editForm, setEditForm] = useState({ name: '', email: '', role: 'user', department: '', permissions: {} })
   const [showChangePwd, setShowChangePwd] = useState(null)
   const [pwdForm, setPwdForm] = useState({ newPassword: '', confirmPassword: '' })
   const [form, setForm] = useState(emptyForm)
@@ -222,6 +233,7 @@ export default function Users() {
       name: u.name,
       email: u.email,
       role: u.role || 'user',
+      department: u.department || (u.role === 'admin' || u.role === 'organization_head' ? 'management' : ''),
       permissions: permissionsForRole(u.role || 'user', u.permissions || {}),
     })
   }
@@ -309,6 +321,7 @@ export default function Users() {
               <tr>
                 <th className="text-left">User</th>
                 <th className="text-left">Role</th>
+                <th className="text-left">Department</th>
                 <th className="text-left">Permissions</th>
                 <th className="text-right">Actions</th>
               </tr>
@@ -316,7 +329,7 @@ export default function Users() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="4" className="py-10 text-center">
+                  <td colSpan="5" className="py-10 text-center">
                     <Loader2 className="w-6 h-6 animate-spin mx-auto text-primary-600" />
                   </td>
                 </tr>
@@ -382,6 +395,23 @@ export default function Users() {
                         }`}>
                           <Shield className="w-2.5 h-2.5" />
                           {u.role === 'organization_head' ? 'Org Head' : u.role}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {editing === u.id ? (
+                        <select
+                          value={editForm.department || ''}
+                          onChange={(e) => setEditForm({ ...editForm, department: e.target.value })}
+                          className="inp py-1.5 text-xs w-auto min-w-[140px]"
+                        >
+                          {DEPARTMENT_OPTIONS.map((d) => (
+                            <option key={d.key || 'none'} value={d.key}>{d.label}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="text-[10px] text-slate-600">
+                          {DEPARTMENT_OPTIONS.find((d) => d.key === u.department)?.label || '—'}
                         </span>
                       )}
                     </td>
@@ -459,7 +489,7 @@ export default function Users() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan="4" className="py-10 text-center text-slate-400 text-xs">
+                  <td colSpan="5" className="py-10 text-center text-slate-400 text-xs">
                     <UsersIcon className="w-8 h-8 mx-auto mb-2 text-slate-300" />
                     No users found
                   </td>
@@ -551,6 +581,7 @@ export default function Users() {
                   setForm({
                     ...form,
                     role,
+                    department: role === 'admin' || role === 'organization_head' ? 'management' : form.department,
                     permissions: permissionsForRole(role, form.permissions),
                   })
                 }}
@@ -560,6 +591,21 @@ export default function Users() {
                 <option value="organization_head">Organization Head — full access + Tue/Fri emails</option>
                 <option value="admin">Admin — full access</option>
               </select>
+            </div>
+            <div>
+              <label className="block text-[11px] font-medium text-slate-600 mb-1">Department</label>
+              <select
+                value={form.department}
+                onChange={(e) => setForm({ ...form, department: e.target.value })}
+                className="inp py-1.5 text-xs"
+              >
+                {DEPARTMENT_OPTIONS.map((d) => (
+                  <option key={d.key || 'none'} value={d.key}>{d.label}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-slate-500 mt-1">
+                Controls automatic workflow assignment (invoice, dispatch, inward).
+              </p>
             </div>
           </div>
 
