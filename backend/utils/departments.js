@@ -87,7 +87,7 @@ function departmentLabel(key) {
 
 function userCanConfirmStage(user, stage, consignment = null) {
   if (!user) return false;
-  if (user.role === 'admin') return true;
+  if (user.role === 'admin' || user.role === 'organization_head') return true;
   const dept = normalizeDepartment(user.department);
   if (dept === 'management') return true;
   const allowed = STAGE_DEPARTMENTS[stage] || [];
