@@ -16,9 +16,12 @@ Public app URL target: **`https://consignment.youthnic.shop`**
 ## PR → continuous deploy (recommended flow)
 
 1. Create a **feature branch** and open a **Pull Request** into `main`
-2. Review / merge the PR
-3. Merge to `main` triggers **Deploy to Cloud Run** automatically
-4. Pipeline syncs secrets, builds, deploys, then checks `/api/health` for **`database: connected`**
+2. PR events run **`Lint · Build · Test · Audit` only** (no Cloud Run deploy, no secret sync)
+3. Review / merge the PR after the quality-gate check is green
+4. Merge to `main` triggers **Deploy to Cloud Run** automatically
+5. Pipeline syncs secrets, builds, deploys, then checks `/api/health` for **`database: connected`**
+
+Configure required status checks manually: see **`docs/BRANCH_PROTECTION.md`**.
 
 **Do not** enable Cloud Run “deploy from repository” — that path has **no** `DATABASE_URL` / JWT secrets and will break the DB.
 

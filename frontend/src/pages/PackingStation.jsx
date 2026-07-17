@@ -9,6 +9,7 @@ import {
   appendRecordingChunk,
   markRecordingSessionStorageFailed,
   inspectChunkWriteSettlements,
+  canStartRecordingSafely,
 } from '../utils/videoQueue';
 import {
   processVideoUploadQueue,
@@ -757,6 +758,17 @@ export default function PackingStation() {
     try {
       const persistResult = await requestPersistentStorage();
       const storageEstimate = await estimateBrowserStorage();
+      const backpressure = await canStartRecordingSafely(storageEstimate);
+      if (!backpressure.allowed) {
+        const detail = [
+          ...backpressure.blockers,
+          '',
+          'Actions:',
+          ...backpressure.actions.map((a) => `• ${a}`),
+        ].join('\n');
+        toast(detail, 'error', 12000);
+        return;
+      }
       if (isStorageInsufficient(storageEstimate, VIDEO_UPLOAD_CONFIG.minFreeStorageMb || MIN_RECOMMENDED_FREE_MB)) {
         toast(
           `Low browser storage — ${formatStorageMessage(storageEstimate)} Free space before a long recording.`,
@@ -825,13 +837,33 @@ export default function PackingStation() {
         recordedBytesRef.current += e.data.size;
         const mb = recordedBytesRef.current / (1024 * 1024);
         setRecSize(mb.toFixed(1) + ' MB');
-        // Soft warnings only — never stop recording (no frame/data loss)
         if (!sizeWarnRef.current && mb >= VIDEO_SIZE_WARN_MB) {
           sizeWarnRef.current = 'warn';
           toast(`Box video ~${mb.toFixed(0)} MB — consider NEXT BOX soon for faster sync`, 'warning', 5000);
         } else if (sizeWarnRef.current !== 'high' && mb >= VIDEO_SIZE_HIGH_MB) {
           sizeWarnRef.current = 'high';
           toast(`Box video ~${mb.toFixed(0)} MB — finish this box; upload will continue in background`, 'warning', 6000);
+        }
+        // Controlled stop before hard max so the video remains uploadable (no silent truncate).
+        // Multi-segment continuation requires an approved schema change — see docs/VIDEO_SEGMENT_PROPOSAL.md
+        if (
+          sizeWarnRef.current !== 'soft_stop'
+          && recordedBytesRef.current >= VIDEO_UPLOAD_CONFIG.softStopBytes
+        ) {
+          sizeWarnRef.current = 'soft_stop';
+          toast(
+            `Box video reached ~${mb.toFixed(0)} MB (near ${(VIDEO_UPLOAD_CONFIG.maxVideoBytes / (1024 * 1024)).toFixed(0)} MB max). `
+            + 'Stopping this segment safely — save/NEXT BOX. Evidence is kept; multi-segment support pending approval.',
+            'warning',
+            10000
+          );
+          try {
+            if (mediaRecorderRef.current?.state === 'recording') {
+              mediaRecorderRef.current.stop();
+            }
+          } catch (stopErr) {
+            console.warn('[Video] Soft-stop failed:', stopErr);
+          }
         }
       }
     };
@@ -996,10 +1028,13 @@ export default function PackingStation() {
         }
       }
 
-      const { getOutstandingVideos, countOpenRecordingSessions } = await import('../utils/videoQueue');
+      const {
+        getActiveOutstandingVideos,
+        countOpenRecordingSessions,
+      } = await import('../utils/videoQueue');
       const [outstanding, openSessions] = await Promise.all([
-        getOutstandingVideos(cid),
-        countOpenRecordingSessions(),
+        getActiveOutstandingVideos(cid),
+        countOpenRecordingSessions(cid),
       ]);
       if (drainOk && outstanding.length === 0 && openSessions === 0) {
         setShowUpload(false);
@@ -1016,8 +1051,20 @@ export default function PackingStation() {
       await new Promise((r) => setTimeout(r, 800));
     }
 
-    const { getOutstandingVideos } = await import('../utils/videoQueue');
-    const left = await getOutstandingVideos(cid);
+    const {
+      getActiveOutstandingVideos,
+      countOpenRecordingSessions,
+    } = await import('../utils/videoQueue');
+    const [left, openLeft] = await Promise.all([
+      getActiveOutstandingVideos(cid),
+      countOpenRecordingSessions(cid),
+    ]);
+    if (openLeft > 0) {
+      throw new Error(
+        `Recording session still open for this consignment (${openLeft}). `
+        + 'Finalize or recover the recording before finishing.'
+      );
+    }
     if (left.length) {
       const boxes = [...new Set(left.map((v) => v.metadata?.boxNo).filter(Boolean))].join(', ');
       throw new Error(`Video upload incomplete for Box ${boxes || '?'}. Stay online and retry.`);
@@ -1561,11 +1608,16 @@ export default function PackingStation() {
   };
 
   const discardFailedVideoUploads = async () => {
-    if (!window.confirm('Discard all failed packing videos cached in this browser? Successfully uploaded cloud videos are not deleted.')) {
+    if (!window.confirm(
+      'WARNING: Permanently discard all FAILED packing videos cached in this browser?\n\n'
+      + 'This deletes local evidence that was never verified in cloud storage.\n'
+      + 'Successfully uploaded cloud videos are not deleted.\n\n'
+      + 'Only continue if an administrator/operator explicitly authorizes discard.'
+    )) {
       return;
     }
     const { clearFailedVideos } = await import('../utils/videoQueue');
-    const cleared = await clearFailedVideos();
+    const cleared = await clearFailedVideos({ confirmDestructive: true });
     toast(cleared ? `Discarded ${cleared} failed video(s)` : 'No failed videos to discard', cleared ? 'success' : 'info', 3500);
     await refreshUploadLogFromQueue();
     await updatePendingCount();

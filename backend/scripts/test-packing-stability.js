@@ -77,6 +77,17 @@ assert.ok(packingStationSrc.includes('boxVideoStatuses') || packingStationSrc.in
 assert.ok(uploadsSrc.includes('list-parts') || uploadsSrc.includes('listMultipartParts'), 'API must list multipart parts for resume');
 assert.ok(storageSrc.includes('ListPartsCommand') || storageSrc.includes('listMultipartParts'), 'storage must implement ListParts');
 assert.ok(uploadsSrc.includes('verifying'), 'video-status API must accept verifying');
+assert.ok(videoQueueSrc.includes('SUPERSEDED') || videoQueueSrc.includes('superseded'), 'must supersede not auto-delete prior box videos');
+assert.ok(videoQueueSrc.includes('withIdbTransaction') || videoQueueSrc.includes('oncomplete'), 'IDB writes must await transaction commit');
+assert.ok(workerSrc.includes('immediateRetry'), 'worker must gate immediate retry separately from polling');
+assert.ok(!/await unlockOutstandingForImmediateRetry\(\)\s*\n\s*const pending/.test(workerSrc)
+  || workerSrc.includes('if (runOpts.immediateRetry'), 'normal poll must not always unlock backoff');
+assert.ok(workerSrc.includes('response.verified === true') || workerSrc.includes('verified: response.verified === true'), 'worker must require verified===true');
+assert.ok(workerSrc.includes('decideMultipartRecovery') || workerSrc.includes('object-head'), 'worker must recover after multipart complete crash');
+assert.ok(storageSrc.includes('evaluateStorageObjectIntegrity') || storageSrc.includes('STORAGE_OBJECT_TRUNCATED'), 'storage must verify size/MIME');
+assert.ok(packingStationSrc.includes('getActiveOutstandingVideos') || packingStationSrc.includes('countOpenRecordingSessions(cid)'), 'finish must check consignment open sessions');
+assert.ok(packingStationSrc.includes('canStartRecordingSafely') || packingStationSrc.includes('backpressure'), 'recording must enforce storage backpressure');
+assert.ok(fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'deploy.yml'), 'utf8').includes('pull_request'), 'quality gates must run on PRs');
 
 const { rebuildSessionSkuTotalsFromBoxes } = require('../utils/packingQuantities');
 

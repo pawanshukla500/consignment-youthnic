@@ -66,6 +66,8 @@ export async function processVideoUploadQueue(opts = {}) {
     retryFailed = false,
     wait = false,
     forceNow = false,
+    /** Bypass nextAttemptAt once — only for user Retry, online, finish, or recovery. */
+    immediateRetry = false,
     timeoutMs = VIDEO_UPLOAD_CONFIG.drainSliceTimeoutMs,
   } = opts
 
@@ -80,7 +82,10 @@ export async function processVideoUploadQueue(opts = {}) {
   }
 
   if (!wait) {
-    worker.postMessage({ type: 'PROCESS_QUEUE', payload: { retryFailed, forceNow } })
+    worker.postMessage({
+      type: 'PROCESS_QUEUE',
+      payload: { retryFailed, forceNow, immediateRetry },
+    })
     return createDrainResult({ ok: true, done: true })
   }
 
@@ -88,7 +93,12 @@ export async function processVideoUploadQueue(opts = {}) {
     const requestId = drainWaiters.register({ resolve, reject, timeoutMs })
     worker.postMessage({
       type: 'PROCESS_QUEUE',
-      payload: { retryFailed, forceNow: true, requestId },
+      payload: {
+        retryFailed,
+        forceNow: true,
+        immediateRetry: Boolean(immediateRetry || retryFailed),
+        requestId,
+      },
     })
   })
 }
@@ -258,8 +268,13 @@ export function initVideoUploadService() {
     })
   }
 
-  onlineHandler = () => processVideoUploadQueue({ wait: false, forceNow: true })
+  onlineHandler = () => processVideoUploadQueue({
+    wait: false,
+    forceNow: true,
+    immediateRetry: true,
+  })
   visibilityHandler = () => {
+    // Visibility alone is not an immediate-retry event — respect backoff
     if (!document.hidden) processVideoUploadQueue({ wait: false, forceNow: true })
   }
   authTokenHandler = (e) => {

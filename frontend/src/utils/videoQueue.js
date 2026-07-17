@@ -3,16 +3,22 @@
  *
  * Architecture:
  *  - recordingChunks store: incremental 1s MediaRecorder slices persisted during recording
- *    (crash-safe — survives tab close mid-box)
  *  - videoQueue store: finalized per-box blobs awaiting cloud upload
- *  - Local blobs are deleted only after server metadata + R2 HeadObject verification
+ *  - Unverified local blobs are never automatically deleted
+ *  - Replacement recordings mark prior rows `superseded` (blob retained) until verified
+ *  - IndexedDB writes resolve only after transaction.oncomplete
  */
 import { VIDEO_STATUS, VIDEO_UPLOAD_CONFIG } from './videoUploadConfig'
+import { idbRequest, withIdbTransaction } from './idbWrite'
 import {
+  evaluateRecordingBackpressure,
+  isActiveOutstandingStatus,
   isOutstandingStatus,
+  isSupersededStatus,
   isUploadReady,
   normalizeQueueStatus,
   nextRetryState,
+  planSupersedeForBox,
   queueCapWarning,
 } from './videoUploadPipeline'
 
@@ -48,48 +54,43 @@ function openDB() {
   })
 }
 
-// ── Recording sessions (incremental chunk persistence) ───────────────────────
+// ── Recording sessions ───────────────────────────────────────────────────────
 
 export async function startRecordingSession(metadata) {
   const sessionId = `${metadata.consignmentId}_box_${metadata.boxNo}_${Date.now()}`
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(CHUNK_STORE, 'readwrite')
-    const store = tx.objectStore(CHUNK_STORE)
-    const req = store.add({
+  return withIdbTransaction(db, CHUNK_STORE, 'readwrite', async (stores) => {
+    await idbRequest(stores[CHUNK_STORE].add({
       sessionId,
       chunkIndex: -1,
       isMeta: true,
       metadata: { ...metadata, sessionId },
       createdAt: Date.now(),
-    })
-    req.onsuccess = () => resolve(sessionId)
-    req.onerror = () => reject(req.error)
+    }))
+    return sessionId
   })
 }
 
 export async function appendRecordingChunk(sessionId, chunkIndex, blob) {
   if (!blob?.size) return
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(CHUNK_STORE, 'readwrite')
-    const store = tx.objectStore(CHUNK_STORE)
-    const req = store.add({ sessionId, chunkIndex, blob, createdAt: Date.now() })
-    req.onsuccess = () => resolve()
-    req.onerror = () => reject(req.error)
+  return withIdbTransaction(db, CHUNK_STORE, 'readwrite', async (stores) => {
+    await idbRequest(stores[CHUNK_STORE].add({
+      sessionId,
+      chunkIndex,
+      blob,
+      createdAt: Date.now(),
+    }))
   })
 }
 
-/** Mark a recording session as locally failed (quota / IndexedDB write error). Keeps chunks for recovery. */
 export async function markRecordingSessionStorageFailed(sessionId, reason = 'storage_failed') {
   if (!sessionId) return null
   const rows = await getSessionChunks(sessionId)
   const metaRow = rows.find((r) => r.isMeta)
   if (!metaRow) return null
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(CHUNK_STORE, 'readwrite')
-    const store = tx.objectStore(CHUNK_STORE)
+  return withIdbTransaction(db, CHUNK_STORE, 'readwrite', async (stores) => {
     const next = {
       ...metaRow,
       status: 'storage_failed',
@@ -102,9 +103,8 @@ export async function markRecordingSessionStorageFailed(sessionId, reason = 'sto
         lastError: String(reason || 'storage_failed'),
       },
     }
-    const req = store.put(next)
-    req.onsuccess = () => resolve(next)
-    req.onerror = () => reject(req.error)
+    await idbRequest(stores[CHUNK_STORE].put(next))
+    return next
   })
 }
 
@@ -113,10 +113,6 @@ export async function getRecordingSessionMeta(sessionId) {
   return rows.find((r) => r.isMeta) || null
 }
 
-/**
- * Inspect Promise.allSettled results for MediaRecorder chunk writes.
- * Returns { ok, failedCount, errors } — caller must not finalize when ok is false.
- */
 export function inspectChunkWriteSettlements(settlements = []) {
   const errors = []
   for (const item of settlements) {
@@ -134,29 +130,23 @@ export function inspectChunkWriteSettlements(settlements = []) {
 
 async function getSessionChunks(sessionId) {
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(CHUNK_STORE, 'readonly')
-    const store = tx.objectStore(CHUNK_STORE)
-    const idx = store.index('sessionId')
-    const req = idx.getAll(sessionId)
-    req.onsuccess = () => resolve(req.result || [])
-    req.onerror = () => reject(req.error)
-  })
+  return withIdbTransaction(db, CHUNK_STORE, 'readonly', async (stores) => {
+    const idx = stores[CHUNK_STORE].index('sessionId')
+    return idbRequest(idx.getAll(sessionId))
+  }).then((rows) => rows || [])
 }
 
 async function deleteSessionChunks(sessionId) {
   const db = await openDB()
   const rows = await getSessionChunks(sessionId)
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(CHUNK_STORE, 'readwrite')
-    const store = tx.objectStore(CHUNK_STORE)
-    for (const row of rows) store.delete(row.id)
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error)
+  if (!rows.length) return
+  return withIdbTransaction(db, CHUNK_STORE, 'readwrite', async (stores) => {
+    for (const row of rows) {
+      await idbRequest(stores[CHUNK_STORE].delete(row.id))
+    }
   })
 }
 
-/** Merge persisted chunks into a single blob and enqueue for upload. */
 export async function finalizeRecordingSession(sessionId) {
   const rows = await getSessionChunks(sessionId)
   if (!rows.length) return null
@@ -178,36 +168,26 @@ export async function finalizeRecordingSession(sessionId) {
     .sort((a, b) => a.chunkIndex - b.chunkIndex)
 
   if (!metadata || chunks.length === 0) {
-    // Keep empty/incomplete sessions for orphan recovery instead of silent wipe.
     return null
   }
 
   const blob = new Blob(chunks.map((c) => c.blob), { type: metadata.mimeType || 'video/webm' })
   if (blob.size < 1000) {
-    // Too small to be a valid recording — keep chunks for recovery / diagnosis.
     const err = new Error('Recording too short or empty — keep recording longer before saving the box.')
     err.code = 'VIDEO_TOO_SMALL'
     throw err
   }
 
-  // Enqueue first; only delete chunks after the queue write succeeds (no data loss).
   const queueId = await saveVideoToQueue(blob, metadata)
   await deleteSessionChunks(sessionId)
   return { queueId, blob, metadata, size: blob.size }
 }
 
-/** Recover recordings that were interrupted before finalize (tab crash / power loss). */
 export async function recoverOrphanedRecordings() {
   const db = await openDB()
-  const sessionIds = await new Promise((resolve, reject) => {
-    const tx = db.transaction(CHUNK_STORE, 'readonly')
-    const store = tx.objectStore(CHUNK_STORE)
-    const req = store.getAll()
-    req.onsuccess = () => {
-      const ids = [...new Set((req.result || []).map((r) => r.sessionId).filter(Boolean))]
-      resolve(ids)
-    }
-    req.onerror = () => reject(req.error)
+  const sessionIds = await withIdbTransaction(db, CHUNK_STORE, 'readonly', async (stores) => {
+    const all = await idbRequest(stores[CHUNK_STORE].getAll())
+    return [...new Set((all || []).map((r) => r.sessionId).filter(Boolean))]
   })
 
   const recovered = []
@@ -228,76 +208,101 @@ export async function recoverOrphanedRecordings() {
   return recovered
 }
 
-export async function countOpenRecordingSessions() {
+/** Count open recording sessions, optionally filtered by consignment. */
+export async function countOpenRecordingSessions(consignmentId = null) {
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(CHUNK_STORE, 'readonly')
-    const store = tx.objectStore(CHUNK_STORE)
-    const req = store.getAll()
-    req.onsuccess = () => {
-      const ids = new Set((req.result || []).map((r) => r.sessionId).filter(Boolean))
-      resolve(ids.size)
-    }
-    req.onerror = () => reject(req.error)
+  return withIdbTransaction(db, CHUNK_STORE, 'readonly', async (stores) => {
+    const all = await idbRequest(stores[CHUNK_STORE].getAll())
+    const metaRows = (all || []).filter((r) => r.isMeta)
+    const filtered = consignmentId
+      ? metaRows.filter((r) => String(r.metadata?.consignmentId || '') === String(consignmentId))
+      : metaRows
+    return new Set(filtered.map((r) => r.sessionId).filter(Boolean)).size
   })
 }
 
-// ── Upload queue ────────────────────────────────────────────────────────────
+// ── Upload queue ─────────────────────────────────────────────────────────────
 
 async function getAllQueueRows() {
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly')
-    const store = tx.objectStore(STORE_NAME)
-    const req = store.getAll()
-    req.onsuccess = () => resolve(req.result || [])
-    req.onerror = () => reject(req.error)
+  return withIdbTransaction(db, STORE_NAME, 'readonly', async (stores) => {
+    const all = await idbRequest(stores[STORE_NAME].getAll())
+    return all || []
   })
 }
 
 export async function patchVideoQueueEntry(id, patch = {}) {
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
-    const getReq = store.get(id)
-    getReq.onsuccess = () => {
-      const data = getReq.result
-      if (!data) {
-        resolve(null)
-        return
-      }
-      Object.assign(data, patch, { updatedAt: Date.now() })
-      store.put(data)
-      resolve(data)
+  return withIdbTransaction(db, STORE_NAME, 'readwrite', async (stores) => {
+    const data = await idbRequest(stores[STORE_NAME].get(id))
+    if (!data) return null
+    const next = { ...data, ...patch, updatedAt: Date.now() }
+    // Never drop the Blob unless explicitly requested
+    if (!Object.prototype.hasOwnProperty.call(patch, 'blob')) {
+      next.blob = data.blob
     }
-    getReq.onerror = () => reject(getReq.error)
+    await idbRequest(stores[STORE_NAME].put(next))
+    return next
   })
 }
 
-/** Persist multipart uploadId + completed part ETags for resumable retries. */
-export async function saveMultipartProgress(id, multipart) {
+export async function saveMultipartProgress(id, multipart, uploadPhase = null) {
   const patch = { multipart: multipart || null }
-  // Do not clear a completed object path while multipart is still in progress
   if (multipart?.storagePath) patch.resumeStoragePath = multipart.storagePath
+  if (uploadPhase) patch.status = uploadPhase
   return patchVideoQueueEntry(id, patch)
 }
 
-export async function saveVideoToQueue(blob, metadata) {
-  // New recording for a box replaces any stuck pending/failed clips for that box.
-  await clearVideosForBox(metadata?.consignmentId, metadata?.boxNo)
+/**
+ * Mark prior active videos for this box as superseded (retain blobs).
+ * Returns ids that were superseded.
+ */
+export async function supersedeVideosForBox(consignmentId, boxNo, keepId = null) {
+  if (!consignmentId || boxNo == null || boxNo === '') return []
+  const outstanding = await getOutstandingVideos(consignmentId)
+  const sameBox = outstanding.filter((v) => String(v.metadata?.boxNo) === String(boxNo))
+  const { superseded } = planSupersedeForBox(sameBox, keepId)
+  if (!superseded.length) return []
 
-  const outstanding = await getOutstandingVideos()
-  const outstandingBytes = outstanding.reduce((sum, v) => sum + (v.blob?.size || 0), 0) + (blob?.size || 0)
+  const db = await openDB()
+  const ids = []
+  await withIdbTransaction(db, STORE_NAME, 'readwrite', async (stores) => {
+    for (const entry of superseded) {
+      const data = await idbRequest(stores[STORE_NAME].get(entry.id))
+      if (!data || isSupersededStatus(data.status)) continue
+      const multipartToAbort = data.multipart?.uploadId
+        ? {
+            uploadId: data.multipart.uploadId,
+            storagePath: data.multipart.storagePath || data.resumeStoragePath || data.storagePath,
+            consignmentId,
+          }
+        : null
+      const next = {
+        ...data,
+        status: VIDEO_STATUS.SUPERSEDED,
+        supersededAt: Date.now(),
+        supersededBy: keepId,
+        pendingMultipartAbort: multipartToAbort,
+        // Keep blob + prior fields
+      }
+      await idbRequest(stores[STORE_NAME].put(next))
+      ids.push(entry.id)
+    }
+  })
+  return ids
+}
+
+export async function saveVideoToQueue(blob, metadata) {
+  const outstanding = await getActiveOutstandingVideos()
+  const allIncludingSuperseded = await getOutstandingVideos()
+  const outstandingBytes = allIncludingSuperseded.reduce((sum, v) => sum + (v.blob?.size || 0), 0) + (blob?.size || 0)
   const warnings = queueCapWarning(outstanding.length + 1, outstandingBytes)
   if (warnings.length) {
     console.warn('[VideoQueue]', warnings.join(' '))
   }
 
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
+  const queueId = await withIdbTransaction(db, STORE_NAME, 'readwrite', async (stores) => {
     const entry = {
       blob,
       metadata,
@@ -309,20 +314,23 @@ export async function saveVideoToQueue(blob, metadata) {
       progress: 0,
       queueWarnings: warnings,
     }
-    const req = store.add(entry)
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+    return idbRequest(stores[STORE_NAME].add(entry))
   })
+
+  // Mark prior same-box evidence superseded (retain blobs until this replacement is verified)
+  if (metadata?.consignmentId != null && metadata?.boxNo != null) {
+    await supersedeVideosForBox(metadata.consignmentId, metadata.boxNo, queueId)
+  }
+
+  return queueId
 }
 
-/** Videos ready for an upload attempt (queued/retrying, backoff elapsed). */
 export async function getPendingVideos() {
   const all = await getAllQueueRows()
   const now = Date.now()
   return all.filter((v) => isUploadReady(v, now))
 }
 
-/** All unfinished queue rows for a consignment (any outstanding status). */
 export async function getOutstandingVideos(consignmentId = null) {
   const all = await getAllQueueRows()
   return all.filter((v) => {
@@ -332,7 +340,11 @@ export async function getOutstandingVideos(consignmentId = null) {
   })
 }
 
-/** Lightweight per-box status snapshot for the packing UI (no blob payloads). */
+export async function getActiveOutstandingVideos(consignmentId = null) {
+  const all = await getOutstandingVideos(consignmentId)
+  return all.filter((v) => isActiveOutstandingStatus(v.status))
+}
+
 export async function getVideoQueueStatusSnapshot(consignmentId = null) {
   const outstanding = await getOutstandingVideos(consignmentId)
   return outstanding.map((v) => ({
@@ -347,92 +359,95 @@ export async function getVideoQueueStatusSnapshot(consignmentId = null) {
     size: v.blob?.size || 0,
     nextAttemptAt: v.nextAttemptAt || null,
     hasMultipartResume: Boolean(v.multipart?.uploadId && (v.multipart?.completedParts || []).length),
+    superseded: isSupersededStatus(v.status),
   }))
 }
 
 export async function getFailedVideos() {
-  const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly')
-    const store = tx.objectStore(STORE_NAME)
-    if (store.indexNames.contains('status')) {
-      const idx = store.index('status')
-      const req = idx.getAll(IDBKeyRange.only('failed'))
-      req.onsuccess = () => resolve(req.result || [])
-      req.onerror = () => reject(req.error)
-    } else {
-      const req = store.getAll()
-      req.onsuccess = () => resolve((req.result || []).filter((v) => v.status === 'failed'))
-      req.onerror = () => reject(req.error)
-    }
-  })
+  const all = await getAllQueueRows()
+  return all.filter((v) => normalizeQueueStatus(v.status) === VIDEO_STATUS.FAILED)
 }
 
 /**
- * Delete local video only after server confirms metadata + R2 verification.
- * Callers must pass { verified: true } from a successful /uploads/metadata response.
+ * Delete local video only when server returned verified === true.
  */
 export async function markVideoUploaded(id, { verified = false } = {}) {
-  if (!verified) {
-    const err = new Error('Refusing to delete local video before server+R2 verification')
+  if (verified !== true) {
+    const err = new Error('Refusing to delete local video before server verified === true')
     err.code = 'VERIFY_REQUIRED'
     throw err
   }
+  const row = (await getAllQueueRows()).find((v) => v.id === id)
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
-    const req = store.delete(id)
-    req.onsuccess = () => resolve()
-    req.onerror = () => reject(req.error)
+  await withIdbTransaction(db, STORE_NAME, 'readwrite', async (stores) => {
+    await idbRequest(stores[STORE_NAME].delete(id))
   })
+
+  // After verified replacement, clean superseded evidence for the same box
+  if (row?.metadata?.consignmentId != null && row?.metadata?.boxNo != null) {
+    await cleanupSupersededForBox(row.metadata.consignmentId, row.metadata.boxNo, id)
+  }
+}
+
+/** Remove superseded rows for a box after the replacement has been verified. */
+export async function cleanupSupersededForBox(consignmentId, boxNo, verifiedReplacementId = null) {
+  const outstanding = await getOutstandingVideos(consignmentId)
+  const superseded = outstanding.filter(
+    (v) => String(v.metadata?.boxNo) === String(boxNo) && isSupersededStatus(v.status)
+  )
+  if (!superseded.length) return { deleted: 0, abortJobs: [] }
+
+  const abortJobs = []
+  const db = await openDB()
+  await withIdbTransaction(db, STORE_NAME, 'readwrite', async (stores) => {
+    for (const entry of superseded) {
+      if (entry.pendingMultipartAbort) abortJobs.push(entry.pendingMultipartAbort)
+      await idbRequest(stores[STORE_NAME].delete(entry.id))
+    }
+  })
+  return { deleted: superseded.length, abortJobs, verifiedReplacementId }
+}
+
+export async function listPendingMultipartAborts() {
+  const all = await getAllQueueRows()
+  return all
+    .filter((v) => v.pendingMultipartAbort?.uploadId)
+    .map((v) => ({ id: v.id, ...v.pendingMultipartAbort }))
+}
+
+export async function clearPendingMultipartAbort(id) {
+  return patchVideoQueueEntry(id, { pendingMultipartAbort: null })
 }
 
 export async function saveUploadedFileInfo(id, storageUrl, storagePath) {
-  const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
-    const getReq = store.get(id)
-    getReq.onsuccess = () => {
-      const data = getReq.result
-      if (data) {
-        data.storageUrl = storageUrl
-        data.storagePath = storagePath
-        store.put(data)
-      }
-      resolve()
-    }
-    getReq.onerror = () => reject(getReq.error)
+  return patchVideoQueueEntry(id, {
+    storageUrl,
+    storagePath,
+    status: VIDEO_STATUS.OBJECT_UPLOADED,
+    multipart: null,
+    progress: 100,
   })
 }
 
 export async function incrementRetry(id, nextAttemptAt = null, lastError = null) {
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
-    const getReq = store.get(id)
-    getReq.onsuccess = () => {
-      const data = getReq.result
-      if (data) {
-        const next = nextRetryState(data, lastError, {
-          now: Date.now(),
-          maxRetries: MAX_UPLOAD_RETRIES,
-        })
-        if (next.status !== VIDEO_STATUS.FAILED && nextAttemptAt != null) {
-          next.nextAttemptAt = nextAttemptAt
-        }
-        Object.assign(data, next)
-        store.put(data)
-      }
-      resolve(data?.status === VIDEO_STATUS.FAILED)
+  return withIdbTransaction(db, STORE_NAME, 'readwrite', async (stores) => {
+    const data = await idbRequest(stores[STORE_NAME].get(id))
+    if (!data) return false
+    const next = nextRetryState(data, lastError, {
+      now: Date.now(),
+      maxRetries: MAX_UPLOAD_RETRIES,
+    })
+    if (next.status !== VIDEO_STATUS.FAILED && nextAttemptAt != null) {
+      next.nextAttemptAt = nextAttemptAt
     }
-    getReq.onerror = () => reject(getReq.error)
+    const updated = { ...data, ...next, blob: data.blob }
+    await idbRequest(stores[STORE_NAME].put(updated))
+    return updated.status === VIDEO_STATUS.FAILED
   })
 }
 
-/** Reset failed / stuck in-flight uploads after browser or worker restart. */
+/** Reset failed / stuck in-flight uploads after browser or worker restart (keeps backoff cleared once). */
 export async function resetFailedToPending() {
   const all = await getAllQueueRows()
   const wake = all.filter((entry) => {
@@ -440,24 +455,26 @@ export async function resetFailedToPending() {
     return (
       status === VIDEO_STATUS.FAILED
       || status === VIDEO_STATUS.UPLOADING
+      || status === VIDEO_STATUS.MULTIPART_UPLOADING
+      || status === VIDEO_STATUS.MULTIPART_COMPLETING
+      || status === VIDEO_STATUS.OBJECT_UPLOADED
       || status === VIDEO_STATUS.VERIFYING
       || status === 'pending'
     )
   })
   if (!wake.length) return 0
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
+  return withIdbTransaction(db, STORE_NAME, 'readwrite', async (stores) => {
     for (const entry of wake) {
-      const wasFailed = normalizeQueueStatus(entry.status) === VIDEO_STATUS.FAILED
-      entry.status = wasFailed ? VIDEO_STATUS.QUEUED : VIDEO_STATUS.RETRYING
-      if (wasFailed) entry.retries = 0
-      entry.nextAttemptAt = null
-      store.put(entry)
+      const data = await idbRequest(stores[STORE_NAME].get(entry.id))
+      if (!data || isSupersededStatus(data.status)) continue
+      const wasFailed = normalizeQueueStatus(data.status) === VIDEO_STATUS.FAILED
+      data.status = wasFailed ? VIDEO_STATUS.QUEUED : VIDEO_STATUS.RETRYING
+      if (wasFailed) data.retries = 0
+      data.nextAttemptAt = null
+      await idbRequest(stores[STORE_NAME].put(data))
     }
-    tx.oncomplete = () => resolve(wake.length)
-    tx.onerror = () => reject(tx.error)
+    return wake.length
   })
 }
 
@@ -465,50 +482,34 @@ function boxKey(entry) {
   return `${entry?.metadata?.consignmentId || ''}::${entry?.metadata?.boxNo || ''}`
 }
 
-/** Remove every unfinished video for one consign+box. */
-export async function clearVideosForBox(consignmentId, boxNo) {
+/**
+ * @deprecated Destructive clear — use supersedeVideosForBox. Kept only for explicit discard paths.
+ */
+export async function clearVideosForBox(consignmentId, boxNo, { confirmDestructive = false } = {}) {
+  if (!confirmDestructive) {
+    return supersedeVideosForBox(consignmentId, boxNo, null)
+  }
   if (!consignmentId || boxNo == null || boxNo === '') return 0
   const outstanding = await getOutstandingVideos(consignmentId)
   const sameBox = outstanding.filter((v) => String(v.metadata?.boxNo) === String(boxNo))
   if (!sameBox.length) return 0
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
-    for (const entry of sameBox) store.delete(entry.id)
-    tx.oncomplete = () => resolve(sameBox.length)
-    tx.onerror = () => reject(tx.error)
+  return withIdbTransaction(db, STORE_NAME, 'readwrite', async (stores) => {
+    for (const entry of sameBox) {
+      await idbRequest(stores[STORE_NAME].delete(entry.id))
+    }
+    return sameBox.length
   })
 }
 
-/** Delete older pending/failed videos for the same consign+box, keep newest. */
+/** Mark older same-box videos superseded (never deletes Blob data). */
 export async function pruneOlderVideosForBox(consignmentId, boxNo, keepId = null) {
-  if (!consignmentId || boxNo == null || boxNo === '') return 0
-  const outstanding = await getOutstandingVideos(consignmentId)
-  const sameBox = outstanding
-    .filter((v) => String(v.metadata?.boxNo) === String(boxNo))
-    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-  if (sameBox.length <= 1) return 0
-
-  const keep = keepId != null
-    ? sameBox.find((v) => v.id === keepId) || sameBox[0]
-    : sameBox[0]
-  const toDelete = sameBox.filter((v) => v.id !== keep?.id)
-  if (!toDelete.length) return 0
-
-  const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
-    for (const entry of toDelete) store.delete(entry.id)
-    tx.oncomplete = () => resolve(toDelete.length)
-    tx.onerror = () => reject(tx.error)
-  })
+  return supersedeVideosForBox(consignmentId, boxNo, keepId)
 }
 
-/** Keep only the newest outstanding video per consignment+box. */
+/** Mark older duplicates superseded — never destroys Blob data. */
 export async function pruneDuplicateBoxVideos() {
-  const outstanding = await getOutstandingVideos()
+  const outstanding = await getActiveOutstandingVideos()
   const newestByBox = new Map()
   for (const entry of outstanding) {
     const key = boxKey(entry)
@@ -517,79 +518,83 @@ export async function pruneDuplicateBoxVideos() {
       newestByBox.set(key, entry)
     }
   }
-  const keepIds = new Set([...newestByBox.values()].map((v) => v.id))
-  const toDelete = outstanding.filter((v) => !keepIds.has(v.id))
-  if (!toDelete.length) return 0
-
-  const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
-    for (const entry of toDelete) store.delete(entry.id)
-    tx.oncomplete = () => resolve(toDelete.length)
-    tx.onerror = () => reject(tx.error)
-  })
-}
-
-/** Permanently discard failed video uploads from this browser. */
-export async function clearFailedVideos() {
-  const failed = await getFailedVideos()
-  if (!failed.length) return 0
-  const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
-    for (const entry of failed) store.delete(entry.id)
-    tx.oncomplete = () => resolve(failed.length)
-    tx.onerror = () => reject(tx.error)
-  })
+  let count = 0
+  for (const [key, keep] of newestByBox.entries()) {
+    const [consignmentId, boxNo] = key.split('::')
+    const ids = await supersedeVideosForBox(consignmentId, boxNo, keep.id)
+    count += ids.length
+  }
+  return count
 }
 
 /**
- * Clear packing video IndexedDB cache.
- * mode: 'failed' | 'all' | 'duplicates'
+ * Explicit operator discard of failed videos.
+ * Requires confirmDestructive: true — shows warning at call site.
  */
-export async function clearLocalVideoCache(mode = 'failed') {
+export async function clearFailedVideos({ confirmDestructive = false } = {}) {
+  if (!confirmDestructive) {
+    const err = new Error('Discarding failed videos requires explicit confirmation')
+    err.code = 'DISCARD_CONFIRM_REQUIRED'
+    throw err
+  }
+  const failed = await getFailedVideos()
+  if (!failed.length) return 0
+  const db = await openDB()
+  return withIdbTransaction(db, STORE_NAME, 'readwrite', async (stores) => {
+    for (const entry of failed) {
+      await idbRequest(stores[STORE_NAME].delete(entry.id))
+    }
+    return failed.length
+  })
+}
+
+export async function clearLocalVideoCache(mode = 'failed', { confirmDestructive = false } = {}) {
   if (mode === 'duplicates') return pruneDuplicateBoxVideos()
-  if (mode === 'failed') return clearFailedVideos()
+  if (mode === 'failed') return clearFailedVideos({ confirmDestructive })
+
+  if (!confirmDestructive) {
+    const err = new Error('Clearing local video cache requires explicit confirmation')
+    err.code = 'DISCARD_CONFIRM_REQUIRED'
+    throw err
+  }
 
   const outstanding = await getOutstandingVideos()
   if (!outstanding.length) return 0
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
-    for (const entry of outstanding) store.delete(entry.id)
-    tx.oncomplete = () => resolve(outstanding.length)
-    tx.onerror = () => reject(tx.error)
+  return withIdbTransaction(db, STORE_NAME, 'readwrite', async (stores) => {
+    for (const entry of outstanding) {
+      await idbRequest(stores[STORE_NAME].delete(entry.id))
+    }
+    return outstanding.length
   })
 }
 
-/** Make every unfinished queue item eligible for an immediate upload attempt. */
+/**
+ * Clear nextAttemptAt for immediate retry.
+ * ONLY for: user Retry, online event, finish drain, or documented recovery — never every poll.
+ */
 export async function unlockOutstandingForImmediateRetry() {
-  const outstanding = await getOutstandingVideos()
-  // Wake queued/retrying items. Failed stays failed until resetFailedToPending().
+  const outstanding = await getActiveOutstandingVideos()
   const wake = outstanding.filter((entry) => {
     const status = normalizeQueueStatus(entry.status)
     return status === VIDEO_STATUS.QUEUED || status === VIDEO_STATUS.RETRYING || status === 'pending'
   })
   if (!wake.length) return 0
   const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite')
-    const store = tx.objectStore(STORE_NAME)
+  return withIdbTransaction(db, STORE_NAME, 'readwrite', async (stores) => {
     for (const entry of wake) {
-      entry.status = VIDEO_STATUS.QUEUED
-      entry.nextAttemptAt = null
-      store.put(entry)
+      const data = await idbRequest(stores[STORE_NAME].get(entry.id))
+      if (!data) continue
+      data.status = VIDEO_STATUS.QUEUED
+      data.nextAttemptAt = null
+      await idbRequest(stores[STORE_NAME].put(data))
     }
-    tx.oncomplete = () => resolve(wake.length)
-    tx.onerror = () => reject(tx.error)
+    return wake.length
   })
 }
 
 export async function getQueueCount() {
-  const outstanding = await getOutstandingVideos()
+  const outstanding = await getActiveOutstandingVideos()
   return outstanding.filter((v) => {
     const status = normalizeQueueStatus(v.status)
     return status !== VIDEO_STATUS.FAILED && status !== VIDEO_STATUS.STORAGE_FAILED
@@ -600,3 +605,29 @@ export async function getFailedCount() {
   const failed = await getFailedVideos()
   return failed.length
 }
+
+export async function getQueueByteTotals() {
+  const all = await getOutstandingVideos()
+  const active = all.filter((v) => isActiveOutstandingStatus(v.status))
+  const bytes = all.reduce((sum, v) => sum + (Number(v.blob?.size) || 0), 0)
+  return {
+    count: active.length,
+    totalCount: all.length,
+    bytes,
+    bytesMb: bytes / (1024 * 1024),
+  }
+}
+
+/** Hard backpressure gate before starting a new recording. */
+export async function canStartRecordingSafely(storageEstimate = null) {
+  const totals = await getQueueByteTotals()
+  return evaluateRecordingBackpressure({
+    queueCount: totals.count,
+    queueBytes: totals.bytes,
+    freeMb: storageEstimate?.freeMb ?? null,
+    quotaSupported: Boolean(storageEstimate?.supported),
+  })
+}
+
+/** @internal test seam */
+export { openDB as __openDBForTests, STORE_NAME as __STORE_NAME, CHUNK_STORE as __CHUNK_STORE }

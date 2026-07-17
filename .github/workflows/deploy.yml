@@ -1,15 +1,23 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # GitHub Actions — Consignment Packing → Cloud Run (europe-west1)
 #
-# On push to main (or manual dispatch):
+# quality-gates:
+#   - pull_request targeting main (no deploy)
+#   - push to main / workflow_dispatch (before deploy)
+#
+# deploy (push / workflow_dispatch only):
 #   1. Sync GitHub Secrets → GCP Secret Manager
 #   2. Build Docker image with frontend Firebase/Supabase config
 #   3. Deploy to Cloud Run with all env vars + mounted secrets
 #   4. Verify /api/health and /api/auth/status
+#
+# Manual branch protection: see docs/BRANCH_PROTECTION.md
 # ═══════════════════════════════════════════════════════════════════════════
 name: Deploy to Cloud Run
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
@@ -107,6 +115,8 @@ jobs:
   deploy:
     name: Build & Deploy
     needs: quality-gates
+    # Never deploy from pull_request events
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     permissions:

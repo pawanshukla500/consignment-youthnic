@@ -69,10 +69,10 @@ describe('multipart resume planning', () => {
 })
 
 describe('verify-before-delete + retry state', () => {
-  it('only allows local delete after metadata + R2 verify', () => {
-    expect(canDeleteLocalVideo({ metadataSaved: true, storageVerified: false })).toBe(false)
-    expect(canDeleteLocalVideo({ metadataSaved: false, storageVerified: true })).toBe(false)
-    expect(canDeleteLocalVideo({ metadataSaved: true, storageVerified: true })).toBe(true)
+  it('only allows local delete when verified === true', () => {
+    expect(canDeleteLocalVideo({ verified: true })).toBe(true)
+    expect(canDeleteLocalVideo({ verified: false })).toBe(false)
+    expect(canDeleteLocalVideo({ metadataSaved: true, storageVerified: true })).toBe(false)
   })
 
   it('keeps multipart progress when retrying', () => {

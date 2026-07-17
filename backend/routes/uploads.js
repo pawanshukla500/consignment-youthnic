@@ -9,6 +9,7 @@ const {
   resolvePublicUrl,
   enrichFileRecord,
   finalizeClientStorageUpload,
+  verifyStorageObject,
   getStorageFileMeta,
   createStorageReadStream,
   deleteFile,
@@ -338,10 +339,58 @@ router.post('/multipart/list-parts', authenticateToken, requirePermission('packi
       });
     }
     const result = await listMultipartParts(storagePath, uploadId);
+    if (!result.ok) {
+      return res.status(404).json({
+        ok: false,
+        code: result.code || 'NoSuchUpload',
+        error: result.message || 'Multipart upload not found',
+        storagePath,
+        uploadId,
+        parts: [],
+      });
+    }
     res.json(result);
   } catch (error) {
     console.error('Error listing multipart parts:', error);
-    res.status(500).json({ error: 'Failed to list multipart parts.', message: error.message });
+    res.status(500).json({
+      ok: false,
+      code: error.code || 'LIST_PARTS_FAILED',
+      error: 'Failed to list multipart parts.',
+      message: error.message,
+    });
+  }
+});
+
+/** HeadObject probe for crash recovery after multipart complete / missing upload id. */
+router.post('/object-head', authenticateToken, requirePermission('packing', 'register uploads'), async (req, res) => {
+  try {
+    const { storagePath, consignmentId, expectedSize, mimeType } = req.body || {};
+    if (!storagePath || !consignmentId) {
+      return res.status(400).json({ error: 'storagePath and consignmentId are required.' });
+    }
+    if (!isStoragePathForConsignment(storagePath, consignmentId)) {
+      return res.status(403).json({
+        error: 'Storage path does not belong to this consignment.',
+        code: 'STORAGE_PATH_MISMATCH',
+      });
+    }
+    const result = await verifyStorageObject(storagePath, {
+      expectedSize,
+      expectedMime: mimeType,
+      expectedKey: storagePath,
+      requireVideoMime: true,
+    });
+    if (!result.ok) {
+      return res.status(result.code === 'STORAGE_OBJECT_MISSING' ? 404 : 400).json(result);
+    }
+    res.json(result);
+  } catch (error) {
+    console.error('Error probing object head:', error);
+    res.status(500).json({
+      ok: false,
+      code: error.code || 'HEAD_OBJECT_FAILED',
+      error: error.message || 'HeadObject failed',
+    });
   }
 });
 
@@ -469,16 +518,33 @@ router.post('/metadata', authenticateToken, requirePermission('packing', 'regist
 
     let resolvedUrl = url;
     let resolvedPath = path || '';
+    let verification = null;
     if (path) {
-      const finalized = await finalizeClientStorageUpload(path);
-      if (!finalized) {
-        return res.status(400).json({
-          error: 'Uploaded file was not found in storage. Please retry the upload.',
-          code: 'STORAGE_OBJECT_MISSING',
+      try {
+        const finalized = await finalizeClientStorageUpload(path, {
+          expectedSize: size != null ? Number(size) : null,
+          expectedMime: mimeType,
+          expectedKey: path,
+          requireVideoMime: fileType === 'video' || isRemovalVideo,
+        });
+        if (!finalized) {
+          return res.status(400).json({
+            error: 'Uploaded file was not found in storage. Please retry the upload.',
+            code: 'STORAGE_OBJECT_MISSING',
+            verified: false,
+          });
+        }
+        resolvedUrl = finalized.storageUrl;
+        resolvedPath = finalized.storagePath;
+        verification = finalized.verification || null;
+      } catch (verifyErr) {
+        return res.status(verifyErr.statusCode || 400).json({
+          error: verifyErr.message || 'Storage verification failed.',
+          code: verifyErr.code || 'STORAGE_VERIFY_FAILED',
+          verified: false,
+          verification: verifyErr.verification || null,
         });
       }
-      resolvedUrl = finalized.storageUrl;
-      resolvedPath = finalized.storagePath;
     }
 
     if ((fileType === 'video' || isRemovalVideo) && boxNo) {
@@ -510,7 +576,18 @@ router.post('/metadata', authenticateToken, requirePermission('packing', 'regist
           }
         }
         const enrichedExisting = await enrichFileRecord(refreshed);
-        return res.status(200).json({ file: enrichedExisting, deduped: true, refreshed: true });
+        return res.status(200).json({
+          file: enrichedExisting,
+          deduped: true,
+          refreshed: true,
+          verified: true,
+          verification: verification || {
+            actualSize: Number(enrichedExisting.size) || null,
+            expectedSize: size != null ? Number(size) : null,
+            contentType: enrichedExisting.mimeType || null,
+            verifiedAt: now(),
+          },
+        });
       }
     }
 
@@ -542,8 +619,8 @@ router.post('/metadata', authenticateToken, requirePermission('packing', 'regist
       fileRecord.active = true;
     }
     if (fileType === 'video' || isRemovalVideo) {
-      fileRecord.storageVerified = Boolean(resolvedPath);
-      fileRecord.storageVerifiedAt = resolvedPath ? now() : null;
+      fileRecord.storageVerified = Boolean(verification);
+      fileRecord.storageVerifiedAt = verification ? now() : null;
     }
 
     const collectionName = (fileType === 'video' || isRemovalVideo) ? 'videos' : 'documents';
@@ -593,10 +670,20 @@ router.post('/metadata', authenticateToken, requirePermission('packing', 'regist
     });
 
     const enriched = await enrichFileRecord(fileRecord);
-    res.status(201).json({ file: enriched });
+    const isVideoLike = fileType === 'video' || isRemovalVideo;
+    res.status(201).json({
+      file: enriched,
+      verified: isVideoLike ? Boolean(verification) : true,
+      verification: verification || null,
+    });
   } catch (error) {
     console.error('Error saving file metadata:', error);
-    res.status(error.statusCode || 500).json({ error: error.message || 'Failed to save file metadata.' });
+    res.status(error.statusCode || 500).json({
+      error: error.message || 'Failed to save file metadata.',
+      verified: false,
+      code: error.code || undefined,
+      verification: error.verification || null,
+    });
   }
 });
 
@@ -607,6 +694,9 @@ router.post('/video-status', authenticateToken, requirePermission('packing', 'up
       'recording',
       'queued',
       'uploading',
+      'multipart_uploading',
+      'multipart_completing',
+      'object_uploaded',
       'retrying',
       'verifying',
       'uploaded',
@@ -614,6 +704,7 @@ router.post('/video-status', authenticateToken, requirePermission('packing', 'up
       'completed',
       'failed',
       'storage_failed',
+      'superseded',
     ]);
     if (!consignmentId || !boxNo || !allowed.has(status)) {
       return res.status(400).json({ error: 'consignmentId, boxNo, and a valid status are required.' });
