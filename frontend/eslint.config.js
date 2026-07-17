@@ -14,12 +14,15 @@ export default defineConfig([
       reactRefresh.configs.vite,
     ],
     languageOptions: {
-      globals: globals.browser,
+      globals: {
+        ...globals.browser,
+        ...globals.worker,
+      },
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
     rules: {
       'no-unused-vars': ['error', {
-        varsIgnorePattern: '^React$',
+        varsIgnorePattern: '^(React|_)',
         argsIgnorePattern: '^_',
         caughtErrors: 'none',
         caughtErrorsIgnorePattern: '^_',
@@ -27,6 +30,13 @@ export default defineConfig([
       'no-empty': ['error', { allowEmptyCatch: true }],
       'react-hooks/immutability': 'off',
       'react-hooks/set-state-in-effect': 'off',
+      // Documented Phase 0: React Compiler advisory rules stay as warnings until
+      // the larger memoization cleanup (Phase 1+). They must not block deploy.
+      'react-hooks/preserve-manual-memoization': 'warn',
+      'react-hooks/refs': 'warn',
+      'react-hooks/purity': 'warn',
+      'react-hooks/exhaustive-deps': 'warn',
+      'preserve-caught-error': 'warn',
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
     },
   },

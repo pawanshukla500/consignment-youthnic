@@ -1,4 +1,3 @@
-/* eslint-env worker */
 import {
   getPendingVideos,
   markVideoUploaded,
@@ -26,6 +25,8 @@ let config = {
 let intervalId = null
 let running = false
 let queuedProcessOpts = null
+/** Drain requestIds waiting for the in-flight processVideoQueue to finish. */
+const pendingDrainRequestIds = new Set()
 /** After a CORS/network failure, prefer same-origin proxy for the rest of the session. */
 let preferProxyUpload = false
 
@@ -421,7 +422,54 @@ async function uploadOneVideo(entry) {
   throw lastMetaError
 }
 
+function buildWorkerResponse({
+  ok,
+  requestId = null,
+  uploadedIds = [],
+  failedIds = [],
+  pendingIds = [],
+  missingIds = [],
+  error = null,
+  pending = 0,
+  failed = 0,
+  result = undefined,
+} = {}) {
+  const payload = {
+    ok: Boolean(ok),
+    requestId,
+    uploadedIds: [...uploadedIds],
+    failedIds: [...failedIds],
+    pendingIds: [...pendingIds],
+    missingIds: [...missingIds],
+    pending: Number(pending) || pendingIds.length,
+    failed: Number(failed) || failedIds.length,
+  }
+  if (error) {
+    payload.error = {
+      code: error.code || 'WORKER_ERROR',
+      message: error.message || String(error),
+      retryable: Boolean(error.retryable),
+    }
+  }
+  if (result !== undefined) payload.result = result
+  return payload
+}
+
+function emitQueueDrained(requestId, status) {
+  if (!requestId) return
+  postMessage({
+    type: 'QUEUE_DRAINED',
+    payload: {
+      ...status,
+      requestId,
+    },
+  })
+}
+
 async function processVideoQueue(opts = {}) {
+  const requestId = opts.requestId || null
+  if (requestId) pendingDrainRequestIds.add(requestId)
+
   if (running) {
     queuedProcessOpts = {
       ...(queuedProcessOpts || {}),
@@ -429,10 +477,16 @@ async function processVideoQueue(opts = {}) {
       retryFailed: Boolean(opts.retryFailed || queuedProcessOpts?.retryFailed),
       forceNow: Boolean(opts.forceNow || queuedProcessOpts?.forceNow),
     }
-    return
+    // Drain response will be emitted when the in-flight run completes.
+    return null
   }
+
   running = true
   await notify()
+
+  const uploadedIds = []
+  const failedIds = []
+  let result
 
   try {
     do {
@@ -466,6 +520,7 @@ async function processVideoQueue(opts = {}) {
 
           await uploadOneVideo(video)
           await markVideoUploaded(video.id)
+          uploadedIds.push(String(video.id))
 
           postMessage({ type: 'ITEM_DONE', payload: { id: video.id, metadata: video.metadata } })
           postMessage({ type: 'CURRENT_UPLOAD', payload: null })
@@ -473,6 +528,7 @@ async function processVideoQueue(opts = {}) {
         } catch (e) {
           const nextAttemptAt = Date.now() + backoffMs(video.retries || 0)
           const isFailed = await incrementRetry(video.id, nextAttemptAt, e.message)
+          if (isFailed) failedIds.push(String(video.id))
 
           postMessage({ type: 'ITEM_ERROR', payload: { id: video.id, error: e.message, isFailed } })
           postMessage({ type: 'CURRENT_UPLOAD', payload: null })
@@ -480,11 +536,61 @@ async function processVideoQueue(opts = {}) {
         }
       }
     } while (queuedProcessOpts)
+
+    const status = await notify()
+    const pendingIds = []
+    try {
+      const stillPending = await getPendingVideos()
+      for (const v of stillPending) pendingIds.push(String(v.id))
+    } catch { /* ignore */ }
+
+    result = buildWorkerResponse({
+      ok: failedIds.length === 0 && pendingIds.length === 0,
+      uploadedIds,
+      failedIds,
+      pendingIds,
+      pending: status.pending,
+      failed: status.failed,
+      error: failedIds.length || pendingIds.length
+        ? {
+            code: failedIds.length ? 'UPLOAD_FAILED' : 'UPLOAD_PENDING',
+            message: failedIds.length
+              ? `${failedIds.length} video upload(s) failed`
+              : `${pendingIds.length} video upload(s) still pending`,
+            retryable: true,
+          }
+        : null,
+    })
+  } catch (error) {
+    const status = await notify().catch(() => ({ pending: 0, failed: 0 }))
+    result = buildWorkerResponse({
+      ok: false,
+      uploadedIds,
+      failedIds,
+      pendingIds: [],
+      pending: status.pending,
+      failed: status.failed,
+      error: {
+        code: 'QUEUE_PROCESS_ERROR',
+        message: error?.message || 'Queue processing failed',
+        retryable: true,
+      },
+    })
+    // Do not rethrow — callers need a structured status; reportFailure is via result.error
   } finally {
     running = false
-    const status = await notify()
-    return status
+    await notify().catch(() => {})
+    const drainIds = [...pendingDrainRequestIds]
+    pendingDrainRequestIds.clear()
+    for (const id of drainIds) {
+      emitQueueDrained(id, result || buildWorkerResponse({
+        ok: false,
+        error: { code: 'QUEUE_PROCESS_ERROR', message: 'Queue processing failed', retryable: true },
+      }))
+    }
   }
+
+  return result
 }
 
 self.onmessage = async (e) => {
@@ -519,33 +625,46 @@ self.onmessage = async (e) => {
 
     case 'FINALIZE_SESSION': {
       const requestId = payload?.requestId
+      let finalizeResult
       try {
-        const result = await finalizeRecordingSession(payload.sessionId)
-        postMessage({ type: 'FINALIZE_DONE', payload: { requestId, ok: true, result } })
+        finalizeResult = await finalizeRecordingSession(payload.sessionId)
+        postMessage({
+          type: 'FINALIZE_DONE',
+          payload: buildWorkerResponse({
+            ok: true,
+            requestId,
+            uploadedIds: [],
+            failedIds: [],
+            pendingIds: finalizeResult?.queueId != null ? [String(finalizeResult.queueId)] : [],
+            result: finalizeResult,
+          }),
+        })
         await notify()
         await processVideoQueue({ forceNow: true })
       } catch (err) {
         console.error('[Worker] Finalize error:', err)
         postMessage({
           type: 'FINALIZE_DONE',
-          payload: { requestId, ok: false, error: err.message || 'Finalize failed' },
+          payload: buildWorkerResponse({
+            ok: false,
+            requestId,
+            error: {
+              code: err.code || 'FINALIZE_FAILED',
+              message: err.message || 'Finalize failed',
+              retryable: Boolean(err.retryable),
+            },
+          }),
         })
       }
       break
     }
 
     case 'PROCESS_QUEUE': {
-      const requestId = payload?.requestId
-      const status = await processVideoQueue({
+      await processVideoQueue({
         retryFailed: payload?.retryFailed,
         forceNow: true,
+        requestId: payload?.requestId || null,
       })
-      if (requestId) {
-        postMessage({
-          type: 'QUEUE_DRAINED',
-          payload: { requestId, pending: status?.pending ?? 0, failed: status?.failed ?? 0 },
-        })
-      }
       break
     }
 

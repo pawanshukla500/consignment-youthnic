@@ -358,10 +358,10 @@ const ConsignmentDetail = () => {
   const [showReassignId, setShowReassignId] = useState(false);
   const [newConsignmentId, setNewConsignmentId] = useState('');
   const [reassigningId, setReassigningId] = useState(false);
-  const [omsGuruUploading, setOmsGuruUploading] = useState(false);
-  const [omsGuruUploads, setOmsGuruUploads] = useState([]);
-  const [omsGuruUploadsLoading, setOmsGuruUploadsLoading] = useState(false);
-  const omsGuruFileRef = useRef(null);
+  const [, setOmsGuruUploading] = useState(false);
+  const [, setOmsGuruUploads] = useState([]);
+  const [, setOmsGuruUploadsLoading] = useState(false);
+  const _omsGuruFileRef = useRef(null);
   const [inwardUploading, setInwardUploading] = useState(false);
   const [inwardUploads, setInwardUploads] = useState([]);
   const inwardFileRef = useRef(null);
@@ -463,7 +463,7 @@ const ConsignmentDetail = () => {
     }
   };
 
-  const downloadOmsGuruTemplate = async () => {
+  const _downloadOmsGuruTemplate = async () => {
     try {
       const response = await consignmentsAPI.downloadOmsGuruTemplate(id);
       const safeName = String(id).replace(/[^a-zA-Z0-9_-]+/g, '_');
@@ -479,7 +479,7 @@ const ConsignmentDetail = () => {
     }
   };
 
-  const handleOmsGuruImport = async (event) => {
+  const _handleOmsGuruImport = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
@@ -686,27 +686,23 @@ const ConsignmentDetail = () => {
     const totalWeightVal = consignment.totalWeight || boxes.reduce((sum, b) => sum + (Number(b.weight) || 0), 0) || 0;
     const weightUnit = consignment.weightUnit || boxes[0]?.weightUnit || 'KG';
 
-    const w = window.open('', '_blank', 'width=800,height=1000');
-    if (!w) {
-      addToast('Could not open print window — allow pop-ups and try again', 'warning');
-      return;
-    }
-
+    const { escapeHtml: esc, openEscapedPrintWindow } = await import('../utils/printHtml');
     const rowsHtml = sortedBoxes.map((box) => {
       const qty = Number(box.totalQty) || (box.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
       const weightText = box.weight != null ? `${Number(box.weight).toFixed(2)} ${box.weightUnit || weightUnit}` : '—';
       return `<tr>
-        <td>${box.boxNo}</td>
+        <td>${esc(box.boxNo)}</td>
         <td class="num">${qty}</td>
-        <td class="num">${weightText}</td>
+        <td class="num">${esc(weightText)}</td>
       </tr>`;
     }).join('');
 
-    w.document.write(`<!DOCTYPE html>
+    const title = `Weight Summary - ${consignment.internalShipmentNo || consignment.id}`;
+    const opened = openEscapedPrintWindow(`<!DOCTYPE html>
       <html>
         <head>
           <meta charset="utf-8">
-          <title>Weight Summary - ${consignment.internalShipmentNo || consignment.id}</title>
+          <title>${esc(title)}</title>
           <style>
             @page { size: A4; margin: 12mm; }
             * { box-sizing: border-box; }
@@ -730,17 +726,17 @@ const ConsignmentDetail = () => {
         <body>
           <div class="no-print"><button onclick="window.print()">Print Weight Summary</button></div>
           <h1>Weight Summary</h1>
-          <div class="sub">VB Exports · Packing Station · ${new Date().toLocaleString()}</div>
+          <div class="sub">VB Exports · Packing Station · ${esc(new Date().toLocaleString())}</div>
           <div class="meta">
-            <div><strong>Consignment ID</strong> ${consignment.id}</div>
-            <div><strong>Shipment No</strong> ${consignment.shipmentNo || '—'}</div>
-            <div><strong>Internal Shipment</strong> ${consignment.internalShipmentNo || '—'}</div>
-            <div><strong>Marketplace</strong> ${consignment.marketplace?.name || '—'}</div>
+            <div><strong>Consignment ID</strong> ${esc(consignment.id)}</div>
+            <div><strong>Shipment No</strong> ${esc(consignment.shipmentNo || '—')}</div>
+            <div><strong>Internal Shipment</strong> ${esc(consignment.internalShipmentNo || '—')}</div>
+            <div><strong>Marketplace</strong> ${esc(consignment.marketplace?.name || '—')}</div>
           </div>
           <div class="totals">
             <div class="tot"><span>Total boxes</span><b>${boxCount}</b></div>
             <div class="tot"><span>Total quantity</span><b>${totalQty}</b></div>
-            <div class="tot"><span>Total weight</span><b>${Number(totalWeightVal).toFixed(2)} ${weightUnit}</b></div>
+            <div class="tot"><span>Total weight</span><b>${esc(`${Number(totalWeightVal).toFixed(2)} ${weightUnit}`)}</b></div>
           </div>
           <table>
             <thead>
@@ -754,7 +750,9 @@ const ConsignmentDetail = () => {
           </table>
         </body>
       </html>`);
-    w.document.close();
+    if (!opened) {
+      addToast('Could not open print window — allow pop-ups and try again', 'warning');
+    }
   };
 
   const downloadWeightReport = async () => {

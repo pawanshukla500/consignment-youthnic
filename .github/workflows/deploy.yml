@@ -32,8 +32,81 @@ env:
   REGION: ${{ vars.CLOUD_RUN_REGION || 'europe-west1' }}
 
 jobs:
+  quality-gates:
+    name: Lint · Build · Test · Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Backend lint
+        working-directory: backend
+        run: npm run lint
+
+      - name: Frontend lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Frontend build
+        working-directory: frontend
+        env:
+          VITE_API_URL: ''
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY || 'AIzaSyTEST_KEY_FOR_CI_BUILD_ONLY' }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN || 'example.firebaseapp.com' }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID || 'example' }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID || '1234567890' }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID || '1:1234567890:web:abcdef' }}
+        run: npm run build
+
+      - name: Backend tests
+        working-directory: backend
+        env:
+          JWT_SECRET: test-only-jwt-secret-ci-do-not-use-in-production
+          NODE_ENV: test
+        run: npm test
+
+      - name: Frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Security tests
+        env:
+          JWT_SECRET: test-only-jwt-secret-ci-do-not-use-in-production
+          NODE_ENV: test
+        run: npm run test:security
+
+      - name: Backend production dependency audit
+        working-directory: backend
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Frontend production dependency audit
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=high
+
   deploy:
     name: Build & Deploy
+    needs: quality-gates
     runs-on: ubuntu-latest
 
     permissions:

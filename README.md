@@ -100,25 +100,39 @@ consignment-packing-app/
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | React 18, Vite, Tailwind CSS v4, Firebase JS SDK |
+| Frontend | React 19, Vite, Tailwind CSS v4, Firebase JS SDK |
 | Backend | Node.js, Express, Firebase Admin SDK |
-| Database | Firebase Firestore |
-| Storage | Cloudflare R2 |
-| Auth | JWT (Firebase Auth ready) |
-| Hosting | Firebase Hosting |
+| Operational database | Supabase PostgreSQL (source of truth) |
+| Media storage | Cloudflare R2 |
+| Auth | Firebase Authentication + application JWT |
+| Hosting | Google Cloud Run (primary) / Firebase Hosting (frontend-only option) |
+
+IndexedDB is used only as a durable temporary outbox for packing scans and video chunks — not as the system of record.
+
+## Quality gates
+
+```bash
+npm ci
+npm run lint
+npm run build
+npm test
+npm run test:security
+# also required before deploy (backend + frontend):
+cd backend && npm audit --omit=dev --audit-level=high
+cd ../frontend && npm audit --omit=dev --audit-level=high
+```
+
+GitHub Actions (`deploy.yml`) runs these gates before deploying to Cloud Run.
 
 ## Features
 
-- Secure login with JWT
-- Consignment CRUD with SKU management
-- Scan data bulk upload with CSV templates
-- Inline editing of scan records
-- File uploads (videos, documents) per consignment
+- Secure Firebase Auth login with application JWT
+- Consignment CRUD with SKU management and ground-team workflow
+- Barcode packing station with offline-resilient IndexedDB queues
+- Box packing videos uploaded to Cloudflare R2 via Web Worker
 - Productivity dashboard with audit logs
-- Toast notifications
-- Debounced search
-- Pagination
-- Responsive design
+- Inventory planning (daily Google Sheet sync + report email)
+- Toast notifications, debounced search, pagination, responsive UI
 
 ## API Endpoints
 

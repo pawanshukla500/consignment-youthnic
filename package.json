@@ -8,6 +8,11 @@
     "dev:backend": "cd backend && npm run dev",
     "dev:frontend": "cd frontend && npm run dev",
     "build": "cd frontend && npm run build",
+    "lint": "cd frontend && npm run lint",
+    "test": "npm run test:backend && npm run test:frontend",
+    "test:backend": "cd backend && JWT_SECRET=${JWT_SECRET:-test-only-jwt-secret-ci-do-not-use-in-production} NODE_ENV=${NODE_ENV:-test} npm test",
+    "test:frontend": "cd frontend && npm test",
+    "test:security": "cd backend && JWT_SECRET=${JWT_SECRET:-test-only-jwt-secret-ci-do-not-use-in-production} NODE_ENV=${NODE_ENV:-test} npm run test:security && cd ../frontend && npm run test:security",
     "start": "cd backend && npm start",
     "deploy": "npm run build && firebase deploy --only hosting",
     "deploy:backend": "gcloud run deploy consignment-packing --source . --region=europe-west1 --allow-unauthenticated"

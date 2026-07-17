@@ -2,6 +2,7 @@
  * M1 auth gate unit checks (token version helper).
  * Run: node scripts/test-auth-active.js
  */
+require('./ensureTestEnv');
 const assert = require('assert');
 const { currentTokenVersion } = require('../middleware/auth');
 

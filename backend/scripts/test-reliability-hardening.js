@@ -2,6 +2,7 @@
  * Tests for security / reliability hardening (auth, email, SSL, rate-limit wiring).
  * Run: node scripts/test-reliability-hardening.js
  */
+require('./ensureTestEnv');
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
