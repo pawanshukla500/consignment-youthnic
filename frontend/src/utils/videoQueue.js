@@ -69,6 +69,58 @@ export async function appendRecordingChunk(sessionId, chunkIndex, blob) {
   })
 }
 
+/** Mark a recording session as locally failed (quota / IndexedDB write error). Keeps chunks for recovery. */
+export async function markRecordingSessionStorageFailed(sessionId, reason = 'storage_failed') {
+  if (!sessionId) return null
+  const rows = await getSessionChunks(sessionId)
+  const metaRow = rows.find((r) => r.isMeta)
+  if (!metaRow) return null
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CHUNK_STORE, 'readwrite')
+    const store = tx.objectStore(CHUNK_STORE)
+    const next = {
+      ...metaRow,
+      status: 'storage_failed',
+      lastError: String(reason || 'storage_failed'),
+      failedAt: Date.now(),
+      metadata: {
+        ...(metaRow.metadata || {}),
+        sessionId,
+        recordingStatus: 'storage_failed',
+        lastError: String(reason || 'storage_failed'),
+      },
+    }
+    const req = store.put(next)
+    req.onsuccess = () => resolve(next)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+export async function getRecordingSessionMeta(sessionId) {
+  const rows = await getSessionChunks(sessionId)
+  return rows.find((r) => r.isMeta) || null
+}
+
+/**
+ * Inspect Promise.allSettled results for MediaRecorder chunk writes.
+ * Returns { ok, failedCount, errors } — caller must not finalize when ok is false.
+ */
+export function inspectChunkWriteSettlements(settlements = []) {
+  const errors = []
+  for (const item of settlements) {
+    if (item.status === 'rejected') {
+      errors.push(item.reason?.message || String(item.reason || 'chunk write failed'))
+    }
+  }
+  return {
+    ok: errors.length === 0,
+    failedCount: errors.length,
+    successCount: settlements.filter((s) => s.status === 'fulfilled').length,
+    errors,
+  }
+}
+
 async function getSessionChunks(sessionId) {
   const db = await openDB()
   return new Promise((resolve, reject) => {
@@ -100,6 +152,16 @@ export async function finalizeRecordingSession(sessionId) {
 
   const metaRow = rows.find((r) => r.isMeta)
   const metadata = metaRow?.metadata
+  if (metaRow?.status === 'storage_failed' || metadata?.recordingStatus === 'storage_failed') {
+    const err = new Error(
+      metaRow?.lastError
+        || 'Local video storage failed — free disk/browser space and retry recording this box.'
+    )
+    err.code = 'STORAGE_FAILED'
+    err.retryable = true
+    throw err
+  }
+
   const chunks = rows
     .filter((r) => !r.isMeta && r.blob)
     .sort((a, b) => a.chunkIndex - b.chunkIndex)

@@ -3,8 +3,26 @@ import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { packingAPI, settingsAPI, uploadsAPI } from '../services/api';
 import api from '../services/api';
-import { getQueueCount, startRecordingSession, appendRecordingChunk } from '../utils/videoQueue';
-import { processVideoUploadQueue, subscribeVideoUploadStatus, finalizeRecordingSessionInWorker } from '../services/videoUploadService';
+import {
+  getQueueCount,
+  startRecordingSession,
+  appendRecordingChunk,
+  markRecordingSessionStorageFailed,
+  inspectChunkWriteSettlements,
+} from '../utils/videoQueue';
+import {
+  processVideoUploadQueue,
+  subscribeVideoUploadStatus,
+  finalizeRecordingSessionInWorker,
+  isTerminalSuccess,
+} from '../services/videoUploadService';
+import {
+  requestPersistentStorage,
+  estimateBrowserStorage,
+  isStorageInsufficient,
+  formatStorageMessage,
+} from '../utils/browserStorage';
+import { escapeHtml, openEscapedPrintWindow } from '../utils/printHtml';
 import { enqueueScan, drainScanQueue, getPendingScanCount, getFailedScanCount, resetFailedScans, warmScanQueueDb } from '../utils/scanQueue';
 import { enqueueSaveBoxJob, drainPackingSyncQueue, getPendingSyncJobCount, getFailedSyncJobCount, resetFailedSyncJobs } from '../utils/packingSyncQueue';
 import { processSaveBoxJob } from '../utils/saveBoxSyncHelper';
@@ -166,7 +184,7 @@ function Modal({ show, title, children, onClose, actions, wide }) {
 export default function PackingStation() {
   const navigate = useNavigate();
   const { toasts, toast, removeToast } = useToasts();
-  const { uploadFile, progress: weightUploadProgress, uploading: weightUploading } = useStorageUpload();
+  const { progress: weightUploadProgress, uploading: weightUploading } = useStorageUpload();
 
   // State
   const [showWeightModal, setShowWeightModal] = useState(false);
@@ -242,7 +260,7 @@ export default function PackingStation() {
   const sizeWarnRef = useRef(null);
   const recTimerRef = useRef(null);
   const recStartRef = useRef(0);
-  const offCanvasRef = useRef(null);
+  const _offCanvasRef = useRef(null);
   const composeIntervalRef = useRef(null);
   const animFrameRef = useRef(null);
   const recBoxIdRef = useRef(null);
@@ -709,6 +727,18 @@ export default function PackingStation() {
     recIntShipRef.current = S.intShip || cid;
 
     try {
+      const persistResult = await requestPersistentStorage();
+      const storageEstimate = await estimateBrowserStorage();
+      if (isStorageInsufficient(storageEstimate)) {
+        toast(
+          `Low browser storage — ${formatStorageMessage(storageEstimate)} Free space before a long recording.`,
+          'warning',
+          8000
+        );
+      } else if (persistResult.supported && !persistResult.persisted) {
+        toast('Browser may clear video cache under storage pressure — keep this tab open while packing.', 'warning', 6000);
+      }
+
       const fileName = `${cid}_box_${box}_${Date.now()}.${actualExt}`;
       const metadata = {
         fileName,
@@ -834,9 +864,29 @@ export default function PackingStation() {
 
         try {
           const pendingWrites = pendingChunkWritesRef.current || [];
+          let settlements = [];
           if (pendingWrites.length) {
-            await Promise.allSettled(pendingWrites);
+            settlements = await Promise.allSettled(pendingWrites);
           }
+          const chunkCheck = inspectChunkWriteSettlements(settlements);
+          if (!chunkCheck.ok) {
+            const storageEstimate = await estimateBrowserStorage();
+            const quotaHint = formatStorageMessage(storageEstimate);
+            const reason = chunkCheck.errors[0] || 'IndexedDB chunk write failed';
+            await markRecordingSessionStorageFailed(sessionId, reason).catch(() => {});
+            void uploadsAPI.updateVideoStatus({
+              consignmentId: cid,
+              boxNo: box,
+              status: 'storage_failed',
+              queueId: sessionId,
+            }).catch(() => {});
+            const err = new Error(
+              `Local video save failed (${chunkCheck.failedCount} chunk write error(s)). ${quotaHint} Free browser storage, keep this box open, and re-record.`
+            );
+            err.code = 'STORAGE_FAILED';
+            throw err;
+          }
+
           if (!silent) toast('Saving video safely…', 'info');
           const result = await finalizeRecordingSessionInWorker(sessionId);
 
@@ -860,7 +910,7 @@ export default function PackingStation() {
           void uploadsAPI.updateVideoStatus({
             consignmentId: cid,
             boxNo: box,
-            status: 'failed',
+            status: dbErr.code === 'STORAGE_FAILED' ? 'storage_failed' : 'failed',
             queueId: sessionId,
           }).catch(() => {});
           if (!silent) toast(dbErr.message || 'Video save failed — keep the box open and retry', 'error', 7000);
@@ -898,18 +948,42 @@ export default function PackingStation() {
 
     const deadline = Date.now() + 5 * 60 * 1000;
     while (Date.now() < deadline) {
-      await processVideoUploadQueue({ wait: true, retryFailed: true, forceNow: true, timeoutMs: 45000 });
+      let drainOk = false;
+      try {
+        const drain = await processVideoUploadQueue({
+          wait: true,
+          retryFailed: true,
+          forceNow: true,
+          timeoutMs: 45000,
+        });
+        drainOk = isTerminalSuccess(drain);
+      } catch (drainErr) {
+        // Failed/pending/timeout — inspect IndexedDB before giving up
+        if (drainErr?.result?.failedIds?.length && Date.now() > deadline - 5000) {
+          const err = new Error(
+            drainErr.message || 'Video upload failed. Stay online and retry before finishing.'
+          );
+          err.cause = drainErr
+          throw err;
+        }
+      }
+
       const { getOutstandingVideos, countOpenRecordingSessions } = await import('../utils/videoQueue');
       const [outstanding, openSessions] = await Promise.all([
         getOutstandingVideos(cid),
         countOpenRecordingSessions(),
       ]);
+      if (drainOk && outstanding.length === 0 && openSessions === 0) {
+        setShowUpload(false);
+        setUploadProgress(0);
+        return true;
+      }
       if (outstanding.length === 0 && openSessions === 0) {
         setShowUpload(false);
         setUploadProgress(0);
         return true;
       }
-      const failed = outstanding.filter((v) => v.status === 'failed');
+      const failed = outstanding.filter((v) => v.status === 'failed' || v.status === 'storage_failed');
       if (failed.length && Date.now() > deadline - 5000) break;
       await new Promise((r) => setTimeout(r, 800));
     }
@@ -1907,9 +1981,11 @@ export default function PackingStation() {
     const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
     const h = now.getHours(), mi = String(now.getMinutes()).padStart(2, '0'), ampm = h >= 12 ? 'PM' : 'AM', h12 = h % 12 || 12;
     const ts = `${days[now.getDay()]}, ${String(now.getDate()).padStart(2, '0')} ${months[now.getMonth()]} ${now.getFullYear()} — ${String(h12).padStart(2, '0')}:${mi} ${ampm}`;
+    const safeCid = escapeHtml(S.cid);
+    const safeTs = escapeHtml(ts);
+    const rows = pending.map((p, i) => `<tr><td>${i + 1}</td><td style="font-family:monospace;font-size:11px">${escapeHtml(p.marketplaceSku)}</td><td>${escapeHtml(p.internalSku)}</td><td style="text-align:center">${Number(p.required) || 0}</td><td style="text-align:center">${Number(p.packed) || 0}</td><td style="text-align:center;color:#c53030;font-weight:700">${Number(p.remaining) || 0}</td></tr>`).join('');
 
-    const w = window.open('', '_blank', 'width=820,height=640');
-    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Pending SKUs — ${S.cid}</title><style>
+    openEscapedPrintWindow(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Pending SKUs — ${safeCid}</title><style>
     *{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;padding:24px 28px;color:#1a202c;font-size:13px}
     h1{font-size:17px;font-weight:800;letter-spacing:.5px;margin-bottom:2px}.sub{font-size:12px;color:#718096;margin-bottom:14px}
     .ts{display:inline-block;font-size:11px;color:#2d3748;background:#f7fafc;border:1px solid #cbd5e0;padding:5px 12px;border-radius:6px;margin-bottom:16px;font-weight:600}
@@ -1921,21 +1997,20 @@ export default function PackingStation() {
     .footer{margin-top:22px;font-size:10px;color:#a0aec0;text-align:center;border-top:1px solid #e2e8f0;padding-top:10px}
     @media print{body{padding:12px 14px}button{display:none!important}.footer{position:fixed;bottom:0;left:0;right:0;background:#fff;padding:8px}}
     </style></head><body>
-    <h1>🏭 Youthnic Packing Station — Pending Report</h1>
-    <div class="sub">Consignment: <strong>${S.cid}</strong></div>
-    <div class="ts">🕐 Printed: ${ts}</div>
+    <h1>Youthnic Packing Station — Pending Report</h1>
+    <div class="sub">Consignment: <strong>${safeCid}</strong></div>
+    <div class="ts">Printed: ${safeTs}</div>
     <div class="summary">
      <div class="sbox"><div class="val">${totalPkd}/${totalReq}</div><div class="lbl">Packed</div></div>
      <div class="sbox"><div class="val">${pct}%</div><div class="lbl">Complete</div></div>
      <div class="sbox"><div class="val">${boxCount}</div><div class="lbl">Boxes</div></div>
      <div class="sbox"><div class="val" style="color:#c53030">${pending.length}</div><div class="lbl">Pending SKUs</div></div>
     </div>
-    <div class="warn">⚠️ ${pending.length} SKU(s) not fully packed — Team Action Required</div>
+    <div class="warn">${pending.length} SKU(s) not fully packed — Team Action Required</div>
     <table><thead><tr><th>#</th><th>Barcode</th><th>Name</th><th style="text-align:center">Required</th><th style="text-align:center">Packed</th><th style="text-align:center;color:#fc8181">Remaining</th></tr></thead>
-    <tbody>${pending.map((p, i) => `<tr><td>${i+1}</td><td style="font-family:monospace;font-size:11px">${p.marketplaceSku}</td><td>${p.internalSku}</td><td style="text-align:center">${p.required}</td><td style="text-align:center">${p.packed}</td><td style="text-align:center;color:#c53030;font-weight:700">${p.remaining}</td></tr>`).join('')}</tbody></table>
-    <div class="footer">Youthnic Consignment Packing Station &nbsp;·&nbsp; ${S.cid} &nbsp;·&nbsp; ${ts}</div>
-    <script>window.onload=function(){window.print()}</script></body></html>`);
-    w.document.close();
+    <tbody>${rows}</tbody></table>
+    <div class="footer">Youthnic Consignment Packing Station &nbsp;·&nbsp; ${safeCid} &nbsp;·&nbsp; ${safeTs}</div>
+    <script>window.onload=function(){window.print()}</script></body></html>`, { width: 820, height: 640 });
   };
 
   const currentBoxItems = S.boxes[S.box] || [];
