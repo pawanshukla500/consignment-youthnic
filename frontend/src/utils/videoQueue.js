@@ -5,12 +5,23 @@
  *  - recordingChunks store: incremental 1s MediaRecorder slices persisted during recording
  *    (crash-safe — survives tab close mid-box)
  *  - videoQueue store: finalized per-box blobs awaiting cloud upload
+ *  - Local blobs are deleted only after server metadata + R2 HeadObject verification
  */
+import { VIDEO_STATUS, VIDEO_UPLOAD_CONFIG } from './videoUploadConfig'
+import {
+  isOutstandingStatus,
+  isUploadReady,
+  normalizeQueueStatus,
+  nextRetryState,
+  queueCapWarning,
+} from './videoUploadPipeline'
+
 const DB_NAME = 'PackingStationDB'
 const DB_VERSION = 2
 const STORE_NAME = 'videoQueue'
 const CHUNK_STORE = 'recordingChunks'
-export const MAX_UPLOAD_RETRIES = 15
+export const MAX_UPLOAD_RETRIES = VIDEO_UPLOAD_CONFIG.maxUploadRetries
+export { VIDEO_STATUS }
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -233,9 +244,55 @@ export async function countOpenRecordingSessions() {
 
 // ── Upload queue ────────────────────────────────────────────────────────────
 
+async function getAllQueueRows() {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly')
+    const store = tx.objectStore(STORE_NAME)
+    const req = store.getAll()
+    req.onsuccess = () => resolve(req.result || [])
+    req.onerror = () => reject(req.error)
+  })
+}
+
+export async function patchVideoQueueEntry(id, patch = {}) {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    const store = tx.objectStore(STORE_NAME)
+    const getReq = store.get(id)
+    getReq.onsuccess = () => {
+      const data = getReq.result
+      if (!data) {
+        resolve(null)
+        return
+      }
+      Object.assign(data, patch, { updatedAt: Date.now() })
+      store.put(data)
+      resolve(data)
+    }
+    getReq.onerror = () => reject(getReq.error)
+  })
+}
+
+/** Persist multipart uploadId + completed part ETags for resumable retries. */
+export async function saveMultipartProgress(id, multipart) {
+  const patch = { multipart: multipart || null }
+  // Do not clear a completed object path while multipart is still in progress
+  if (multipart?.storagePath) patch.resumeStoragePath = multipart.storagePath
+  return patchVideoQueueEntry(id, patch)
+}
+
 export async function saveVideoToQueue(blob, metadata) {
   // New recording for a box replaces any stuck pending/failed clips for that box.
   await clearVideosForBox(metadata?.consignmentId, metadata?.boxNo)
+
+  const outstanding = await getOutstandingVideos()
+  const outstandingBytes = outstanding.reduce((sum, v) => sum + (v.blob?.size || 0), 0) + (blob?.size || 0)
+  const warnings = queueCapWarning(outstanding.length + 1, outstandingBytes)
+  if (warnings.length) {
+    console.warn('[VideoQueue]', warnings.join(' '))
+  }
 
   const db = await openDB()
   return new Promise((resolve, reject) => {
@@ -244,10 +301,13 @@ export async function saveVideoToQueue(blob, metadata) {
     const entry = {
       blob,
       metadata,
-      status: 'pending',
+      status: VIDEO_STATUS.QUEUED,
       retries: 0,
       createdAt: Date.now(),
       lastError: null,
+      multipart: null,
+      progress: 0,
+      queueWarnings: warnings,
     }
     const req = store.add(entry)
     req.onsuccess = () => resolve(req.result)
@@ -255,45 +315,39 @@ export async function saveVideoToQueue(blob, metadata) {
   })
 }
 
+/** Videos ready for an upload attempt (queued/retrying, backoff elapsed). */
 export async function getPendingVideos() {
-  const db = await openDB()
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly')
-    const store = tx.objectStore(STORE_NAME)
-    if (store.indexNames.contains('status')) {
-      const idx = store.index('status')
-      const req = idx.getAll(IDBKeyRange.only('pending'))
-      req.onsuccess = () => {
-        const now = Date.now()
-        resolve((req.result || []).filter((v) => !v.nextAttemptAt || v.nextAttemptAt <= now))
-      }
-      req.onerror = () => reject(req.error)
-    } else {
-      const req = store.getAll()
-      req.onsuccess = () => {
-        const now = Date.now()
-        resolve((req.result || []).filter((v) => v.status === 'pending' && (!v.nextAttemptAt || v.nextAttemptAt <= now)))
-      }
-      req.onerror = () => reject(req.error)
-    }
-  })
+  const all = await getAllQueueRows()
+  const now = Date.now()
+  return all.filter((v) => isUploadReady(v, now))
 }
 
-/** All unfinished queue rows for a consignment (pending, backoff, failed). */
+/** All unfinished queue rows for a consignment (any outstanding status). */
 export async function getOutstandingVideos(consignmentId = null) {
-  const db = await openDB()
-  const all = await new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly')
-    const store = tx.objectStore(STORE_NAME)
-    const req = store.getAll()
-    req.onsuccess = () => resolve(req.result || [])
-    req.onerror = () => reject(req.error)
-  })
+  const all = await getAllQueueRows()
   return all.filter((v) => {
-    if (!v || (v.status !== 'pending' && v.status !== 'failed')) return false
+    if (!v || !isOutstandingStatus(v.status)) return false
     if (!consignmentId) return true
     return String(v.metadata?.consignmentId || '') === String(consignmentId)
   })
+}
+
+/** Lightweight per-box status snapshot for the packing UI (no blob payloads). */
+export async function getVideoQueueStatusSnapshot(consignmentId = null) {
+  const outstanding = await getOutstandingVideos(consignmentId)
+  return outstanding.map((v) => ({
+    id: v.id,
+    boxNo: v.metadata?.boxNo,
+    consignmentId: v.metadata?.consignmentId,
+    fileName: v.metadata?.fileName,
+    status: normalizeQueueStatus(v.status),
+    progress: Number(v.progress) || 0,
+    retries: Number(v.retries) || 0,
+    lastError: v.lastError || null,
+    size: v.blob?.size || 0,
+    nextAttemptAt: v.nextAttemptAt || null,
+    hasMultipartResume: Boolean(v.multipart?.uploadId && (v.multipart?.completedParts || []).length),
+  }))
 }
 
 export async function getFailedVideos() {
@@ -314,7 +368,16 @@ export async function getFailedVideos() {
   })
 }
 
-export async function markVideoUploaded(id) {
+/**
+ * Delete local video only after server confirms metadata + R2 verification.
+ * Callers must pass { verified: true } from a successful /uploads/metadata response.
+ */
+export async function markVideoUploaded(id, { verified = false } = {}) {
+  if (!verified) {
+    const err = new Error('Refusing to delete local video before server+R2 verification')
+    err.code = 'VERIFY_REQUIRED'
+    throw err
+  }
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite')
@@ -353,33 +416,47 @@ export async function incrementRetry(id, nextAttemptAt = null, lastError = null)
     getReq.onsuccess = () => {
       const data = getReq.result
       if (data) {
-        data.retries += 1
-        if (lastError) data.lastError = String(lastError).slice(0, 300)
-        if (data.retries >= MAX_UPLOAD_RETRIES) data.status = 'failed'
-        else data.nextAttemptAt = nextAttemptAt || Date.now()
+        const next = nextRetryState(data, lastError, {
+          now: Date.now(),
+          maxRetries: MAX_UPLOAD_RETRIES,
+        })
+        if (next.status !== VIDEO_STATUS.FAILED && nextAttemptAt != null) {
+          next.nextAttemptAt = nextAttemptAt
+        }
+        Object.assign(data, next)
         store.put(data)
       }
-      resolve(data?.status === 'failed')
+      resolve(data?.status === VIDEO_STATUS.FAILED)
     }
     getReq.onerror = () => reject(getReq.error)
   })
 }
 
-/** Reset failed uploads to pending on app restart (gives them another chance). */
+/** Reset failed / stuck in-flight uploads after browser or worker restart. */
 export async function resetFailedToPending() {
-  const failed = await getFailedVideos()
-  if (!failed.length) return 0
+  const all = await getAllQueueRows()
+  const wake = all.filter((entry) => {
+    const status = normalizeQueueStatus(entry.status)
+    return (
+      status === VIDEO_STATUS.FAILED
+      || status === VIDEO_STATUS.UPLOADING
+      || status === VIDEO_STATUS.VERIFYING
+      || status === 'pending'
+    )
+  })
+  if (!wake.length) return 0
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite')
     const store = tx.objectStore(STORE_NAME)
-    for (const entry of failed) {
-      entry.status = 'pending'
-      entry.retries = 0
+    for (const entry of wake) {
+      const wasFailed = normalizeQueueStatus(entry.status) === VIDEO_STATUS.FAILED
+      entry.status = wasFailed ? VIDEO_STATUS.QUEUED : VIDEO_STATUS.RETRYING
+      if (wasFailed) entry.retries = 0
       entry.nextAttemptAt = null
       store.put(entry)
     }
-    tx.oncomplete = () => resolve(failed.length)
+    tx.oncomplete = () => resolve(wake.length)
     tx.onerror = () => reject(tx.error)
   })
 }
@@ -491,15 +568,18 @@ export async function clearLocalVideoCache(mode = 'failed') {
 /** Make every unfinished queue item eligible for an immediate upload attempt. */
 export async function unlockOutstandingForImmediateRetry() {
   const outstanding = await getOutstandingVideos()
-  // Only wake pending/backoff items. Failed stays failed until resetFailedToPending().
-  const wake = outstanding.filter((entry) => entry.status === 'pending')
+  // Wake queued/retrying items. Failed stays failed until resetFailedToPending().
+  const wake = outstanding.filter((entry) => {
+    const status = normalizeQueueStatus(entry.status)
+    return status === VIDEO_STATUS.QUEUED || status === VIDEO_STATUS.RETRYING || status === 'pending'
+  })
   if (!wake.length) return 0
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite')
     const store = tx.objectStore(STORE_NAME)
     for (const entry of wake) {
-      entry.status = 'pending'
+      entry.status = VIDEO_STATUS.QUEUED
       entry.nextAttemptAt = null
       store.put(entry)
     }
@@ -510,7 +590,10 @@ export async function unlockOutstandingForImmediateRetry() {
 
 export async function getQueueCount() {
   const outstanding = await getOutstandingVideos()
-  return outstanding.filter((v) => v.status === 'pending').length
+  return outstanding.filter((v) => {
+    const status = normalizeQueueStatus(v.status)
+    return status !== VIDEO_STATUS.FAILED && status !== VIDEO_STATUS.STORAGE_FAILED
+  }).length
 }
 
 export async function getFailedCount() {

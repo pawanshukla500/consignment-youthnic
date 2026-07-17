@@ -40,7 +40,7 @@ export async function estimateBrowserStorage() {
 }
 
 /** Warn when free space is below this many MB before a long recording. */
-export const MIN_RECOMMENDED_FREE_MB = 200
+export const MIN_RECOMMENDED_FREE_MB = 250
 
 export function isStorageInsufficient(estimate, minFreeMb = MIN_RECOMMENDED_FREE_MB) {
   if (!estimate?.supported || estimate.freeMb == null) return false

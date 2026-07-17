@@ -16,11 +16,13 @@ import {
   finalizeRecordingSessionInWorker,
   isTerminalSuccess,
 } from '../services/videoUploadService';
+import { VIDEO_STATUS, VIDEO_UPLOAD_CONFIG } from '../utils/videoUploadConfig'
 import {
   requestPersistentStorage,
   estimateBrowserStorage,
   isStorageInsufficient,
   formatStorageMessage,
+  MIN_RECOMMENDED_FREE_MB,
 } from '../utils/browserStorage';
 import { escapeHtml, openEscapedPrintWindow } from '../utils/printHtml';
 import { enqueueScan, drainScanQueue, getPendingScanCount, getFailedScanCount, resetFailedScans, warmScanQueueDb } from '../utils/scanQueue';
@@ -214,6 +216,8 @@ export default function PackingStation() {
   const [uploading]      = useState(false);
   const [pendingUploads, setPendingUploads]  = useState(0);
   const [currentVideoUpload, setCurrentVideoUpload] = useState(null);
+  /** Live per-box upload statuses from the background worker (queued→…→completed/failed). */
+  const [boxVideoStatuses, setBoxVideoStatuses] = useState([]);
   const [pendingScanJobs, setPendingScanJobs] = useState(0);
   const [pendingSaveJobs, setPendingSaveJobs] = useState(0);
   const [failedSyncJobs, setFailedSyncJobs] = useState(0);
@@ -338,11 +342,12 @@ export default function PackingStation() {
     fetchConsignments();
     updatePendingCount();
     const si = setInterval(() => checkSyncStatus(cidRef.current), 8000);
-    const unsubVideo = subscribeVideoUploadStatus(({ pending, current, uploading }) => {
+    const unsubVideo = subscribeVideoUploadStatus(({ pending, current, uploading, items }) => {
       setPendingUploads(pending);
       setCurrentVideoUpload(current || null);
-      setShowUpload(Boolean(uploading || current));
+      setShowUpload(Boolean(uploading || current || pending > 0));
       setUploadProgress(Number(current?.progress) || 0);
+      if (Array.isArray(items)) setBoxVideoStatuses(items);
     });
     const handleOnline = () => runPendingSync(true);
     const handleOffline = () => setSyncState('offline');
@@ -350,21 +355,43 @@ export default function PackingStation() {
     window.addEventListener('offline', handleOffline);
 
     const onProgress = (e) => {
-      setUploadLog(prev => prev.map(l => l.id === e.detail.id ? { ...l, status: 'uploading', progress: e.detail.progress } : l));
+      setUploadLog(prev => prev.map(l => l.id === e.detail.id ? {
+        ...l,
+        status: e.detail.status || 'uploading',
+        progress: e.detail.progress,
+      } : l));
+    };
+    const onStatus = (e) => {
+      setUploadLog((prev) => {
+        const idx = prev.findIndex((l) => l.id === e.detail.id)
+        const row = {
+          id: e.detail.id,
+          name: e.detail.fileName || `box_${e.detail.boxNo}.webm`,
+          boxNo: e.detail.boxNo,
+          status: e.detail.status || 'queued',
+          progress: e.detail.progress || 0,
+          error: e.detail.lastError || null,
+        }
+        if (idx < 0) return [...prev, row]
+        const next = [...prev]
+        next[idx] = { ...next[idx], ...row }
+        return next
+      })
     };
     const onDone = (e) => {
-      setUploadLog(prev => prev.map(l => l.id === e.detail.id ? { ...l, status: 'done', progress: 100 } : l));
-      toast(`Video uploaded: Box #${e.detail.metadata.boxNo}`, 'success');
+      setUploadLog(prev => prev.map(l => l.id === e.detail.id ? { ...l, status: 'completed', progress: 100 } : l));
+      toast(`Video verified: Box #${e.detail.metadata.boxNo}`, 'success');
     };
     const onError = (e) => {
       setUploadLog(prev => prev.map(l => l.id === e.detail.id ? {
         ...l,
-        status: e.detail.isFailed ? 'error' : 'retrying',
+        status: e.detail.isFailed ? 'failed' : 'retrying',
         error: e.detail.error || 'Upload failed',
       } : l));
     };
 
     window.addEventListener('video-upload-progress', onProgress);
+    window.addEventListener('video-upload-status', onStatus);
     window.addEventListener('video-upload-done', onDone);
     window.addEventListener('video-upload-error', onError);
 
@@ -376,6 +403,7 @@ export default function PackingStation() {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('video-upload-progress', onProgress);
+      window.removeEventListener('video-upload-status', onStatus);
       window.removeEventListener('video-upload-done', onDone);
       window.removeEventListener('video-upload-error', onError);
     };
@@ -729,7 +757,7 @@ export default function PackingStation() {
     try {
       const persistResult = await requestPersistentStorage();
       const storageEstimate = await estimateBrowserStorage();
-      if (isStorageInsufficient(storageEstimate)) {
+      if (isStorageInsufficient(storageEstimate, VIDEO_UPLOAD_CONFIG.minFreeStorageMb || MIN_RECOMMENDED_FREE_MB)) {
         toast(
           `Low browser storage — ${formatStorageMessage(storageEstimate)} Free space before a long recording.`,
           'warning',
@@ -946,7 +974,7 @@ export default function PackingStation() {
     setShowUpload(true);
     if (!silent) toast('Finishing video upload(s)…', 'info', 3500);
 
-    const deadline = Date.now() + 5 * 60 * 1000;
+    const deadline = Date.now() + VIDEO_UPLOAD_CONFIG.finishDrainTimeoutMs;
     while (Date.now() < deadline) {
       let drainOk = false;
       try {
@@ -954,7 +982,7 @@ export default function PackingStation() {
           wait: true,
           retryFailed: true,
           forceNow: true,
-          timeoutMs: 45000,
+          timeoutMs: VIDEO_UPLOAD_CONFIG.drainSliceTimeoutMs,
         });
         drainOk = isTerminalSuccess(drain);
       } catch (drainErr) {
@@ -1522,8 +1550,10 @@ export default function PackingStation() {
       id: v.id,
       name: v.metadata?.fileName || `box_${v.metadata?.boxNo}.webm`,
       boxNo: v.metadata?.boxNo,
-      status: v.status === 'failed' ? 'error' : (v.nextAttemptAt && v.nextAttemptAt > Date.now() ? 'retrying' : 'queued'),
-      progress: 0,
+      status: v.status === 'failed' || v.status === 'storage_failed'
+        ? 'failed'
+        : (v.status === 'pending' ? 'queued' : (v.status || 'queued')),
+      progress: Number(v.progress) || 0,
       error: v.lastError || null,
     })));
     setShowUploadLog(true);
@@ -2114,6 +2144,54 @@ export default function PackingStation() {
           )}
           <div className="flex items-center gap-1.5"><span className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">Box</span><span className="text-sm font-bold font-mono text-red-600">{S.box || '—'}</span></div>
         </div>
+
+        {/* Always-visible per-box video upload statuses (non-blocking for next box). */}
+        {(boxVideoStatuses.length > 0 || recState === 'REC' || pendingUploads > 0) && S.cid && (
+          <div className="mt-2 rounded-xl px-3 py-2 bg-white border border-slate-100 shadow-sm">
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">Box videos</span>
+              <span className="text-[9px] text-slate-400">
+                Next box is not blocked by uploads · Finish waits for verified
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {recState === 'REC' && S.box && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-red-50 text-red-700 border border-red-200">
+                  Box {S.box}: recording
+                </span>
+              )}
+              {boxVideoStatuses
+                .filter((item) => !S.cid || String(item.consignmentId || '') === String(S.cid) || !item.consignmentId)
+                .map((item) => {
+                  const status = item.status || VIDEO_STATUS.QUEUED
+                  const tone =
+                    status === VIDEO_STATUS.COMPLETED || status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    : status === VIDEO_STATUS.FAILED || status === VIDEO_STATUS.STORAGE_FAILED ? 'bg-red-50 text-red-700 border-red-200'
+                    : status === VIDEO_STATUS.RETRYING ? 'bg-amber-50 text-amber-700 border-amber-200'
+                    : status === VIDEO_STATUS.VERIFYING ? 'bg-violet-50 text-violet-700 border-violet-200'
+                    : status === VIDEO_STATUS.UPLOADING ? 'bg-blue-50 text-blue-700 border-blue-200'
+                    : 'bg-slate-50 text-slate-600 border-slate-200'
+                  return (
+                    <span
+                      key={item.id}
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border ${tone}`}
+                      title={item.lastError || undefined}
+                    >
+                      Box {item.boxNo || '?'}: {status}
+                      {status === VIDEO_STATUS.UPLOADING || status === VIDEO_STATUS.VERIFYING
+                        ? ` ${Math.round(item.progress || 0)}%`
+                        : ''}
+                    </span>
+                  )
+                })}
+              {!boxVideoStatuses.length && pendingUploads > 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                  {pendingUploads} queued for upload
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Main Grid */}
@@ -2309,9 +2387,9 @@ export default function PackingStation() {
             <div className="text-[10px] mb-1 text-slate-500 flex justify-between gap-2">
               <span>
                 {currentVideoUpload
-                  ? `Uploading Box #${currentVideoUpload.boxNo || '?'}…`
+                  ? `${currentVideoUpload.status === VIDEO_STATUS.VERIFYING ? 'Verifying' : 'Uploading'} Box #${currentVideoUpload.boxNo || '?'}…`
                   : pendingUploads > 0
-                    ? `Saving ${pendingUploads} video(s)…`
+                    ? `${pendingUploads} video(s) in background queue`
                     : 'Saving video…'}
               </span>
               <span className="font-mono">{uploadProgress || 0}%</span>
@@ -2534,45 +2612,50 @@ export default function PackingStation() {
                 <h3 className="text-white font-bold text-sm">Video Upload Progress</h3>
                 <p className="text-white/70 text-[11px]">Uploading packing videos to cloud</p>
               </div>
-              {uploadLog.every(l => l.status === 'done' || l.status === 'error' || l.status === 'retrying') && (
+              {uploadLog.every(l => ['completed', 'done', 'failed', 'error', 'retrying'].includes(l.status)) && (
                 <button onClick={() => setShowUploadLog(false)} className="text-white/70 hover:text-white text-lg leading-none px-2">✕</button>
               )}
             </div>
             <div className="p-4 space-y-3 max-h-[320px] overflow-y-auto">
-              {uploadLog.map((item) => (
+              {uploadLog.map((item) => {
+                const done = item.status === 'completed' || item.status === 'done'
+                const failed = item.status === 'failed' || item.status === 'error' || item.status === 'storage_failed'
+                const active = item.status === 'uploading' || item.status === 'verifying' || item.status === 'retrying'
+                return (
                 <div key={item.id} className="bg-slate-50 rounded-xl p-3">
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="flex items-center gap-2 min-w-0">
-                      {item.status === 'done'     && <span className="text-emerald-500 text-sm">✅</span>}
-                      {item.status === 'error'    && <span className="text-red-500 text-sm">❌</span>}
-                      {(item.status === 'uploading' || item.status === 'retrying') && <span className="w-3.5 h-3.5 border-2 border-primary-300 border-t-primary-600 rounded-full animate-spin inline-block" />}
-                      {item.status === 'queued'   && <span className="text-slate-400 text-sm">⏳</span>}
+                      {done && <span className="text-emerald-500 text-sm">✓</span>}
+                      {failed && <span className="text-red-500 text-sm">×</span>}
+                      {active && <span className="w-3.5 h-3.5 border-2 border-primary-300 border-t-primary-600 rounded-full animate-spin inline-block" />}
+                      {item.status === 'queued' && <span className="text-slate-400 text-sm">…</span>}
                       <span className="text-[11px] font-medium text-slate-700 truncate">Box #{item.boxNo}</span>
                     </div>
-                    <span className={`text-[10px] font-semibold ${item.status === 'done' ? 'text-emerald-600' : item.status === 'error' ? 'text-red-600' : 'text-primary-600'}`}>
-                      {item.status === 'done' ? '100%' : item.status === 'error' ? 'Failed' : item.status === 'retrying' ? 'Retrying' : item.status === 'queued' ? 'Waiting' : `${item.progress}%`}
+                    <span className={`text-[10px] font-semibold ${done ? 'text-emerald-600' : failed ? 'text-red-600' : 'text-primary-600'}`}>
+                      {done ? 'Verified' : failed ? 'Failed' : item.status === 'retrying' ? 'Retrying' : item.status === 'verifying' ? 'Verifying' : item.status === 'queued' ? 'Queued' : `${item.progress}%`}
                     </span>
                   </div>
                   <div className="progress-bar">
-                    <div className="progress-bar-fill" style={{ width: `${item.progress}%`, background: item.status === 'done' ? '#10b981' : item.status === 'error' ? '#ef4444' : undefined }} />
+                    <div className="progress-bar-fill" style={{ width: `${item.progress}%`, background: done ? '#10b981' : failed ? '#ef4444' : undefined }} />
                   </div>
                   <p className="text-[9px] text-slate-400 mt-1 truncate">{item.name}</p>
                   {item.error && <p className="text-[9px] text-red-500 mt-1 truncate">{item.error}</p>}
                 </div>
-              ))}
+                )
+              })}
             </div>
             <div className="border-t border-slate-100 px-4 py-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] text-slate-500">
-                  {uploadLog.filter(l => l.status === 'done').length} / {uploadLog.length} uploaded
+                  {uploadLog.filter(l => l.status === 'completed' || l.status === 'done').length} / {uploadLog.length} verified
                 </span>
-                {uploadLog.every(l => l.status === 'done' || l.status === 'error' || l.status === 'retrying') && (
+                {uploadLog.every(l => ['completed', 'done', 'failed', 'error', 'retrying'].includes(l.status)) && (
                   <button onClick={() => setShowUploadLog(false)} className="px-4 py-1.5 bg-primary-600 text-white rounded-lg text-xs font-semibold hover:bg-primary-700 transition-colors">
                     Done
                   </button>
                 )}
               </div>
-              {uploadLog.some((l) => l.status === 'error' || l.status === 'retrying' || l.status === 'queued') && (
+              {uploadLog.some((l) => ['failed', 'error', 'retrying', 'queued', 'uploading', 'verifying'].includes(l.status)) && (
                 <div className="flex flex-wrap gap-1.5">
                   <button
                     type="button"
