@@ -207,7 +207,16 @@ const pgHelpers = {
     return rows.map((r) => r.data);
   },
 
-  async queryConsignmentsPaginated({ statuses, marketplaceId, search, sort, offset = 0, limit = 50 }) {
+  async queryConsignmentsPaginated({
+    statuses,
+    marketplaceId,
+    search,
+    sort,
+    offset = 0,
+    limit = 50,
+    includeArchived = false,
+    archivedOnly = false,
+  }) {
     const params = [];
     let n = 1;
     let whereClauses = ["collection = 'consignments'"];
@@ -220,6 +229,17 @@ const pgHelpers = {
       whereClauses.push(`data->>'marketplaceId' = $${n++}`);
       params.push(marketplaceId);
     }
+    if (archivedOnly) {
+      whereClauses.push(`(
+        coalesce(data->>'operationalStatus','') = 'archived'
+        OR coalesce(data->>'isArchived','') = 'true'
+      )`);
+    } else if (!includeArchived) {
+      whereClauses.push(`(
+        coalesce(data->>'operationalStatus','') <> 'archived'
+        AND coalesce(data->>'isArchived','') <> 'true'
+      )`);
+    }
     if (search) {
       const term = `%${search.toLowerCase()}%`;
       whereClauses.push(`(
@@ -227,6 +247,9 @@ const pgHelpers = {
         OR lower(coalesce(data->>'shipmentNo','')) LIKE $${n}
         OR lower(coalesce(data->>'internalShipmentNo','')) LIKE $${n}
         OR lower(coalesce(data->>'name','')) LIKE $${n}
+        OR lower(coalesce(data->>'docketNo','')) LIKE $${n}
+        OR lower(coalesce(data->>'forwardInvoiceNo','')) LIKE $${n}
+        OR lower(coalesce(data->'invoice'->>'number','')) LIKE $${n}
       )`);
       params.push(term);
       n++;

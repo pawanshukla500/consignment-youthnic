@@ -14,6 +14,8 @@ const {
   canAdvanceLogistics,
   emptyStageConfirmations,
   buildTatDeadlines,
+  canArchiveConsignment,
+  isStageConfirmed,
 } = require('../utils/consignmentWorkflow');
 const { saveBoxWithPostgresTransaction } = require('../utils/packingPersistence');
 const { getMarketplaceBarcode, normalizeSkuInput } = require('../utils/skuIdentity');
@@ -643,11 +645,27 @@ async function applyDispatchPlanning(consignment, marketplaceMap) {
 // Get all consignments - datastore-agnostic helper backed by Supabase/Postgres
 router.get('/', authenticateToken, requirePermission('consignments', 'view consignments'), async (req, res) => {
   try {
-    const { status, search, marketplaceId, limit, sort, page, offset: offsetParam } = req.query;
+    const {
+      status,
+      search,
+      marketplaceId,
+      limit,
+      sort,
+      page,
+      offset: offsetParam,
+      includeArchived,
+      archivedOnly,
+    } = req.query;
     const pageSize = limit ? Math.min(parseInt(limit) || 50, 200) : 50;
     const pageNum = Math.max(1, parseInt(page) || 1);
     const offset = offsetParam != null ? Math.max(0, parseInt(offsetParam) || 0) : (pageNum - 1) * pageSize;
     const statuses = status ? status.split(',').map(s => s.trim()) : null;
+    // Archived consignments stay out of the active ops list unless searching or explicitly requested.
+    const wantArchivedOnly = String(archivedOnly || '').toLowerCase() === 'true' || archivedOnly === '1';
+    const wantIncludeArchived = wantArchivedOnly
+      || Boolean(search && String(search).trim())
+      || String(includeArchived || '').toLowerCase() === 'true'
+      || includeArchived === '1';
 
     let consignments;
     let total;
@@ -661,6 +679,8 @@ router.get('/', authenticateToken, requirePermission('consignments', 'view consi
           sort: sort || null,
           offset,
           limit: pageSize,
+          includeArchived: wantIncludeArchived,
+          archivedOnly: wantArchivedOnly,
         });
         consignments = result.items;
         total = result.total;
@@ -685,8 +705,17 @@ router.get('/', authenticateToken, requirePermission('consignments', 'view consi
           c.id?.toLowerCase().includes(s) ||
           c.shipmentNo?.toLowerCase().includes(s) ||
           c.internalShipmentNo?.toLowerCase().includes(s) ||
-          c.name?.toLowerCase().includes(s)
+          c.name?.toLowerCase().includes(s) ||
+          c.docketNo?.toLowerCase().includes(s) ||
+          c.forwardInvoiceNo?.toLowerCase().includes(s) ||
+          c.invoice?.number?.toLowerCase().includes(s)
         );
+      }
+      const isArchivedRow = (c) => c?.operationalStatus === 'archived' || c?.isArchived === true;
+      if (wantArchivedOnly) {
+        consignments = consignments.filter(isArchivedRow);
+      } else if (!wantIncludeArchived) {
+        consignments = consignments.filter((c) => !isArchivedRow(c));
       }
     }
 
@@ -1168,13 +1197,11 @@ router.get('/:id', authenticateToken, requireAnyPermission(['consignments', 'pac
       url: d.url || null,
     }));
 
-    // Supabase PostgreSQL is the single operational store now.
-    // The previous archive/migration state no longer applies.
-    const isArchived = false;
     const postgresSupport = pgEnabled();
 
     const marketplaceMap = marketplace ? { [marketplace.id]: marketplace } : {};
     const enriched = enrichWorkflowFields(enrichConsignment(consignment, marketplaceMap));
+    const isArchived = Boolean(enriched.isArchived || enriched.operationalStatus === 'archived');
     const validSkus = (skus || []).filter(Boolean);
 
     // Boxes are the source of truth for packed qty (reflects removals/edits)
@@ -1683,14 +1710,42 @@ router.post('/:id/boxes', authenticateToken, requirePermission('packing', 'save 
   }
 });
 
-// Archive consignment to PostgreSQL
+// Soft-archive consignment (keeps PostgreSQL data; hides from active lists)
 router.post('/:id/archive', authenticateToken, requirePermission('consignments', 'archive consignments'), async (req, res) => {
-  const { id } = req.params;
-  return res.status(410).json({
-    error: 'Archive endpoint disabled. Supabase PostgreSQL is now the single source of truth for active and dispatched consignments.',
-    consignmentId: id,
-    action: 'No migration step is required; update the consignment status to packed/dispatched instead.',
-  });
+  try {
+    const { id } = req.params;
+    const consignment = await firestoreHelpers.getDocument('consignments', id);
+    if (!consignment) return res.status(404).json({ error: 'Consignment not found' });
+
+    const gate = canArchiveConsignment(consignment);
+    if (!gate.ok) {
+      return res.status(409).json({ error: gate.error, code: gate.code });
+    }
+
+    const archivedAt = now();
+    const updates = {
+      operationalStatus: 'archived',
+      isArchived: true,
+      archivedAt,
+      archivedReason: req.body?.reason
+        || (isStageConfirmed(consignment, 'inward_completed')
+          ? 'Inward verified — archived'
+          : 'Manually archived after inward'),
+      archivedByUserId: req.user.id,
+      archivedByName: req.user.name || req.user.email,
+      updatedAt: archivedAt,
+    };
+    await firestoreHelpers.setDocument('consignments', id, updates);
+    await addAuditLog('archive', 'consignment', id, req.user.id, {
+      reason: updates.archivedReason,
+      previousStatus: consignment.shipmentStatus,
+    });
+    const enriched = enrichWorkflowFields({ ...consignment, ...updates });
+    emitConsignmentChange(enriched);
+    res.json({ consignment: enriched });
+  } catch (error) {
+    sendError(res, error);
+  }
 });
 
 module.exports = router;

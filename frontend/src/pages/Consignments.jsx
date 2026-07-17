@@ -125,7 +125,9 @@ export default function Consignments() {
           search: debouncedSearch || undefined,
           sort: 'workflow',
           limit: pageSize,
-          page: page
+          page: page,
+          archivedOnly: workflowFilter === 'archived' ? 'true' : undefined,
+          includeArchived: workflowFilter === 'archived' || debouncedSearch ? 'true' : undefined,
         }),
         marketplacesAPI.getAll(),
         docketCompaniesAPI.getAll()
@@ -137,7 +139,7 @@ export default function Consignments() {
       setDocketCompanies(dcRes.data.companies || []);
     } catch (error) { addToast('Failed to load', 'error'); }
     finally { setLoading(false); setRefreshing(false); }
-  }, [mpFilter, debouncedSearch, page, pageSize, addToast]);
+  }, [mpFilter, debouncedSearch, page, pageSize, workflowFilter, addToast]);
 
   // Reset page to 1 when search or filters change
   useEffect(() => {
@@ -592,7 +594,7 @@ export default function Consignments() {
               type="text"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search by consignment ID, internal shipment no, name..."
+              placeholder="Search by consignment ID, shipment, docket, invoice…"
               className="inp pl-8 py-1.5 text-xs"
             />
           </div>

@@ -23,7 +23,14 @@ const {
   getOverdueStages,
   canAdvanceLogistics,
   sortConsignmentsByWorkflowPriority,
+  normalizeDepartment,
 } = require('../utils/consignmentWorkflow');
+const {
+  userCanConfirmStage,
+  departmentLabel,
+  listDepartmentOptions,
+  NEXT_ASSIGNMENT_DEPARTMENT,
+} = require('../utils/departments');
 
 /** Prevent duplicate Org Head emails within the same UTC calendar day */
 let lastWeeklyReportKey = null;
@@ -33,7 +40,61 @@ async function getUserEmail(userId) {
   if (!userId) return null;
   const user = await firestoreHelpers.getDocument('users', userId);
   if (!user || user.isActive === false) return null;
-  return { email: user.email, name: user.name || user.email, id: user.id, role: user.role };
+  return {
+    email: user.email,
+    name: user.name || user.email,
+    id: user.id,
+    role: user.role,
+    department: normalizeDepartment(user.department),
+  };
+}
+
+async function listUsersByDepartment(departmentKey) {
+  const dept = normalizeDepartment(departmentKey);
+  if (!dept) return [];
+  const users = await firestoreHelpers.getCollection('users');
+  return users.filter(
+    (u) => u.isActive !== false
+      && u.email
+      && (normalizeDepartment(u.department) === dept || (dept === 'management' && ['admin', 'organization_head'].includes(u.role)))
+  );
+}
+
+async function autoAssignDepartment(consignmentId, consignment, departmentKey, actor) {
+  const candidates = await listUsersByDepartment(departmentKey);
+  if (!candidates.length) {
+    return {
+      ok: false,
+      reason: `No active users in ${departmentLabel(departmentKey) || departmentKey}`,
+      department: departmentKey,
+    };
+  }
+  // Prefer an already-assigned person in that department; else first candidate
+  const preferred = candidates.find((u) => u.id === consignment.groundTeamUserId) || candidates[0];
+  const assignedAt = now();
+  const updates = {
+    groundTeamUserId: preferred.id,
+    groundTeamName: preferred.name || preferred.email,
+    groundTeamEmail: preferred.email,
+    assignedAt,
+    assignedByUserId: actor?.id || 'system',
+    assignedDepartment: departmentKey,
+    assignedDepartmentLabel: departmentLabel(departmentKey),
+    departmentAssignedAt: assignedAt,
+    updatedAt: assignedAt,
+  };
+  await firestoreHelpers.setDocument('consignments', consignmentId, updates);
+  await addAuditLog('auto_assign_department', 'consignment', consignmentId, actor?.id || 'system', {
+    department: departmentKey,
+    userId: preferred.id,
+    userName: preferred.name,
+  });
+  return {
+    ok: true,
+    assignee: preferred,
+    updates,
+    notifiedUsers: candidates,
+  };
 }
 
 async function listManagementEmails() {
@@ -137,17 +198,20 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
     const consignment = await firestoreHelpers.getDocument('consignments', req.params.id);
     if (!consignment) return res.status(404).json({ error: 'Consignment not found.' });
 
-    const { stage, note, approve_invoice_exception: approveInvoiceException } = req.body || {};
+    const {
+      stage,
+      note,
+      approve_invoice_exception: approveInvoiceException,
+      ...stagePayload
+    } = req.body || {};
     if (!stage) return res.status(400).json({ error: 'stage is required.' });
 
-    const isAssignee = consignment.groundTeamUserId && consignment.groundTeamUserId === req.user.id;
     const isAdmin = req.user.role === 'admin';
-    // Org heads are email-report recipients — they must not act as ground/admin on stages.
-    // Invoice mismatch exceptions remain elevatable by admin (or via dedicated org-head report APIs).
-    if (!isAssignee && !isAdmin) {
+    if (!userCanConfirmStage(req.user, stage, consignment) && !isAdmin) {
       return res.status(403).json({
-        error: 'Only the assigned ground team member (or an admin) can confirm this stage.',
-        code: 'NOT_ASSIGNEE',
+        error: 'Your department is not authorized to confirm this workflow stage.',
+        code: 'DEPARTMENT_FORBIDDEN',
+        requiredDepartments: require('../utils/departments').STAGE_DEPARTMENTS[stage] || [],
       });
     }
 
@@ -174,14 +238,39 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
       }
     }
 
-    const result = applyStageConfirmation(consignment, stage, req.user, note);
+    const result = applyStageConfirmation(consignment, stage, req.user, note, stagePayload);
     if (!result.ok) {
-      return res.status(409).json({ error: result.error, code: result.code, requiredStage: result.requiredStage });
+      return res.status(409).json({
+        error: result.error,
+        code: result.code,
+        requiredStage: result.requiredStage,
+        plannedQty: result.plannedQty,
+        packedQty: result.packedQty,
+        shortQty: result.shortQty,
+      });
     }
 
     await firestoreHelpers.setDocument('consignments', consignment.id, result.updates);
-    const next = enrichWorkflowFields({ ...consignment, ...result.updates });
-    await addAuditLog('confirm_stage', 'consignment', consignment.id, req.user.id, { stage, note: note || null });
+    let merged = { ...consignment, ...result.updates };
+
+    // Auto-assign next department owners (invoice / dispatch / inward)
+    let autoAssign = null;
+    const nextDept = result.assignDepartment || NEXT_ASSIGNMENT_DEPARTMENT[stage];
+    if (nextDept && !merged.isArchived && merged.operationalStatus !== 'archived') {
+      autoAssign = await autoAssignDepartment(consignment.id, merged, nextDept, req.user);
+      if (autoAssign.ok) {
+        merged = { ...merged, ...autoAssign.updates };
+      }
+    }
+
+    const next = enrichWorkflowFields(merged);
+    await addAuditLog('confirm_stage', 'consignment', consignment.id, req.user.id, {
+      stage,
+      note: note || null,
+      details: result.updates.stageConfirmations?.[stage]?.details || null,
+      autoStages: result.autoStages || [],
+      assignedDepartment: nextDept || null,
+    });
     emitConsignmentChange(next);
 
     const mail = buildWorkflowEmail({
@@ -192,13 +281,22 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
       stageLabel: STAGE_LABELS[stage] || stage,
       badge: next.pendingAction ? 'Next action pending' : 'Stage complete',
       accent: '#047857',
-      extraHtml: next.pendingAction
-        ? `<p style="margin:0 0 16px;font-size:13px;color:#b45309;line-height:1.6"><strong>Next required action:</strong> ${escapeHtml(next.pendingAction)}</p>`
-        : '',
+      extraHtml: [
+        next.pendingAction
+          ? `<p style="margin:0 0 16px;font-size:13px;color:#b45309;line-height:1.6"><strong>Next required action:</strong> ${escapeHtml(next.pendingAction)}</p>`
+          : '',
+        next.assignedDepartmentLabel
+          ? `<p style="margin:0 0 16px;font-size:13px;color:#475569;line-height:1.6"><strong>Assigned department:</strong> ${escapeHtml(next.assignedDepartmentLabel)}</p>`
+          : '',
+      ].join(''),
     });
 
     const recipients = [];
-    if (next.groundTeamEmail) recipients.push(next.groundTeamEmail);
+    if (autoAssign?.ok && autoAssign.notifiedUsers?.length) {
+      recipients.push(...autoAssign.notifiedUsers.map((u) => u.email));
+    } else if (next.groundTeamEmail) {
+      recipients.push(next.groundTeamEmail);
+    }
     const managers = await listManagementEmails();
     recipients.push(...managers.map((m) => m.email));
     const emailResults = await notifyMany(recipients, { ...mail, tags: ['workflow', 'stage-confirm'] });
@@ -206,6 +304,11 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
     res.json({
       consignment: next,
       stage,
+      autoStages: result.autoStages || [],
+      assignedDepartment: nextDept || null,
+      autoAssign: autoAssign
+        ? { ok: autoAssign.ok, reason: autoAssign.reason || null, userId: autoAssign.assignee?.id || null }
+        : null,
       emailSent: emailResults.some((r) => r.ok),
     });
   } catch (error) {
@@ -408,21 +511,31 @@ router.get('/stages', authenticateToken, (req, res) => {
 /** Active users selectable as ground-team assignees */
 router.get('/assignees', authenticateToken, requireAnyPermission(['consignments', 'users'], 'list assignees'), async (req, res) => {
   try {
+    const { department } = req.query || {};
+    const deptFilter = normalizeDepartment(department);
     const users = await firestoreHelpers.getCollection('users');
     const list = users
       .filter((u) => u.isActive !== false && u.email)
+      .filter((u) => !deptFilter || normalizeDepartment(u.department) === deptFilter)
       .map((u) => ({
         id: u.id,
         name: u.name || u.email,
         email: u.email,
         role: u.role || 'user',
+        department: normalizeDepartment(u.department),
+        departmentLabel: departmentLabel(u.department),
       }))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
-    res.json({ users: list });
+    res.json({ users: list, departments: listDepartmentOptions() });
   } catch (error) {
     console.error('[workflow/assignees]', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+/** Department catalog for user management + workflow UI */
+router.get('/departments', authenticateToken, (_req, res) => {
+  res.json({ departments: listDepartmentOptions() });
 });
 
 module.exports = {
