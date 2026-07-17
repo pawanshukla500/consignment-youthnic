@@ -2,6 +2,7 @@
  * H1 permission helper tests.
  * Run: node scripts/test-permissions.js
  */
+require('./ensureTestEnv');
 const assert = require('assert');
 const {
   hasPermission,

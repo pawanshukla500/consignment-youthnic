@@ -3,7 +3,8 @@
  *
  * shipmentStatus lifecycle (auto):
  *   Planned | Scheduled  →  Under Packing  (packing started)
- *   Under Packing        →  Ready          (all units packed)
+ *   Under Packing        →  (stays) until ground-team confirms packing_completed
+ *                           then ready_for_dispatch before Ready logistics
  *
  * status lifecycle (auto):
  *   pending → in_progress (packing started / box saved)

@@ -28,9 +28,27 @@ assert.ok(!/void emitPackingProgress\(consignment_id, session, 'packing_scan'\)/
 assert.ok(!draftSrc.includes('scanResults: session.scanResults'), 'drafts must not persist full scanResults');
 assert.ok(packingStationSrc.includes('start(1000)'), 'MediaRecorder must use 1s timeslice');
 assert.ok(packingStationSrc.includes('pagehide'), 'must flush recording on pagehide');
-assert.ok(packingStationSrc.includes('getPendingVideos'), 'finish must wait for local video queue');
+assert.ok(
+  packingStationSrc.includes('processVideoUploadQueue')
+    && packingStationSrc.includes('requireUploaded: true')
+    && packingStationSrc.includes('getOutstandingVideos'),
+  'finish must await upload drain + outstanding local videos'
+);
+assert.ok(
+  videoServiceSrc.includes('createDrainWaiterRegistry')
+    || videoServiceSrc.includes('drainWaiters')
+    || videoServiceSrc.includes('settleDrain'),
+  'video service must use structured drain waiters'
+);
+assert.ok(videoServiceSrc.includes('resolve'), 'drain waiter must store resolve');
+assert.ok(videoServiceSrc.includes('reject'), 'drain waiter must store reject');
+assert.ok(!/pendingDrain\.set\([^,]+,\s*\(/.test(videoServiceSrc), 'must not store drain waiter as bare callback');
 assert.ok(workerSrc.includes('/boxes/box_'), 'worker must use canonical boxes/box_ path');
 assert.ok(!workerSrc.includes('/videos/${metadata.boxNo}/'), 'worker must not use legacy videos/{boxNo} path');
+assert.ok(!/finally\s*\{[\s\S]*return\s+status/.test(workerSrc), 'worker must not return from finally');
+assert.ok(workerSrc.includes('uploadedIds'), 'worker drain response must include uploadedIds');
+assert.ok(packingStationSrc.includes('inspectChunkWriteSettlements'), 'must inspect IndexedDB chunk write settlements');
+assert.ok(packingStationSrc.includes('storage_failed') || packingStationSrc.includes('STORAGE_FAILED'), 'must surface storage_failed');
 assert.ok(videoServiceSrc.includes('removeEventListener'), 'video service must remove listeners on stop');
 
 const { rebuildSessionSkuTotalsFromBoxes } = require('../utils/packingQuantities');
