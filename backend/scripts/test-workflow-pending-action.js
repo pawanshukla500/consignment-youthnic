@@ -60,7 +60,7 @@ const {
   const result = applyStageConfirmation(c, 'packing_completed', { id: 'u', name: 'T' }, null, {});
   assert.ok(result.ok);
   const next = { ...c, ...result.updates };
-  assert.strictEqual(getPendingActionLabel(next), 'Upload invoice & mark invoice completed');
+  assert.strictEqual(getPendingActionLabel(next), 'Enter invoice number, date & amount');
   assert.ok(next.stageConfirmations.ready_for_invoice.confirmedAt);
 }
 

@@ -2017,9 +2017,9 @@ const ConsignmentDetail = () => {
                 <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-4">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-2">
                     <div>
-                      <h3 className="text-sm font-bold text-slate-900">Invoice upload</h3>
+                      <h3 className="text-sm font-bold text-slate-900">Invoice upload (optional)</h3>
                       <p className="text-xs text-slate-600 mt-0.5">
-                        Invoice Creation Team must upload the invoice document before marking Invoice completed in the workflow panel.
+                        Document upload is optional. Confirm Invoice completed with invoice number, date, and amount in the workflow panel.
                       </p>
                     </div>
                     <label className="flex items-center gap-2 px-3 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 cursor-pointer transition-colors text-xs font-semibold">
@@ -2053,11 +2053,11 @@ const ConsignmentDetail = () => {
                   </div>
                   {consignment.invoiceDocumentId ? (
                     <p className="text-xs text-emerald-700 font-medium">
-                      Invoice document attached · confirm Invoice created in the workflow panel
+                      Invoice document attached
                       {consignment.forwardInvoiceNo ? ` · ${consignment.forwardInvoiceNo}` : ''}
                     </p>
                   ) : (
-                    <p className="text-xs text-amber-800">No invoice document on file yet.</p>
+                    <p className="text-xs text-slate-600">No invoice document on file — optional for this stage.</p>
                   )}
                 </div>
               )}
