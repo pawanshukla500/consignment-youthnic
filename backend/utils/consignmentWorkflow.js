@@ -209,17 +209,26 @@ function canConfirmStage(consignment, stage, payload = {}) {
         code: 'INVOICE_MISSING',
       };
     }
-    const hasDoc = Boolean(payload.invoiceDocumentId) || hasInvoiceDocument({
-      ...consignment,
-      invoiceDocumentId: payload.invoiceDocumentId || consignment.invoiceDocumentId,
-    });
-    if (!hasDoc) {
+    const invoiceDate = String(payload.invoiceDate || consignment.invoice?.date || '').trim();
+    if (!invoiceDate) {
       return {
         ok: false,
-        error: 'Upload the invoice document before marking invoice completed.',
-        code: 'INVOICE_DOCUMENT_REQUIRED',
+        error: 'Invoice date is required before confirming invoice created.',
+        code: 'INVOICE_DATE_REQUIRED',
       };
     }
+    const amountRaw = payload.invoiceAmount != null
+      ? payload.invoiceAmount
+      : consignment.invoice?.amount;
+    const invoiceAmount = amountRaw === '' || amountRaw == null ? NaN : Number(amountRaw);
+    if (!Number.isFinite(invoiceAmount) || invoiceAmount < 0) {
+      return {
+        ok: false,
+        error: 'Invoice amount is required before confirming invoice created.',
+        code: 'INVOICE_AMOUNT_REQUIRED',
+      };
+    }
+    // Invoice document upload is optional process support — not a stage gate.
   }
 
   if (stage === 'dispatched') {
@@ -596,7 +605,7 @@ function getPendingActionLabel(consignment) {
     return 'Packing not started';
   }
 
-  if (stage === 'invoice_created') return 'Upload invoice & mark invoice completed';
+  if (stage === 'invoice_created') return 'Enter invoice number, date & amount';
   if (stage === 'dispatched') return 'Enter docket details & mark dispatched';
   if (stage === 'inward_completed') return 'Record inward quantities';
 

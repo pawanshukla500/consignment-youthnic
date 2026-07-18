@@ -86,7 +86,7 @@ assert.ok(userCanConfirmStage({ role: 'admin' }, 'dispatched'));
   assert.strictEqual(NEXT_ASSIGNMENT_DEPARTMENT.packing_completed, 'invoice');
 }
 
-// --- Invoice requires document ---
+// --- Invoice requires number + date + amount; document optional ---
 {
   let c = {
     ...packingDoneShort(),
@@ -96,20 +96,29 @@ assert.ok(userCanConfirmStage({ role: 'admin' }, 'dispatched'));
       ready_for_invoice: { confirmedAt: '2026-07-01T00:00:00.000Z' },
     },
   };
-  assert.strictEqual(getPendingActionLabel(c), 'Upload invoice & mark invoice completed');
+  assert.strictEqual(getPendingActionLabel(c), 'Enter invoice number, date & amount');
 
-  const missingDoc = canConfirmStage(c, 'invoice_created', { invoiceNumber: 'INV-1' });
-  assert.strictEqual(missingDoc.ok, false);
-  assert.strictEqual(missingDoc.code, 'INVOICE_DOCUMENT_REQUIRED');
+  assert.strictEqual(
+    canConfirmStage(c, 'invoice_created', { invoiceNumber: 'INV-1' }).code,
+    'INVOICE_DATE_REQUIRED'
+  );
+  assert.strictEqual(
+    canConfirmStage(c, 'invoice_created', {
+      invoiceNumber: 'INV-1',
+      invoiceDate: '2026-07-02',
+    }).code,
+    'INVOICE_AMOUNT_REQUIRED'
+  );
 
+  // Document not required — number/date/amount alone is enough
   const inv = applyStageConfirmation(c, 'invoice_created', invoiceUser, null, {
     invoiceNumber: 'INV-1',
     invoiceDate: '2026-07-02',
     invoiceAmount: 1200,
-    invoiceDocumentId: 'doc-inv-1',
   });
   assert.ok(inv.ok);
   assert.strictEqual(inv.updates.forwardInvoiceNo, 'INV-1');
+  assert.strictEqual(inv.updates.invoice.amount, 1200);
   assert.ok(inv.updates.stageConfirmations.ready_for_dispatch.confirmedAt);
   assert.strictEqual(inv.updates.shipmentStatus, 'Ready');
   assert.strictEqual(inv.assignDepartment, 'dispatch');

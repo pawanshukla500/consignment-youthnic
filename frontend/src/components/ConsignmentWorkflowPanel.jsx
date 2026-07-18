@@ -240,7 +240,7 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
       return (
         <div className="w-full mt-2 grid sm:grid-cols-2 gap-2">
           <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Invoice number
+            Invoice number *
             <input
               type="text"
               value={f.invoiceNumber}
@@ -250,16 +250,17 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
             />
           </label>
           <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Invoice date
+            Invoice date *
             <input
               type="date"
               value={f.invoiceDate}
               onChange={(e) => updateForm('invoice_created', { invoiceDate: e.target.value })}
               className="inp text-xs w-full mt-1"
+              required
             />
           </label>
           <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Invoice amount
+            Invoice amount *
             <input
               type="number"
               min="0"
@@ -267,23 +268,24 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
               value={f.invoiceAmount}
               onChange={(e) => updateForm('invoice_created', { invoiceAmount: e.target.value })}
               className="inp text-xs w-full mt-1"
+              required
             />
           </label>
           <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Invoice document
+            Invoice document (optional)
             <select
               value={f.invoiceDocumentId}
               onChange={(e) => updateForm('invoice_created', { invoiceDocumentId: e.target.value })}
               className="inp text-xs w-full mt-1"
             >
-              <option value="">Select uploaded invoice…</option>
+              <option value="">No document</option>
               {(invoiceDocs.length ? invoiceDocs : (consignment?.documents || [])).map((d) => (
                 <option key={d.id} value={d.id}>{d.originalName || d.id}</option>
               ))}
             </select>
           </label>
           <p className="text-[10px] text-slate-500 sm:col-span-2">
-            Upload the invoice in the Documents tab (Invoice upload) before confirming.
+            Number, date, and amount are required. Document upload is optional and can be attached later from Documents.
           </p>
         </div>
       )
