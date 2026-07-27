@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { ArrowLeft, Mail, Phone, Building2, Clock, Send, MessageSquare, CheckCircle2 } from 'lucide-react';
 import logo from '../assets/logo.png';
 

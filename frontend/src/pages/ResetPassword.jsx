@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router'
 import { confirmPasswordReset, verifyPasswordResetCode } from 'firebase/auth'
 import { Eye, EyeOff, Loader2, CheckCircle2 } from 'lucide-react'
 import { auth as fbAuth } from '../config/firebase'

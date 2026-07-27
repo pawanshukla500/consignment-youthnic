@@ -72,9 +72,18 @@ assert.ok(serverSrc.includes('send-password-link'), 'emailLimiter must cover sen
 const deploySrc = fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'deploy.yml'), 'utf8');
 assert.ok(deploySrc.includes('MAILGUN_API_KEY'), 'deploy must provision Mailgun');
 assert.ok(!deploySrc.includes('RESEND_API_KEY'), 'deploy must not reference Resend');
+assert.ok(!deploySrc.includes('sync-secrets-to-gcp.sh'), 'deploy must not sync to GCP Secret Manager');
+assert.ok(deploySrc.includes('gcloud-deploy.sh'), 'deploy must use gcloud-deploy.sh');
+
+const deployScriptSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'gcloud-deploy.sh'), 'utf8');
+assert.ok(deployScriptSrc.includes('MAILGUN_API_KEY'), 'gcloud-deploy must set MAILGUN_API_KEY as env');
+assert.ok(deployScriptSrc.includes('--env-vars-file'), 'gcloud-deploy must use Cloud Run env vars file');
+assert.ok(deployScriptSrc.includes('--clear-secrets'), 'gcloud-deploy must clear legacy Secret Manager mounts');
+assert.ok(!deployScriptSrc.includes('RESEND_API_KEY'), 'gcloud-deploy must not reference Resend');
 
 const syncSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'sync-secrets-to-gcp.sh'), 'utf8');
-assert.ok(syncSrc.includes('MAILGUN_API_KEY'));
+assert.ok(syncSrc.includes('DEPRECATED'), 'sync-secrets-to-gcp.sh must be marked deprecated');
+assert.ok(!/sync_secret\s+"MAILGUN_API_KEY"/.test(syncSrc), 'deprecated sync script must not actively sync Mailgun');
 assert.ok(!syncSrc.includes('RESEND_API_KEY'));
 
 const key = deriveBackupKey('x'.repeat(32));

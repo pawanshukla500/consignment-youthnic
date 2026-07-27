@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router';
 import { Package, Plus, Search, Filter, Trash2, Eye, Download, Loader2, Store, Upload, Pencil, CheckCircle2, X, FileSpreadsheet, ChevronDown, ChevronUp, LayoutList, LayoutGrid, RefreshCw, Radio, Activity, AlertTriangle } from 'lucide-react';
 import { consignmentsAPI, templatesAPI, marketplacesAPI, docketCompaniesAPI } from '../services/api';
 import { useToast } from '../context/ToastContext';
