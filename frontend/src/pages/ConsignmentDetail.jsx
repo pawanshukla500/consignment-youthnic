@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router';
 import {
   ArrowLeft, Package, Box, Video, FileText, Upload, AlertCircle,
   Trash2, Download, Loader2, FileSpreadsheet, CheckCircle2,

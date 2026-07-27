@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router';
 import {
   LayoutDashboard, Package, BarChart3, LogOut, ScanBarcode,
   Store, Users, ClipboardList, Truck, PanelLeftClose, PanelLeftOpen,

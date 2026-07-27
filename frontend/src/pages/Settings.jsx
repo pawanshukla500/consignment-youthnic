@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link, Navigate } from 'react-router-dom';
+import { Link, Navigate } from 'react-router';
 import { useAuth } from '../context/AuthContext';
 import { Save, Trash2, AlertTriangle, ChevronLeft, Loader2, Clock, Database, Play, Server, CheckCircle2, RefreshCw, ShieldCheck, HardDrive, Activity, BarChart3, ExternalLink, ClipboardPaste, Factory } from 'lucide-react';
 import { settingsAPI, usersAPI } from '../services/api';

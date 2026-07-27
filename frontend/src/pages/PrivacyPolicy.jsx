@@ -1,5 +1,5 @@
 ﻿import React from 'react';
-import { Link } from 'react-router-dom';
+import { Link } from 'react-router';
 import { ArrowLeft, Lock } from 'lucide-react';
 import logo from '../assets/logo.png';
 const S = ({title,body}) => (<div><h3 className="font-bold text-slate-900 text-[14px] mb-2">{title}</h3><p className="text-slate-600">{body}</p></div>);

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Outlet, useLocation, Link } from 'react-router-dom';
+import { Outlet, useLocation, Link } from 'react-router';
 import Sidebar from './Sidebar';
 import GlobalLoadingBar from './GlobalLoadingBar';
 import PageTransition from './PageTransition';

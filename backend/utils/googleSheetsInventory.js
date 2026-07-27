@@ -117,7 +117,7 @@ function getSheetsCredentialStatus() {
   let hint = null;
   if (!rawPresent && !hasAdcPath) {
     hint =
-      'GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is missing on the Cloud Run service. Add the GitHub secret and redeploy so it syncs to GCP Secret Manager and mounts on Cloud Run.';
+      'GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is missing on the Cloud Run service. Add the GitHub secret GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON and redeploy so it is set as a Cloud Run env var.';
   } else if (!rawPresent && hasAdcPath) {
     hint =
       'GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON is not mounted. Inventory Planning needs that service-account JSON (the email shared on the Google Sheet), not only Application Default Credentials.';
