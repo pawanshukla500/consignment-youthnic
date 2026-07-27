@@ -59,23 +59,23 @@ gcloud services enable secretmanager.googleapis.com
 
 ---
 
-## Step 2 — Store Secrets in Secret Manager
+## Step 2 — Configure secrets as Cloud Run env vars (via GitHub Actions)
 
-Never put secrets in environment variables directly for production. Use Secret Manager:
+Do **not** use GCP Secret Manager for this app (extra cost). Keep values in **GitHub Actions Secrets**, and the deploy workflow writes them as normal Cloud Run environment variables.
+
+Required GitHub Secrets include: `JWT_SECRET`, `DATABASE_URL`, `MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, `FIREBASE_SERVICE_ACCOUNT_JSON`, R2 keys, etc. See `GITHUB_ACTIONS.md`.
+
+Manual one-off (optional):
 
 ```cmd
-# Store JWT secret (generate a strong random one)
-echo -n "your-very-long-random-jwt-secret-min-32-chars" | gcloud secrets create JWT_SECRET --data-file=-
-
-# Store MailerSend API key
-echo -n "your-mailersend-api-key" | gcloud secrets create MAILERSEND_API_KEY --data-file=-
+gcloud run services update consignment-youthnic-git --region=europe-west1 --update-env-vars="JWT_SECRET=your-secret,DATABASE_URL=postgres://..."
 ```
 
 ---
 
 ## Step 3 — Grant Cloud Run Service Account Firebase Permissions
 
-Cloud Run uses Application Default Credentials (ADC) — no JSON file needed.
+Cloud Run uses Application Default Credentials (ADC) when available; this app also accepts `FIREBASE_SERVICE_ACCOUNT_JSON` as an env var.
 Grant the Cloud Run default service account access to Firebase:
 
 ```cmd
@@ -91,11 +91,6 @@ gcloud projects add-iam-policy-binding YOUR_GCP_PROJECT_ID \
 gcloud projects add-iam-policy-binding YOUR_GCP_PROJECT_ID \
   --member="serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
   --role="roles/firebase.sdkAdminServiceAgent"
-
-# Grant Secret Manager access
-gcloud projects add-iam-policy-binding YOUR_GCP_PROJECT_ID \
-  --member="serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
-  --role="roles/secretmanager.secretAccessor"
 ```
 
 ---
