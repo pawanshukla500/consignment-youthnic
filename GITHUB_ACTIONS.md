@@ -4,10 +4,9 @@ This repo deploys to **Google Cloud Run** via `.github/workflows/deploy.yml`.
 
 On every push to `main` (or manual **Run workflow**), the pipeline:
 
-1. Syncs GitHub Secrets → **GCP Secret Manager**
-2. Builds the Docker image (frontend + backend)
-3. Deploys to Cloud Run with env vars + mounted secrets
-4. Verifies `/api/health` and `/api/auth/status`
+1. Builds the Docker image (frontend + backend)
+2. Deploys to Cloud Run with **normal environment variables** from GitHub Secrets (no GCP Secret Manager)
+3. Verifies `/api/health` and `/api/auth/status`
 
 Public app URL target: **`https://consignment.youthnic.shop`**
 
@@ -16,10 +15,10 @@ Public app URL target: **`https://consignment.youthnic.shop`**
 ## PR → continuous deploy (recommended flow)
 
 1. Create a **feature branch** and open a **Pull Request** into `main`
-2. PR events run **`Lint · Build · Test · Audit` only** (no Cloud Run deploy, no secret sync)
+2. PR events run **`Lint · Build · Test · Audit` only** (no Cloud Run deploy)
 3. Review / merge the PR after the quality-gate check is green
 4. Merge to `main` triggers **Deploy to Cloud Run** automatically
-5. Pipeline syncs secrets, builds, deploys, then checks `/api/health` for **`database: connected`**
+5. Pipeline builds, deploys with env vars from GitHub Secrets, then checks `/api/health` for **`database: connected`**
 
 Configure required status checks manually: see **`docs/BRANCH_PROTECTION.md`**.
 
@@ -70,8 +69,9 @@ To delete a leftover duplicate service entirely (optional):
 ## Critical rules
 
 - **Never commit** `backend/.env`, `frontend/.env`, `frontend/.env.production`, or `serviceAccountKey.json`
-- **Do not store app secrets in Supabase** — Supabase is Realtime-only on free tier; use **GitHub Secrets → GCP Secret Manager → Cloud Run**
+- **Do not store app secrets in Supabase** — Supabase is Realtime-only on free tier; use **GitHub Secrets → Cloud Run env vars**
 - **Do not put only 3 secrets in GitHub** — Cloud Run needs the full list below
+- **Do not use GCP Secret Manager for these app secrets** — it adds cost; GitHub Secrets + Cloud Run env vars are enough for this deployment
 
 ---
 
@@ -85,10 +85,11 @@ In [Google Cloud Console](https://console.cloud.google.com/) → **IAM & Admin**
 2. Grant roles:
    - `Cloud Run Admin`
    - `Service Account User`
-   - `Secret Manager Admin` (to create/update secrets)
    - `Storage Admin` (to push to `gcr.io`)
    - `Cloud Build Editor` (optional)
 3. Create a JSON key and save the full JSON as GitHub secret **`GCP_SA_KEY`**
+
+> Secret Manager Admin is **not** required. Deploy writes values as Cloud Run environment variables.
 
 ### 2. Cloud Run + custom domain
 
@@ -133,7 +134,7 @@ Repository **Variables** (Settings → Secrets and variables → Actions → Var
 | `SUPABASE_JWT_SECRET` | Supabase **JWT Secret** (Project Settings → API → JWT Secret). **Not** the service_role key, **not** a JWT token |
 | `SHARE_LINK_SECRET` | Optional dedicated HMAC for durable video share links (defaults to `JWT_SECRET`) |
 | `BOOTSTRAP_SECRET` | Optional admin resync protect |
-| `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` | Full Google service-account JSON for Inventory Planning (Sheet AutoFetch). Share the spreadsheet with the SA `client_email` (Editor). Must be synced via deploy → Secret Manager → Cloud Run — GitHub secret alone is not enough. |
+| `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` | Full Google service-account JSON for Inventory Planning (Sheet AutoFetch). Share the spreadsheet with the SA `client_email` (Editor). Deployed as a Cloud Run env var from this GitHub secret. |
 | `VITE_FIREBASE_MEASUREMENT_ID` | Optional analytics |
 | `VITE_POSTHOG_KEY` | Optional |
 
@@ -160,16 +161,20 @@ Playback still works via authenticated `/api/uploads/stream/...` and durable `/a
 
 ---
 
-## What gets synced to Secret Manager
+## How secrets reach Cloud Run
 
-`scripts/sync-secrets-to-gcp.sh` creates/updates:
+Deploy reads GitHub Actions secrets and sets them as **normal Cloud Run environment variables** via `scripts/gcloud-deploy.sh` (`--env-vars-file`). GCP Secret Manager is **not** used (avoids Secret Manager cost).
+
+Values set on every deploy when present in GitHub Secrets:
 
 - `JWT_SECRET`, `MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, `DATABASE_URL`
 - `SUPABASE_JWT_SECRET`, `FIREBASE_SERVICE_ACCOUNT_JSON`, `BOOTSTRAP_SECRET`
 - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `SHARE_LINK_SECRET`
 - `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` (Inventory Planning → Google Sheet AutoFetch)
 
-Empty GitHub secrets are skipped.
+Empty GitHub secrets are skipped. Legacy Secret Manager mounts are cleared on deploy (`--clear-secrets`).
+
+`scripts/sync-secrets-to-gcp.sh` is **deprecated** and unused by CI.
 
 ---
 

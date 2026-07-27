@@ -6,10 +6,9 @@
 #   - push to main / workflow_dispatch (before deploy)
 #
 # deploy (push / workflow_dispatch only):
-#   1. Sync GitHub Secrets → GCP Secret Manager
-#   2. Build Docker image with frontend Firebase/Supabase config
-#   3. Deploy to Cloud Run with all env vars + mounted secrets
-#   4. Verify /api/health and /api/auth/status
+#   1. Build Docker image with frontend Firebase/Supabase config
+#   2. Deploy to Cloud Run with env vars from GitHub Secrets (no GCP Secret Manager)
+#   3. Verify /api/health and /api/auth/status
 #
 # Manual branch protection: see docs/BRANCH_PROTECTION.md
 # ═══════════════════════════════════════════════════════════════════════════
@@ -227,23 +226,6 @@ jobs:
           # Deploy only the primary / domain-mapped service to avoid paying for two apps.
           echo "DEPLOY_SERVICES=$SERVICE_NAME" >> "$GITHUB_ENV"
 
-      - name: Sync secrets to GCP Secret Manager
-        env:
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
-          MAILGUN_DOMAIN: ${{ secrets.MAILGUN_DOMAIN }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
-          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
-          GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON }}
-          BOOTSTRAP_SECRET: ${{ secrets.BOOTSTRAP_SECRET }}
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          SHARE_LINK_SECRET: ${{ secrets.SHARE_LINK_SECRET }}
-        run: bash scripts/sync-secrets-to-gcp.sh
-
       - name: Apply Cloudflare R2 CORS (browser video PUTs)
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -342,6 +324,19 @@ jobs:
           FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
           LOGTAIL_SOURCE_TOKEN: ${{ secrets.LOGTAIL_SOURCE_TOKEN }}
           DB_SSL: ${{ vars.DB_SSL || 'true' }}
+          # Sensitive values as normal Cloud Run env vars (GitHub Secrets → env; no Secret Manager)
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
+          MAILGUN_DOMAIN: ${{ secrets.MAILGUN_DOMAIN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON }}
+          BOOTSTRAP_SECRET: ${{ secrets.BOOTSTRAP_SECRET }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SHARE_LINK_SECRET: ${{ secrets.SHARE_LINK_SECRET }}
         run: |
           if [ "${{ github.event.inputs.skip_build }}" = "true" ]; then
             export IMAGE_REF="gcr.io/$PROJECT_ID/$IMAGE_NAME:latest"
