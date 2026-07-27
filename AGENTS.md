@@ -193,7 +193,7 @@ npm run deploy          # npm run build + firebase deploy --only hosting (fronte
 npm run deploy:backend  # gcloud run deploy consignment-packing --region=europe-west1 --allow-unauthenticated
 ```
 
-See `DEPLOYMENT.md` for full Cloud Run setup (domain mapping, Secret Manager, Storage CORS).
+See `DEPLOYMENT.md` for full Cloud Run setup (domain mapping, env vars from GitHub Secrets, Storage CORS).
 
 ---
 
@@ -447,7 +447,7 @@ See `DEPLOYMENT.md` for step-by-step instructions. High-level:
 1. **Single-container Cloud Run (primary target):**
    - `Dockerfile` builds the frontend, installs backend production dependencies, copies both into a `node:20-slim` image.
    - `cloudbuild.yaml` builds, tags, pushes, and deploys to Cloud Run `consignment-packing` in `europe-west1`.
-   - Attach `JWT_SECRET` and `MAILERSEND_API_KEY` via Secret Manager separately (`gcloud run services update --update-secrets`).
+   - Attach `JWT_SECRET` and mail API keys as Cloud Run env vars from GitHub Secrets (deploy workflow; Secret Manager not required).
    - Custom domain target: `consignment.youthnic.shop`.
 2. **Firebase Hosting (frontend-only):**
    - `firebase.json` serves `frontend/dist` with SPA rewrite.
