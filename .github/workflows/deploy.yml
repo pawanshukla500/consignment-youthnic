@@ -373,6 +373,7 @@ jobs:
           cd backend
           npm ci --omit=dev
           node scripts/ensure-taskflow-template.js
+          node scripts/probe-taskflow-create.js
 
       - name: Verify deployment health
         env:
