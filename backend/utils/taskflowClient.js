@@ -136,19 +136,34 @@ async function fetchTemplate(templateId) {
       limit: '1',
     },
   });
-  const template = Array.isArray(rows) ? rows[0] : rows;
+  let template = Array.isArray(rows) ? rows[0] : rows;
+  if (!template) {
+    const byName = await rest('workflow_templates', {
+      query: {
+        name: 'ilike.*Packing*',
+        select: '*',
+        order: 'created_at.desc',
+        limit: '5',
+      },
+    });
+    const list = Array.isArray(byName) ? byName : [];
+    template = list.find((t) => /consignments?\s*packing/i.test(String(t.name || ''))) || list[0] || null;
+    if (template) {
+      console.warn(`[TaskFlow] Template id ${templateId} not found — using ${template.id} (${template.name})`);
+    }
+  }
   if (!template) throw new Error(`TaskFlow template not found: ${templateId}`);
 
   const stages = await rest('workflow_template_stages', {
     query: {
-      template_id: `eq.${templateId}`,
+      template_id: `eq.${template.id}`,
       select: '*',
       order: 'position.asc',
     },
   });
   const fields = await rest('workflow_template_fields', {
     query: {
-      template_id: `eq.${templateId}`,
+      template_id: `eq.${template.id}`,
       select: '*',
       order: 'position.asc',
     },
@@ -286,17 +301,27 @@ async function createWorkflowFromTemplate({
   stageAssignees = {},
 }) {
   const { templateId, raisedBy } = getConfig();
-  const { stages: templateStages, fields: templateFields } = await fetchTemplate(templateId);
+  const { template, stages: templateStages, fields: templateFields } = await fetchTemplate(templateId);
+  const resolvedTemplateId = template.id;
 
   if (!templateStages.length) {
-    throw new Error(`TaskFlow template ${templateId} has no stages`);
+    throw new Error(`TaskFlow template ${resolvedTemplateId} has no stages`);
   }
+
+  // Ensure template is visible in TaskFlow UI.
+  try {
+    await rest('workflow_templates', {
+      method: 'PATCH',
+      query: { id: `eq.${resolvedTemplateId}` },
+      body: { active: true },
+    });
+  } catch (_) { /* ignore */ }
 
   const inserted = await rest('workflows', {
     method: 'POST',
     prefer: 'return=representation',
     body: {
-      template_id: templateId,
+      template_id: resolvedTemplateId,
       title,
       description: description || '',
       priority,
