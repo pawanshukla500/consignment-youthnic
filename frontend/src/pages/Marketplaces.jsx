@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Store, Plus, Search, Trash2, Loader2, Edit2, X, Check, Warehouse, Truck, Clock, RefreshCw } from 'lucide-react';
+import { Store, Plus, Search, Trash2, Loader2, Edit2, X, Check, Warehouse, Truck, RefreshCw } from 'lucide-react';
 import { marketplacesAPI } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import { useDebounce } from '../hooks/useDebounce';
@@ -8,7 +8,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { normalizeWarehouses, computeRequiredDispatchDate } from '../utils/dispatchPlanning';
 import { formatDispatchDate } from '../utils/priority';
 
-const emptyWarehouse = () => ({ name: '', transitDays: 0, address: '', gst: '' });
+const emptyWarehouse = () => ({ name: '', transitDays: 0, address: '', state: '', gst: '' });
 
 function WarehouseEditor({ warehouses, onChange, disabled }) {
   const [draft, setDraft] = useState(emptyWarehouse());
@@ -21,7 +21,8 @@ function WarehouseEditor({ warehouses, onChange, disabled }) {
       name,
       transitDays: Math.max(0, parseInt(draft.transitDays, 10) || 0),
       address: draft.address.trim(),
-      gst: draft.gst.trim()
+      state: draft.state.trim(),
+      gst: draft.gst.trim(),
     }]);
     setDraft(emptyWarehouse());
   };
@@ -36,117 +37,141 @@ function WarehouseEditor({ warehouses, onChange, disabled }) {
   const remove = (idx) => onChange(warehouses.filter((_, i) => i !== idx));
 
   return (
-    <div className="space-y-4 border border-slate-100 rounded-xl p-4 bg-slate-50/50">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <div>
-          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Warehouse Name</label>
+    <div className="space-y-3 border border-slate-100 rounded-lg p-3 bg-slate-50/60">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="sm:col-span-2">
+          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Warehouse</label>
           <input
             type="text"
             value={draft.name}
             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
             disabled={disabled}
-            placeholder="e.g. DEL1, BOM3"
-            className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50"
+            placeholder="e.g. Bangalore"
+            className="w-full px-2.5 py-1.5 border border-slate-200 bg-white rounded-md text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50"
           />
         </div>
         <div>
-          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Transit Days</label>
+          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Transit days</label>
           <input
             type="number"
             min="0"
             value={draft.transitDays}
             onChange={(e) => setDraft({ ...draft, transitDays: e.target.value })}
             disabled={disabled}
-            placeholder="e.g. 5"
-            className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50"
+            className="w-full px-2.5 py-1.5 border border-slate-200 bg-white rounded-md text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50"
           />
         </div>
         <div>
-          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">GST Number</label>
+          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">State</label>
+          <input
+            type="text"
+            value={draft.state}
+            onChange={(e) => setDraft({ ...draft, state: e.target.value })}
+            disabled={disabled}
+            placeholder="e.g. Karnataka"
+            className="w-full px-2.5 py-1.5 border border-slate-200 bg-white rounded-md text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50"
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">GST</label>
           <input
             type="text"
             value={draft.gst}
             onChange={(e) => setDraft({ ...draft, gst: e.target.value })}
             disabled={disabled}
-            placeholder="e.g. 07AAAAA1111A1Z1"
-            className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50"
+            placeholder="optional"
+            className="w-full px-2.5 py-1.5 border border-slate-200 bg-white rounded-md text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50"
           />
         </div>
-      </div>
-      <div>
-        <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Complete Address</label>
-        <textarea
-          value={draft.address}
-          onChange={(e) => setDraft({ ...draft, address: e.target.value })}
-          disabled={disabled}
-          placeholder="Enter full warehouse address details for billing & compliance..."
-          rows="2"
-          className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50 resize-none"
-        />
+        <div className="sm:col-span-2">
+          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Address</label>
+          <input
+            type="text"
+            value={draft.address}
+            onChange={(e) => setDraft({ ...draft, address: e.target.value })}
+            disabled={disabled}
+            placeholder="Street / area / city"
+            className="w-full px-2.5 py-1.5 border border-slate-200 bg-white rounded-md text-xs focus:ring-2 focus:ring-primary-500 outline-none disabled:bg-slate-50"
+          />
+        </div>
       </div>
       <div className="flex justify-end">
         <button
           type="button"
           onClick={add}
           disabled={disabled || !draft.name.trim()}
-          className="px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-sm shadow-primary-100"
+          className="px-3 py-1.5 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white rounded-md text-xs font-semibold inline-flex items-center gap-1"
         >
-          <Plus className="w-3.5 h-3.5" /> Add Warehouse
+          <Plus className="w-3.5 h-3.5" /> Add
         </button>
       </div>
 
       {warehouses.length > 0 && (
-        <div className="space-y-3 pt-3 border-t border-slate-100 max-h-72 overflow-y-auto pr-1">
+        <div className="space-y-2 pt-2 border-t border-slate-100 max-h-64 overflow-y-auto">
           {warehouses.map((w, idx) => (
-            <div key={idx} className="bg-white border border-slate-200 rounded-xl p-3 relative group shadow-sm">
-              <div className="flex items-start justify-between gap-3 mb-2">
-                <div className="flex items-center gap-2">
-                  <Warehouse className="w-4 h-4 text-primary-600 shrink-0" />
-                  <span className="font-bold text-slate-900 text-sm">{w.name}</span>
+            <div key={`${w.name}-${idx}`} className="bg-white border border-slate-200 rounded-lg p-2.5">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Warehouse className="w-3.5 h-3.5 text-primary-600 shrink-0" />
+                  <span className="font-semibold text-slate-900 text-xs truncate">{w.name}</span>
+                  {w.state ? (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">{w.state}</span>
+                  ) : null}
                 </div>
                 {!disabled && (
-                  <button type="button" onClick={() => remove(idx)} className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg">
-                    <X className="w-4.5 h-4.5" />
+                  <button type="button" onClick={() => remove(idx)} className="p-1 text-slate-400 hover:text-red-600 rounded">
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 )}
               </div>
-              <div className="grid grid-cols-2 gap-4 text-xs mb-2 bg-slate-50/50 p-2 rounded-lg border border-slate-100">
-                <div>
-                  <span className="text-slate-400 block text-[9px] uppercase font-semibold">Transit Time</span>
-                  <div className="flex items-center gap-1.5 mt-0.5">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                <label className="block">
+                  <span className="text-[9px] uppercase font-semibold text-slate-400">Transit</span>
+                  <div className="flex items-center gap-1 mt-0.5">
                     <input
                       type="number"
                       min="0"
                       value={w.transitDays}
                       onChange={(e) => updateField(idx, 'transitDays', Math.max(0, parseInt(e.target.value, 10) || 0))}
                       disabled={disabled}
-                      className="w-14 px-1.5 py-0.5 border border-slate-200 rounded text-center font-bold text-slate-800 focus:outline-none"
+                      className="w-14 px-1.5 py-0.5 border border-slate-200 rounded text-center font-semibold"
                     />
-                    <span className="text-slate-500">days</span>
+                    <span className="text-slate-500">d</span>
                   </div>
-                </div>
-                <div>
-                  <span className="text-slate-400 block text-[9px] uppercase font-semibold">GST Number</span>
+                </label>
+                <label className="block">
+                  <span className="text-[9px] uppercase font-semibold text-slate-400">State</span>
+                  <input
+                    type="text"
+                    value={w.state || ''}
+                    onChange={(e) => updateField(idx, 'state', e.target.value)}
+                    disabled={disabled}
+                    placeholder="State"
+                    className="w-full mt-0.5 px-1.5 py-0.5 border border-slate-200 rounded"
+                  />
+                </label>
+                <label className="block sm:col-span-2">
+                  <span className="text-[9px] uppercase font-semibold text-slate-400">GST</span>
                   <input
                     type="text"
                     value={w.gst || ''}
                     onChange={(e) => updateField(idx, 'gst', e.target.value)}
                     disabled={disabled}
                     placeholder="None"
-                    className="w-full mt-0.5 px-2 py-0.5 border border-slate-200 rounded text-slate-800 focus:outline-none text-xs"
+                    className="w-full mt-0.5 px-1.5 py-0.5 border border-slate-200 rounded"
                   />
-                </div>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[9px] uppercase font-semibold mb-0.5">Complete Address</span>
-                <textarea
-                  value={w.address || ''}
-                  onChange={(e) => updateField(idx, 'address', e.target.value)}
-                  disabled={disabled}
-                  placeholder="Address details"
-                  rows="2"
-                  className="w-full px-2 py-1 border border-slate-200 rounded text-xs text-slate-700 resize-none focus:outline-none"
-                />
+                </label>
+                <label className="block col-span-2 sm:col-span-4">
+                  <span className="text-[9px] uppercase font-semibold text-slate-400">Address</span>
+                  <input
+                    type="text"
+                    value={w.address || ''}
+                    onChange={(e) => updateField(idx, 'address', e.target.value)}
+                    disabled={disabled}
+                    placeholder="Address details"
+                    className="w-full mt-0.5 px-1.5 py-0.5 border border-slate-200 rounded"
+                  />
+                </label>
               </div>
             </div>
           ))}
@@ -292,59 +317,39 @@ export default function Marketplaces() {
 
   return (
     <div className="animate-fade-in">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <div className="flex items-center gap-2 text-sm text-slate-500">
           {refreshing && <RefreshCw className="w-4 h-4 animate-spin text-primary-500" />}
-          <span>{loading ? 'Loading…' : `${marketplaces.length} marketplace${marketplaces.length !== 1 ? 's' : ''}`}</span>
+          <span>{loading ? 'Loading…' : `${marketplaces.length} marketplace${marketplaces.length !== 1 ? 's' : ''} · ${stats.warehouses} warehouses`}</span>
         </div>
         <button
           type="button"
           onClick={openCreate}
-          className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium shadow-sm"
+          className="inline-flex items-center gap-2 px-3.5 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 text-sm font-medium"
         >
           <Plus className="w-4 h-4" />
           New Marketplace
         </button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
-        {[
-          { label: 'Marketplaces', value: stats.total, className: 'text-slate-900' },
-          { label: 'Warehouses', value: stats.warehouses, className: 'text-primary-600' },
-          { label: 'Transit configured', value: stats.withTransit, className: 'text-emerald-600' },
-        ].map(({ label, value, className }) => (
-          <div key={label} className="bg-white rounded-xl border border-slate-100 px-4 py-3 shadow-sm">
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">{label}</p>
-            <p className={`text-2xl font-bold mt-0.5 ${className}`}>{loading ? '—' : value}</p>
-          </div>
-        ))}
-      </div>
+      <p className="text-xs text-slate-500 mb-3">
+        Transit days drive required dispatch (appointment − transit). Keep warehouse state filled for billing clarity.
+      </p>
 
-      <div className="bg-primary-50 border border-primary-100 rounded-xl px-4 py-3 mb-6 flex gap-3">
-        <Clock className="w-5 h-5 text-primary-600 shrink-0 mt-0.5" />
-        <div className="text-sm text-primary-900">
-          <p className="font-semibold">Dispatch planning</p>
-          <p className="text-primary-700 mt-0.5">
-            Set transit time (days) per warehouse. Required dispatch = appointment date − transit days.
-            Consignments use this for priority (Critical / Warning / Normal).
-          </p>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-6">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+      <div className="mb-4">
+        <div className="relative max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search marketplaces or warehouses..."
-            className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none"
+            className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 outline-none"
           />
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden relative">
+      <div className="bg-white rounded-xl border border-slate-100 overflow-hidden relative">
         {refreshing && (
           <div className="absolute inset-x-0 top-0 h-0.5 bg-primary-100 overflow-hidden z-20">
             <div className="h-full w-1/3 bg-primary-500 animate-pulse" />
@@ -354,103 +359,85 @@ export default function Marketplaces() {
           <table className="w-full">
             <thead className="bg-slate-50">
               <tr>
-                <th className="text-left text-xs font-semibold text-slate-500 uppercase px-6 py-4">Marketplace</th>
-                <th className="text-left text-xs font-semibold text-slate-500 uppercase px-6 py-4">Warehouses &amp; Transit</th>
-                <th className="text-right text-xs font-semibold text-slate-500 uppercase px-6 py-4 w-32">Actions</th>
+                <th className="text-left text-[10px] font-semibold text-slate-500 uppercase px-4 py-2.5 w-[28%]">Marketplace</th>
+                <th className="text-left text-[10px] font-semibold text-slate-500 uppercase px-4 py-2.5">Warehouses &amp; transit</th>
+                <th className="text-right text-[10px] font-semibold text-slate-500 uppercase px-4 py-2.5 w-24">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan="3" className="py-12 text-center">
-                    <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary-600" />
+                  <td colSpan="3" className="py-10 text-center">
+                    <Loader2 className="w-7 h-7 animate-spin mx-auto text-primary-600" />
                   </td>
                 </tr>
               ) : marketplaces.length > 0 ? (
                 marketplaces.map((m) => (
                   <tr key={m.id} className="hover:bg-slate-50/80 align-top">
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-3">
                       {editing === m.id ? (
                         <div className="space-y-2">
                           <div>
-                            <label className="block text-[9px] uppercase font-bold text-slate-400 mb-0.5">Panel Name</label>
+                            <label className="block text-[9px] uppercase font-bold text-slate-400 mb-0.5">Panel name</label>
                             <input
                               value={editForm.name}
                               onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                              className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-primary-500 outline-none"
-                              placeholder="Panel Name"
+                              className="w-full px-2 py-1.5 border border-slate-200 rounded-md text-xs focus:ring-2 focus:ring-primary-500 outline-none"
+                              placeholder="Panel name"
                               autoFocus
                             />
                           </div>
                           <div>
-                            <label className="block text-[9px] uppercase font-bold text-slate-400 mb-0.5">Bill To</label>
-                            <textarea
+                            <label className="block text-[9px] uppercase font-bold text-slate-400 mb-0.5">Bill to</label>
+                            <input
                               value={editForm.billTo}
                               onChange={(e) => setEditForm({ ...editForm, billTo: e.target.value })}
-                              className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-primary-500 outline-none resize-none"
-                              placeholder="e.g. VB Exports Ltd, Main St"
-                              rows="2"
+                              className="w-full px-2 py-1.5 border border-slate-200 rounded-md text-xs focus:ring-2 focus:ring-primary-500 outline-none"
+                              placeholder="Billing name"
                             />
                           </div>
                         </div>
                       ) : (
-                        <div className="flex items-start gap-2">
-                          <div className="p-2 bg-primary-50 rounded-lg shrink-0 mt-0.5">
-                            <Store className="w-4 h-4 text-primary-600" />
-                          </div>
-                          <div>
-                            <p className="text-sm font-semibold text-slate-900">{m.name}</p>
-                            {m.billTo && (
-                              <p className="text-xs text-slate-600 mt-1 font-medium bg-slate-100 px-1.5 py-0.5 rounded w-fit">
-                                Bill To: {m.billTo}
-                              </p>
-                            )}
-                            <p className="text-[10px] text-slate-400 mt-1">{m.warehouses?.length || 0} warehouse(s)</p>
-                          </div>
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">{m.name}</p>
+                          {m.billTo && (
+                            <p className="text-[11px] text-slate-500 mt-0.5">Bill to: {m.billTo}</p>
+                          )}
+                          <p className="text-[10px] text-slate-400 mt-1">{m.warehouses?.length || 0} warehouse(s)</p>
                         </div>
                       )}
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-3">
                       {editing === m.id ? (
                         <WarehouseEditor
                           warehouses={editForm.warehouses}
                           onChange={(warehouses) => setEditForm({ ...editForm, warehouses })}
                         />
                       ) : m.warehouses?.length > 0 ? (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="flex flex-wrap gap-1.5">
                           {m.warehouses.map((w) => (
                             <div
                               key={w.name}
-                              className="bg-slate-50 border border-slate-150 rounded-xl p-3 text-xs shadow-sm flex flex-col justify-between"
+                              className="inline-flex flex-col gap-0.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] min-w-[9rem] max-w-[16rem]"
+                              title={[w.state, w.address, w.gst].filter(Boolean).join(' · ')}
                             >
-                              <div className="flex items-start justify-between gap-2 mb-1.5">
-                                <span className="flex items-center gap-1.5 font-bold text-slate-800">
-                                  <Warehouse className="w-3.5 h-3.5 text-primary-600 shrink-0" />
-                                  {w.name}
-                                </span>
-                                <span className="flex items-center gap-1 text-[10px] text-slate-600 bg-white px-1.5 py-0.5 rounded-full border border-slate-200 shrink-0">
-                                  <Truck className="w-3 h-3 text-slate-400" />
-                                  {w.transitDays}d
-                                </span>
-                              </div>
-                              {w.gst && (
-                                <div className="text-[10px] text-slate-500 font-mono mt-1">
-                                  GST: <span className="font-bold text-slate-700">{w.gst}</span>
-                                </div>
-                              )}
-                              {w.address && (
-                                <div className="text-[10px] text-slate-600 bg-white border border-slate-100 rounded-lg p-1.5 mt-1.5 line-clamp-2" title={w.address}>
-                                  {w.address}
-                                </div>
-                              )}
+                              <span className="font-semibold text-slate-800 inline-flex items-center gap-1">
+                                <Warehouse className="w-3 h-3 text-primary-600" />
+                                {w.name}
+                              </span>
+                              <span className="text-slate-500 inline-flex items-center gap-1">
+                                <Truck className="w-3 h-3" />
+                                {w.transitDays}d
+                                {w.state ? <> · {w.state}</> : null}
+                              </span>
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <span className="text-sm text-slate-400">No warehouses — edit to add transit config</span>
+                        <span className="text-xs text-slate-400">No warehouses</span>
                       )}
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
                         {editing === m.id ? (
                           <>
@@ -458,12 +445,12 @@ export default function Marketplaces() {
                               type="button"
                               onClick={() => saveEdit(m.id)}
                               disabled={isSubmitting}
-                              className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg"
+                              className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-md"
                               title="Save"
                             >
                               <Check className="w-4 h-4" />
                             </button>
-                            <button type="button" onClick={cancelEdit} className="p-2 text-slate-400 hover:bg-slate-100 rounded-lg" title="Cancel">
+                            <button type="button" onClick={cancelEdit} className="p-1.5 text-slate-400 hover:bg-slate-100 rounded-md" title="Cancel">
                               <X className="w-4 h-4" />
                             </button>
                           </>
@@ -472,7 +459,7 @@ export default function Marketplaces() {
                             <button
                               type="button"
                               onClick={() => startEdit(m)}
-                              className="p-2 text-slate-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg"
+                              className="p-1.5 text-slate-400 hover:text-primary-600 hover:bg-primary-50 rounded-md"
                               title="Edit"
                             >
                               <Edit2 className="w-4 h-4" />
@@ -483,7 +470,7 @@ export default function Marketplaces() {
                                 setSelected(m);
                                 setShowDelete(true);
                               }}
-                              className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md"
                               title="Delete"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -496,9 +483,9 @@ export default function Marketplaces() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan="3" className="py-12 text-center text-slate-400">
-                    <Store className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-                    <p>No marketplaces found</p>
+                  <td colSpan="3" className="py-10 text-center text-slate-400">
+                    <Store className="w-10 h-10 mx-auto mb-2 text-slate-300" />
+                    <p className="text-sm">No marketplaces found</p>
                   </td>
                 </tr>
               )}
@@ -511,7 +498,7 @@ export default function Marketplaces() {
         open={showCreate}
         onClose={() => !isSubmitting && (setShowCreate(false), resetCreateForm())}
         title="New Marketplace"
-        subtitle="Configure portal name and warehouse transit times for dispatch planning"
+        subtitle="Portal name + warehouse transit for dispatch planning"
         size="lg"
         footer={
           <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">

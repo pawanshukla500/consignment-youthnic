@@ -993,6 +993,7 @@ export default function Consignments() {
                       <option>Ready</option>
                       <option>In Transit</option>
                       <option>Forwarded</option>
+                      <option>Inwarded</option>
                       <option>Missed</option>
                     </select>
                   </div>

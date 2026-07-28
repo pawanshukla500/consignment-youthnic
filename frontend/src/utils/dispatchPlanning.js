@@ -8,12 +8,18 @@ export function normalizeWarehouses(warehouses) {
     .map((w) => {
       if (typeof w === 'string') {
         const name = w.trim()
-        return name ? { name, transitDays: 0 } : null
+        return name ? { name, transitDays: 0, address: '', state: '', gst: '' } : null
       }
       if (w && typeof w === 'object') {
         const name = String(w.name || '').trim()
         if (!name) return null
-        return { name, transitDays: Math.max(0, parseInt(w.transitDays, 10) || 0) }
+        return {
+          name,
+          transitDays: Math.max(0, parseInt(w.transitDays, 10) || 0),
+          address: String(w.address || '').trim(),
+          state: String(w.state || '').trim(),
+          gst: String(w.gst || '').trim(),
+        }
       }
       return null
     })

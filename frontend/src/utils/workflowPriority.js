@@ -154,6 +154,7 @@ export function shipStatusClass(st) {
   if (st === 'Under Packing') return 'bg-orange-100 text-orange-800'
   if (st === 'Ready') return 'bg-emerald-100 text-emerald-800'
   if (st === 'In Transit' || st === 'Forwarded') return 'bg-indigo-100 text-indigo-800'
+  if (st === 'Inwarded') return 'bg-slate-200 text-slate-800'
   if (st === 'Missed') return 'bg-red-100 text-red-800'
   return 'bg-slate-100 text-slate-700'
 }
