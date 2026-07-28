@@ -231,6 +231,48 @@ async function upsertFieldValues(workflowId, fields) {
   }
 }
 
+async function findProfileByEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) return null;
+  const rows = await rest('profiles', {
+    query: {
+      email: `ilike.${normalized}`,
+      select: 'id,name,email,department_id,active',
+      limit: '5',
+    },
+  });
+  const list = Array.isArray(rows) ? rows : [];
+  const exact = list.find((p) => String(p.email || '').trim().toLowerCase() === normalized && p.active !== false);
+  return exact || list.find((p) => p.active !== false) || list[0] || null;
+}
+
+async function findProfileByNameAndEmail({ name, email }) {
+  const byEmail = await findProfileByEmail(email);
+  if (!byEmail) return null;
+  const wanted = String(name || '').trim().toLowerCase();
+  if (!wanted) return byEmail;
+  return byEmail;
+}
+
+async function updateWorkflow(workflowId, patch) {
+  if (!workflowId || !patch || typeof patch !== 'object') return null;
+  await rest('workflows', {
+    method: 'PATCH',
+    query: { id: `eq.${workflowId}` },
+    body: patch,
+  });
+  return getWorkflow(workflowId);
+}
+
+async function patchStageAssignee(stageId, assigneeUserId) {
+  if (!stageId || !assigneeUserId) return;
+  await rest('workflow_stages', {
+    method: 'PATCH',
+    query: { id: `eq.${stageId}` },
+    body: { assignee_user_id: assigneeUserId },
+  });
+}
+
 async function createWorkflowFromTemplate({
   title,
   description,
@@ -238,6 +280,7 @@ async function createWorkflowFromTemplate({
   consignmentId,
   consignmentNo,
   raisedByDepartmentId = null,
+  stageAssignees = {},
 }) {
   const { templateId, raisedBy } = getConfig();
   const { stages: templateStages, fields: templateFields } = await fetchTemplate(templateId);
@@ -264,22 +307,28 @@ async function createWorkflowFromTemplate({
   if (!wf?.id) throw new Error('TaskFlow create workflow returned no id');
 
   const nowIso = new Date().toISOString();
-  const stageRows = templateStages.map((s, i) => ({
-    workflow_id: wf.id,
-    position: Number(s.position) || i + 1,
-    name: s.name,
-    owner_department_id: s.is_terminal ? null : (s.owner_department_id || null),
-    assignee_user_id: s.is_terminal ? null : (s.assignee_user_id || null),
-    tat_hours: s.default_tat_hours ?? s.tat_hours ?? 24,
-    escalate_on_breach: s.escalate_on_breach !== false,
-    status: i === 0 ? 'in_progress' : 'pending',
-    started_at: i === 0 ? nowIso : null,
-    is_decision: Boolean(s.is_decision),
-    yes_next_position: s.is_decision ? (s.yes_next_position || null) : null,
-    no_next_position: s.is_decision ? (s.no_next_position || null) : null,
-    is_terminal: Boolean(s.is_terminal),
-    outcome_label: s.is_terminal ? (s.outcome_label || null) : null,
-  }));
+  const stageRows = templateStages.map((s, i) => {
+    const position = Number(s.position) || i + 1;
+    const overrideAssignee = stageAssignees[position] || stageAssignees[String(position)] || null;
+    return {
+      workflow_id: wf.id,
+      position,
+      name: s.name,
+      owner_department_id: s.is_terminal ? null : (s.owner_department_id || null),
+      assignee_user_id: s.is_terminal
+        ? null
+        : (overrideAssignee || s.assignee_user_id || null),
+      tat_hours: s.default_tat_hours ?? s.tat_hours ?? 24,
+      escalate_on_breach: s.escalate_on_breach !== false,
+      status: i === 0 ? 'in_progress' : 'pending',
+      started_at: i === 0 ? nowIso : null,
+      is_decision: Boolean(s.is_decision),
+      yes_next_position: s.is_decision ? (s.yes_next_position || null) : null,
+      no_next_position: s.is_decision ? (s.no_next_position || null) : null,
+      is_terminal: Boolean(s.is_terminal),
+      outcome_label: s.is_terminal ? (s.outcome_label || null) : null,
+    };
+  });
 
   const insertedStages = await rest('workflow_stages', {
     method: 'POST',
@@ -526,8 +575,15 @@ async function advanceWorkflowThroughPosition(workflowId, targetPosition, option
       return { ok: true, advances, workflow: wf, stopped: 'target_already_completed' };
     }
 
+    const stepNote = typeof options.noteForPosition === 'function'
+      ? options.noteForPosition(currentPos, currentStage)
+      : options.note;
+
     // Need to complete current stage (currentPos <= target).
-    const step = await advanceWorkflowOnce(workflowId, options);
+    const step = await advanceWorkflowOnce(workflowId, {
+      ...options,
+      note: stepNote,
+    });
     advances.push(step);
     if (step.skipped) break;
 
@@ -561,4 +617,8 @@ module.exports = {
   advanceWorkflowThroughPosition,
   upsertFieldValues,
   invokeNotify,
+  findProfileByEmail,
+  findProfileByNameAndEmail,
+  updateWorkflow,
+  patchStageAssignee,
 };

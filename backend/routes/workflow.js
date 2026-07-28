@@ -36,6 +36,7 @@ const {
 } = require('../utils/departments');
 const {
   notifyTaskflowStages,
+  notifyTaskflowAssigneesRefresh,
   resyncConsignmentToTaskflow,
   getTaskflowStatus,
 } = require('../utils/taskflowBridge');
@@ -175,6 +176,7 @@ router.post('/:id/assign-ground-team', authenticateToken, requireAnyPermission([
     });
     const enriched = enrichWorkflowFields(next);
     emitConsignmentChange(enriched);
+    notifyTaskflowAssigneesRefresh(enriched);
 
     const mail = buildWorkflowEmail({
       title: 'Ground team assignment',

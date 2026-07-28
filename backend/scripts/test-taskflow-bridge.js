@@ -1,5 +1,5 @@
 /**
- * Offline unit checks for TaskFlow bridge mapping (no network).
+ * Offline unit checks for TaskFlow bridge mapping + description builders.
  * Run: node backend/scripts/test-taskflow-bridge.js
  */
 const assert = require('assert');
@@ -8,6 +8,8 @@ const {
   targetPositionForEvent,
   maxTargetFromStages,
   getTaskflowStatus,
+  buildWorkflowDescription,
+  buildStageNote,
 } = require('../utils/taskflowBridge');
 
 function run() {
@@ -31,8 +33,75 @@ function run() {
   assert.strictEqual(typeof status.enabled, 'boolean');
   assert.strictEqual(typeof status.configured, 'boolean');
   assert.ok(status.eventMap.dispatched === 4);
+  assert.ok(Array.isArray(status.positionDepartments[4]));
 
-  console.log('OK: TaskFlow bridge mapping tests passed');
+  const sample = {
+    id: 'CNS-1',
+    internalShipmentNo: 'CNS-1',
+    totalRequiredQty: 372,
+    totalPackedQty: 309,
+    packingCompletion: {
+      plannedQty: 372,
+      actualPackedQty: 309,
+      shortQty: 63,
+      shortReason: 'short stock',
+      completedByName: 'Pawan Shukla',
+    },
+    stageConfirmations: {
+      packing_completed: { confirmedAt: '2026-07-17T19:24:53.000Z', confirmedByName: 'Pawan Shukla' },
+      ready_for_invoice: { confirmedAt: '2026-07-17T19:24:53.000Z', confirmedByName: 'System' },
+      invoice_created: {
+        confirmedAt: '2026-07-20T15:24:58.000Z',
+        confirmedByName: 'Aditya Shah',
+        details: { invoiceNumber: 'FKSOR/26-27/001' },
+      },
+      ready_for_dispatch: { confirmedAt: '2026-07-20T15:24:58.000Z', confirmedByName: 'System' },
+      dispatched: {
+        confirmedAt: '2026-07-28T10:00:00.000Z',
+        confirmedByName: 'Chandan Yadav',
+        details: { docketNo: 'DKT-9', docketCompany: 'Delhivery' },
+      },
+      inward_completed: {
+        confirmedAt: '2026-07-29T10:00:00.000Z',
+        confirmedByName: 'Aditya Shah',
+        details: { inwardQty: 309 },
+      },
+    },
+    invoice: { number: 'FKSOR/26-27/001', amount: 12000, date: '2026-07-20' },
+    forwardInvoiceNo: 'FKSOR/26-27/001',
+    docketNo: 'DKT-9',
+    docketCompany: 'Delhivery',
+    dispatchDetails: { dispatchedQty: 309, boxCount: 6, docketNo: 'DKT-9', docketCompany: 'Delhivery' },
+    unitsInwarded: 309,
+    inwardDetails: { receivedQty: 309, inwardDate: '2026-07-29' },
+    groundTeamName: 'Chandan Yadav',
+    groundTeamEmail: 'dispatches@vbexports.co.in',
+  };
+
+  const desc = buildWorkflowDescription(sample);
+  assert.ok(desc.includes('Auto-triggered from Consignment Packing'));
+  assert.ok(desc.includes('packed qty 309'));
+  assert.ok(desc.includes('invoice no FKSOR/26-27/001'));
+  assert.ok(desc.includes('docket company Delhivery'));
+  assert.ok(desc.includes('docket id DKT-9'));
+  assert.ok(desc.includes('inward qty 309'));
+  assert.ok(desc.includes('Chandan Yadav'));
+
+  const packingNote = buildStageNote(sample, 'packing_completed');
+  assert.ok(packingNote.includes('Packed qty: 309'));
+  assert.ok(packingNote.includes('Short qty: 63'));
+
+  const invoiceNote = buildStageNote(sample, 'invoice_created');
+  assert.ok(invoiceNote.includes('Invoice no: FKSOR/26-27/001'));
+
+  const dispatchNote = buildStageNote(sample, 'dispatched');
+  assert.ok(dispatchNote.includes('Docket company: Delhivery'));
+  assert.ok(dispatchNote.includes('Docket id: DKT-9'));
+
+  const inwardNote = buildStageNote(sample, 'inward_completed');
+  assert.ok(inwardNote.includes('Inward qty: 309'));
+
+  console.log('OK: TaskFlow bridge mapping + description tests passed');
 }
 
 run();
