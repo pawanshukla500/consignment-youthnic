@@ -128,8 +128,6 @@ async function createTemplate(cfg) {
     no_next_position: null,
     is_terminal: false,
     outcome_label: null,
-    owner_department_id: null,
-    assignee_user_id: null,
   }));
   await rest(cfg, 'workflow_template_stages', {
     method: 'POST',
@@ -171,8 +169,6 @@ async function repairStages(cfg, templateId, existingStages) {
       no_next_position: null,
       is_terminal: false,
       outcome_label: null,
-      owner_department_id: null,
-      assignee_user_id: null,
     })),
   });
 
@@ -302,6 +298,25 @@ async function main() {
 
   let templateId = cfg.templateId;
   let template = templateId ? await fetchTemplate(cfg, templateId) : null;
+
+  if (!template) {
+    // Fall back: find by name in case the secret UUID drifted.
+    const byName = await rest(cfg, 'workflow_templates', {
+      query: {
+        name: 'ilike.*Packing*',
+        select: '*',
+        order: 'created_at.desc',
+        limit: '5',
+      },
+    });
+    const list = Array.isArray(byName) ? byName : [];
+    console.log('[ensure-taskflow-template] Lookup by id failed. id=', templateId || '(empty)', 'name matches=', list.map((t) => `${t.id}:${t.name}:active=${t.active}`).join(' | ') || '(none)');
+    template = list.find((t) => /consignments?\s*packing/i.test(t.name)) || list[0] || null;
+    if (template) {
+      templateId = template.id;
+      console.log('[ensure-taskflow-template] Using matched template:', templateId);
+    }
+  }
 
   if (!template) {
     console.log('[ensure-taskflow-template] Template id missing/not found — creating Consignments Packing…');

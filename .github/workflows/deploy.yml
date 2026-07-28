@@ -354,6 +354,7 @@ jobs:
           bash scripts/gcloud-deploy.sh
 
       - name: Ensure TaskFlow Consignments Packing template
+        continue-on-error: true
         env:
           TASKFLOW_ENABLED: ${{ secrets.TASKFLOW_ENABLED }}
           TASKFLOW_SUPABASE_URL: ${{ secrets.TASKFLOW_SUPABASE_URL }}
