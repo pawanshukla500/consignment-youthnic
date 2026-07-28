@@ -216,6 +216,7 @@ const pgHelpers = {
     limit = 50,
     includeArchived = false,
     archivedOnly = false,
+    shortPackOnly = false,
   }) {
     const params = [];
     let n = 1;
@@ -238,6 +239,17 @@ const pgHelpers = {
       whereClauses.push(`(
         coalesce(data->>'operationalStatus','') <> 'archived'
         AND coalesce(data->>'isArchived','') <> 'true'
+      )`);
+    }
+    if (shortPackOnly) {
+      // Confirmed packing short OR completed packing with remaining short qty.
+      whereClauses.push(`(
+        coalesce((data->'packingCompletion'->>'shortQty')::int, 0) > 0
+        OR (
+          coalesce(data->>'status','') = 'completed'
+          AND coalesce((data->>'totalRequiredQty')::int, 0)
+            > coalesce((data->>'totalPackedQty')::int, 0)
+        )
       )`);
     }
     if (search) {

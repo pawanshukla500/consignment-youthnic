@@ -614,8 +614,44 @@ function getPendingActionLabel(consignment) {
   return STAGE_LABELS[stage] || null;
 }
 
-function enrichWorkflowFields(consignment) {
+/**
+ * Persistable Ship status when inward/archive already happened but row stayed on
+ * In Transit / Forwarded / Ready. Returns null when no write is needed.
+ */
+function resolveHealedShipmentStatus(consignment) {
+  if (!consignment) return null;
+  const stageConfirmations = normalizeStageConfirmations(consignment.stageConfirmations);
+  const isArchived = Boolean(consignment.operationalStatus === 'archived' || consignment.isArchived);
+  const inwardDone = Boolean(
+    stageConfirmations.inward_completed?.confirmedAt
+    || consignment.dateOfInward
+    || Number(consignment.unitsInwarded) > 0
+  );
+  if (!isArchived && !inwardDone) return null;
+  const ship = consignment.shipmentStatus || '';
+  if (!ship || ship === 'In Transit' || ship === 'Forwarded' || ship === 'Ready') {
+    return 'Inwarded';
+  }
+  return null;
+}
+
+/** Drop heavy fields that list UI does not need (cuts response + transfer RUs). */
+function toListConsignment(consignment) {
   if (!consignment) return consignment;
+  const {
+    workflowStages,
+    assignmentHistory,
+    activityLog,
+    notesHistory,
+    auditTrail,
+    ...rest
+  } = consignment;
+  return rest;
+}
+
+function enrichWorkflowFields(consignment, options = {}) {
+  if (!consignment) return consignment;
+  const lean = Boolean(options.lean);
   const stageConfirmations = normalizeStageConfirmations(consignment.stageConfirmations);
   const withStages = { ...consignment, stageConfirmations };
   const currentWorkflowStage = getCurrentWorkflowStage(withStages);
@@ -623,13 +659,25 @@ function enrichWorkflowFields(consignment) {
   const listPriorityBucket = getListPriorityBucket(withStages);
   const packing = getPackingTotals(withStages);
   const isArchived = Boolean(consignment.operationalStatus === 'archived' || consignment.isArchived);
-  const inwardDone = Boolean(stageConfirmations.inward_completed?.confirmedAt);
-  // Heal legacy rows that stayed on In Transit / Forwarded after inward/archive.
+  const inwardDone = Boolean(
+    stageConfirmations.inward_completed?.confirmedAt
+    || consignment.dateOfInward
+    || Number(consignment.unitsInwarded) > 0
+  );
+  // Heal legacy rows that stayed on In Transit / Forwarded / Ready after inward/archive.
   let shipmentStatus = consignment.shipmentStatus || 'Planned';
-  if ((isArchived || inwardDone) && (shipmentStatus === 'In Transit' || shipmentStatus === 'Forwarded')) {
+  const healed = resolveHealedShipmentStatus(consignment);
+  if (healed) shipmentStatus = healed;
+  else if ((isArchived || inwardDone) && (shipmentStatus === 'In Transit' || shipmentStatus === 'Forwarded')) {
     shipmentStatus = 'Inwarded';
   }
-  return {
+  const packingShortQty = Number(consignment.packingCompletion?.shortQty) || packing.short || 0;
+  const hasPackingShort = packingShortQty > 0 && (
+    Boolean(consignment.packingCompletion?.shortReason)
+    || Boolean(stageConfirmations.packing_completed?.confirmedAt)
+    || consignment.status === 'completed'
+  );
+  const base = {
     ...consignment,
     shipmentStatus,
     stageConfirmations,
@@ -645,10 +693,16 @@ function enrichWorkflowFields(consignment) {
     isArchived,
     operationalStatus: consignment.operationalStatus || (consignment.isArchived ? 'archived' : 'active'),
     packingTotals: packing,
+    packingShortQty,
+    hasPackingShort,
     assignedDepartment: consignment.assignedDepartment || null,
     assignedDepartmentLabel: consignment.assignedDepartmentLabel
       || departmentLabel(consignment.assignedDepartment)
       || null,
+  };
+  if (lean) return toListConsignment(base);
+  return {
+    ...base,
     workflowStages: STAGE_ORDER.map((key) => ({
       key,
       label: STAGE_LABELS[key],
@@ -792,6 +846,8 @@ module.exports = {
   sortConsignmentsByWorkflowPriority,
   applyStageConfirmation,
   enrichWorkflowFields,
+  resolveHealedShipmentStatus,
+  toListConsignment,
   getPendingActionLabel,
   isPackingPhysicallyDone,
   getPackingTotals,

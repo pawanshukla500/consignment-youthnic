@@ -197,6 +197,7 @@ export const settingsAPI = {
   getDbInfo: () => api.get('/settings/db-info'),
   getSystemHealth: () => api.get('/settings/system-health'),
   reconcile: () => api.post('/settings/reconcile'),
+  healShipmentStatuses: () => api.post('/settings/heal-shipment-statuses'),
   importLegacyData: () => api.post('/settings/import-legacy-data'),
   getLiveLogs: () => api.get('/settings/live-logs')
 };

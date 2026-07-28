@@ -658,6 +658,7 @@ router.get('/', authenticateToken, requirePermission('consignments', 'view consi
       offset: offsetParam,
       includeArchived,
       archivedOnly,
+      shortPackOnly,
     } = req.query;
     const pageSize = limit ? Math.min(parseInt(limit) || 50, 200) : 50;
     const pageNum = Math.max(1, parseInt(page) || 1);
@@ -669,6 +670,7 @@ router.get('/', authenticateToken, requirePermission('consignments', 'view consi
       || Boolean(search && String(search).trim())
       || String(includeArchived || '').toLowerCase() === 'true'
       || includeArchived === '1';
+    const wantShortPackOnly = String(shortPackOnly || '').toLowerCase() === 'true' || shortPackOnly === '1';
 
     let consignments;
     let total;
@@ -684,6 +686,7 @@ router.get('/', authenticateToken, requirePermission('consignments', 'view consi
           limit: pageSize,
           includeArchived: wantIncludeArchived,
           archivedOnly: wantArchivedOnly,
+          shortPackOnly: wantShortPackOnly,
         });
         consignments = result.items;
         total = result.total;
@@ -720,10 +723,19 @@ router.get('/', authenticateToken, requirePermission('consignments', 'view consi
       } else if (!wantIncludeArchived) {
         consignments = consignments.filter((c) => !isArchivedRow(c));
       }
+      if (wantShortPackOnly) {
+        consignments = consignments.filter((c) => {
+          const shortFromCompletion = Number(c?.packingCompletion?.shortQty) || 0;
+          if (shortFromCompletion > 0) return true;
+          const planned = Number(c?.totalRequiredQty) || 0;
+          const packed = Number(c?.totalPackedQty) || 0;
+          return c?.status === 'completed' && planned > packed;
+        });
+      }
     }
 
     const marketplaceMap = await buildMarketplaceMap(firestoreHelpers);
-    consignments = consignments.map((c) => enrichWorkflowFields(enrichConsignment(c, marketplaceMap)));
+    consignments = consignments.map((c) => enrichWorkflowFields(enrichConsignment(c, marketplaceMap), { lean: true }));
 
     if (total == null) {
       if (sort === 'dispatch' || sort === 'appointment' || sort === 'workflow' || !sort) {

@@ -187,6 +187,23 @@ assert.ok(userCanConfirmStage({ role: 'admin' }, 'dispatched'));
   assert.strictEqual(enrichWorkflowFields({ ...c, ...done.updates }).shipmentStatus, 'Inwarded');
   assert.strictEqual(enrichWorkflowFields({ ...c, ...done.updates }).listPriorityBucket, 'archived');
   assert.ok(canArchiveConsignment({ ...c, ...done.updates }).ok === false); // already archived
+
+  // Legacy archived row stuck on In Transit — display + persist heal
+  const {
+    resolveHealedShipmentStatus,
+    toListConsignment,
+  } = require('../utils/consignmentWorkflow');
+  const legacy = {
+    ...c,
+    ...done.updates,
+    shipmentStatus: 'In Transit',
+  };
+  assert.strictEqual(resolveHealedShipmentStatus(legacy), 'Inwarded');
+  assert.strictEqual(enrichWorkflowFields(legacy).shipmentStatus, 'Inwarded');
+  const lean = enrichWorkflowFields(legacy, { lean: true });
+  assert.strictEqual(lean.shipmentStatus, 'Inwarded');
+  assert.ok(!lean.workflowStages);
+  assert.ok(toListConsignment({ ...lean, workflowStages: [{ key: 'x' }] }).workflowStages === undefined);
 }
 
 console.log('Workflow automation tests passed.');
