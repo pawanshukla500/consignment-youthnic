@@ -1077,7 +1077,7 @@ const ConsignmentDetail = () => {
               <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(consignment.status)}`}>
                 {consignment.status?.replace('_', ' ')}
               </span>
-              <span className={`px-3 py-1 rounded-full text-xs font-medium ${consignment.shipmentStatus==='Planned'?'bg-slate-100 text-slate-700':consignment.shipmentStatus==='Under Packing'?'bg-orange-100 text-orange-800':consignment.shipmentStatus==='Ready'?'bg-emerald-100 text-emerald-800':consignment.shipmentStatus==='In Transit'||consignment.shipmentStatus==='Forwarded'?'bg-blue-100 text-blue-800':consignment.shipmentStatus==='Missed'?'bg-red-100 text-red-800':'bg-slate-100 text-slate-700'}`}>
+              <span className={`px-3 py-1 rounded-full text-xs font-medium ${consignment.shipmentStatus==='Planned'?'bg-slate-100 text-slate-700':consignment.shipmentStatus==='Under Packing'?'bg-orange-100 text-orange-800':consignment.shipmentStatus==='Ready'?'bg-emerald-100 text-emerald-800':consignment.shipmentStatus==='In Transit'||consignment.shipmentStatus==='Forwarded'?'bg-blue-100 text-blue-800':consignment.shipmentStatus==='Inwarded'?'bg-slate-200 text-slate-800':consignment.shipmentStatus==='Missed'?'bg-red-100 text-red-800':'bg-slate-100 text-slate-700'}`}>
                 {consignment.shipmentStatus || 'Planned'}
               </span>
               <CriticalityBadge priority={shipmentPriority} size="lg" />
@@ -1231,6 +1231,7 @@ const ConsignmentDetail = () => {
                     <option value="Ready">Ready</option>
                     <option value="In Transit">In Transit</option>
                     <option value="Forwarded">Forwarded</option>
+                    <option value="Inwarded">Inwarded</option>
                     <option value="Missed">Missed</option>
                   </select>
                 ) : (

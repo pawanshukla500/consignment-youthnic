@@ -183,6 +183,8 @@ assert.ok(userCanConfirmStage({ role: 'admin' }, 'dispatched'));
   assert.ok(done.ok);
   assert.strictEqual(done.updates.operationalStatus, 'archived');
   assert.strictEqual(done.updates.isArchived, true);
+  assert.strictEqual(done.updates.shipmentStatus, 'Inwarded');
+  assert.strictEqual(enrichWorkflowFields({ ...c, ...done.updates }).shipmentStatus, 'Inwarded');
   assert.strictEqual(enrichWorkflowFields({ ...c, ...done.updates }).listPriorityBucket, 'archived');
   assert.ok(canArchiveConsignment({ ...c, ...done.updates }).ok === false); // already archived
 }

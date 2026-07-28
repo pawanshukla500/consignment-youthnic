@@ -548,6 +548,8 @@ function applyStageConfirmation(consignment, stage, user, note = null, payload =
       completedByName: user?.name || user?.email || null,
       completedAt: confirmedAt,
     };
+    // Inward closes logistics — do not leave Ship column on "In Transit".
+    updates.shipmentStatus = 'Inwarded';
     // Auto-archive when inward matches (or variance accepted)
     updates.operationalStatus = 'archived';
     updates.isArchived = true;
@@ -620,8 +622,16 @@ function enrichWorkflowFields(consignment) {
   const overdueStages = getOverdueStages(withStages);
   const listPriorityBucket = getListPriorityBucket(withStages);
   const packing = getPackingTotals(withStages);
+  const isArchived = Boolean(consignment.operationalStatus === 'archived' || consignment.isArchived);
+  const inwardDone = Boolean(stageConfirmations.inward_completed?.confirmedAt);
+  // Heal legacy rows that stayed on In Transit / Forwarded after inward/archive.
+  let shipmentStatus = consignment.shipmentStatus || 'Planned';
+  if ((isArchived || inwardDone) && (shipmentStatus === 'In Transit' || shipmentStatus === 'Forwarded')) {
+    shipmentStatus = 'Inwarded';
+  }
   return {
     ...consignment,
+    shipmentStatus,
     stageConfirmations,
     currentWorkflowStage,
     currentWorkflowStageLabel: currentWorkflowStage === 'archived'
@@ -632,7 +642,7 @@ function enrichWorkflowFields(consignment) {
     isTatOverdue: overdueStages.length > 0,
     listPriorityBucket,
     listPriorityRank: LIST_BUCKETS[listPriorityBucket],
-    isArchived: Boolean(consignment.operationalStatus === 'archived' || consignment.isArchived),
+    isArchived,
     operationalStatus: consignment.operationalStatus || (consignment.isArchived ? 'archived' : 'active'),
     packingTotals: packing,
     assignedDepartment: consignment.assignedDepartment || null,

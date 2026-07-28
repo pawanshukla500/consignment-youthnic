@@ -1764,6 +1764,17 @@ router.post('/:id/archive', authenticateToken, requirePermission('consignments',
       archivedByName: req.user.name || req.user.email,
       updatedAt: archivedAt,
     };
+    // When inward is done, Ship should read Inwarded (not stuck on In Transit).
+    if (
+      isStageConfirmed(consignment, 'inward_completed')
+      || consignment.dateOfInward
+      || Number(consignment.unitsInwarded) > 0
+    ) {
+      const ship = consignment.shipmentStatus;
+      if (!ship || ship === 'In Transit' || ship === 'Forwarded' || ship === 'Ready') {
+        updates.shipmentStatus = 'Inwarded';
+      }
+    }
     await firestoreHelpers.setDocument('consignments', id, updates);
     await addAuditLog('archive', 'consignment', id, req.user.id, {
       reason: updates.archivedReason,
