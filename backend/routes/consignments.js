@@ -8,7 +8,6 @@ const { getPool, pgEnabled } = require('../config/database');
 const pgHelpers = require('../utils/pgHelpers');
 const { emitConsignmentChange } = require('../utils/syncBus');
 const {
-  notifyTaskflowCreated,
   syncConsignmentIdChange,
 } = require('../utils/taskflowBridge');
 const { getSaveBoxUpdates } = require('../utils/shipmentStatus');
@@ -1389,17 +1388,41 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
     addAuditLog('create', 'consignment', resolvedId, req.user.id, { internalShipmentNo, skuCount: skus.length, pendingExternalId })
       .catch((auditError) => console.warn('[Consignments] Create audit log failed:', auditError.message));
 
-    res.status(201).json({ consignment: planned });
+    // Create TaskFlow workflow before responding so failures are visible on consignment.taskflow.
+    let taskflowResult = null;
+    try {
+      const { syncConsignmentCreated, isTaskflowEnabled, getTaskflowStatus } = require('../utils/taskflowBridge');
+      if (isTaskflowEnabled()) {
+        taskflowResult = await Promise.race([
+          syncConsignmentCreated(planned, { force: true }),
+          new Promise((resolve) => setTimeout(() => resolve({ skipped: true, reason: 'timeout' }), 12000)),
+        ]);
+      } else {
+        const status = getTaskflowStatus();
+        console.warn('[Consignments] TaskFlow disabled/unconfigured on create', status.missing);
+        taskflowResult = { skipped: true, reason: 'disabled_or_unconfigured', missing: status.missing };
+      }
+    } catch (tfError) {
+      console.error('[Consignments] TaskFlow create failed:', tfError.message);
+      taskflowResult = { ok: false, error: tfError.message };
+    }
+
+    const refreshed = await firestoreHelpers.getDocument('consignments', resolvedId);
+    const consignmentOut = refreshed || planned;
+
+    res.status(201).json({
+      consignment: consignmentOut,
+      taskflow: taskflowResult,
+    });
     emitConsignmentChange({
       id: resolvedId,
-      status: planned.status,
-      shipmentStatus: planned.shipmentStatus,
-      totalPackedQty: planned.totalPackedQty,
-      totalRequiredQty: planned.totalRequiredQty,
-      internalShipmentNo: planned.internalShipmentNo,
-      updatedAt: planned.updatedAt,
+      status: consignmentOut.status,
+      shipmentStatus: consignmentOut.shipmentStatus,
+      totalPackedQty: consignmentOut.totalPackedQty,
+      totalRequiredQty: consignmentOut.totalRequiredQty,
+      internalShipmentNo: consignmentOut.internalShipmentNo,
+      updatedAt: consignmentOut.updatedAt,
     });
-    notifyTaskflowCreated(planned);
     try {
       require('../utils/inventoryNotify').scheduleInventoryPlanningCheck('new_shortage');
     } catch (_) { /* non-blocking */ }

@@ -21,17 +21,19 @@ const EXPECTED_FIELDS = [
 ];
 
 function getConfig() {
+  const enabledRaw = String(process.env.TASKFLOW_ENABLED || '').trim();
+  const enabledFlag = enabledRaw.replace(/^["']|["']$/g, '').trim().toLowerCase();
   const url = String(process.env.TASKFLOW_SUPABASE_URL || '').trim().replace(/\/$/, '');
   const serviceKey = String(process.env.TASKFLOW_SERVICE_ROLE_KEY || process.env.TASKFLOW_API_KEY || '').trim();
-  const templateId = String(process.env.TASKFLOW_TEMPLATE_ID || '').trim();
-  const raisedBy = String(process.env.TASKFLOW_RAISED_BY_USER_ID || '').trim();
-  const enabled = String(process.env.TASKFLOW_ENABLED || '').trim().toLowerCase();
+  const templateId = String(process.env.TASKFLOW_TEMPLATE_ID || '').trim().replace(/^["']|["']$/g, '');
+  const raisedBy = String(process.env.TASKFLOW_RAISED_BY_USER_ID || '').trim().replace(/^["']|["']$/g, '');
   return {
     url,
     serviceKey,
     templateId,
     raisedBy,
-    enabled: enabled === 'true' || enabled === '1',
+    enabled: enabledFlag === 'true' || enabledFlag === '1',
+    enabledRaw,
   };
 }
 
@@ -195,10 +197,102 @@ async function repairStages(cfg, templateId, existingStages) {
   return fetchStages(cfg, templateId);
 }
 
+async function activateTemplate(cfg, templateId, template) {
+  const patch = { active: true };
+  if (!template?.name || /cosigment|consigment/i.test(template.name)) {
+    patch.name = 'Consignments Packing';
+  }
+  if (!template?.category) patch.category = 'Operations';
+  if (!template?.description) {
+    patch.description = 'Auto-linked from Consignment Packing app (create → packing → invoice → dispatch → inward).';
+  }
+  await rest(cfg, 'workflow_templates', {
+    method: 'PATCH',
+    query: { id: `eq.${templateId}` },
+    body: patch,
+  });
+  console.log('[ensure-taskflow-template] Template forced active=true for UI visibility');
+}
+
+async function smokeCreateWorkflow(cfg, templateId, stages) {
+  if (!cfg.raisedBy) {
+    console.warn('[ensure-taskflow-template] skip smoke workflow — no RAISED_BY');
+    return null;
+  }
+
+  // Avoid duplicates: look for an existing smoke title from today.
+  const title = `Packing bridge smoke · ${new Date().toISOString().slice(0, 10)}`;
+  const existing = await rest(cfg, 'workflows', {
+    query: {
+      title: `eq.${title}`,
+      select: 'id,tracking_number,status,title',
+      limit: '1',
+    },
+  });
+  if (Array.isArray(existing) && existing[0]?.id) {
+    console.log('[ensure-taskflow-template] Smoke workflow already exists:', existing[0].tracking_number || existing[0].id);
+    return existing[0];
+  }
+
+  const inserted = await rest(cfg, 'workflows', {
+    method: 'POST',
+    prefer: 'return=representation',
+    body: {
+      template_id: templateId,
+      title,
+      description: 'Deploy smoke test from consignment packing bridge. Safe to delete.',
+      priority: 'low',
+      raised_by: cfg.raisedBy,
+      current_stage_position: 1,
+      status: 'active',
+    },
+  });
+  const wf = Array.isArray(inserted) ? inserted[0] : inserted;
+  if (!wf?.id) throw new Error('Smoke workflow create returned no id');
+
+  const nowIso = new Date().toISOString();
+  const stageRows = (stages || []).slice(0, 5).map((s, i) => ({
+    workflow_id: wf.id,
+    position: Number(s.position) || i + 1,
+    name: s.name,
+    owner_department_id: null,
+    assignee_user_id: null,
+    tat_hours: 24,
+    escalate_on_breach: true,
+    status: i === 0 ? 'in_progress' : 'pending',
+    started_at: i === 0 ? nowIso : null,
+    is_decision: false,
+    is_terminal: false,
+  }));
+  if (stageRows.length) {
+    await rest(cfg, 'workflow_stages', {
+      method: 'POST',
+      prefer: 'return=minimal',
+      body: stageRows,
+    });
+  }
+
+  await rest(cfg, 'workflow_field_values', {
+    method: 'POST',
+    prefer: 'return=minimal',
+    body: [
+      { workflow_id: wf.id, field_key: 'consignment_id', label: 'Consignment ID', value: 'SMOKE-TEST' },
+      { workflow_id: wf.id, field_key: 'consignment_no', label: 'Consignment No', value: 'SMOKE-TEST' },
+    ],
+  });
+
+  const refreshed = await rest(cfg, 'workflows', {
+    query: { id: `eq.${wf.id}`, select: 'id,tracking_number,status,title', limit: '1' },
+  });
+  const row = Array.isArray(refreshed) ? refreshed[0] : refreshed;
+  console.log('[ensure-taskflow-template] Smoke workflow created:', row?.tracking_number || wf.id);
+  return row || wf;
+}
+
 async function main() {
   const cfg = getConfig();
   if (!cfg.enabled) {
-    console.log('[ensure-taskflow-template] TASKFLOW_ENABLED is not true — skipped');
+    console.log('[ensure-taskflow-template] TASKFLOW_ENABLED is not true — skipped. raw=', JSON.stringify(cfg.enabledRaw));
     return;
   }
   if (!cfg.url || !cfg.serviceKey) {
@@ -216,8 +310,10 @@ async function main() {
     console.log('[ensure-taskflow-template] Created template id:', templateId);
     console.log('[ensure-taskflow-template] IMPORTANT: set GitHub secret TASKFLOW_TEMPLATE_ID=' + templateId);
   } else {
-    console.log('[ensure-taskflow-template] Found template:', template.id, template.name || '');
+    console.log('[ensure-taskflow-template] Found template:', template.id, template.name || '', 'active=', template.active);
   }
+
+  await activateTemplate(cfg, templateId, template);
 
   const stages = await fetchStages(cfg, templateId);
   const repaired = await repairStages(cfg, templateId, stages);
@@ -228,8 +324,17 @@ async function main() {
   if (!stagesLookGood(repaired)) {
     throw new Error('Template still does not have positions 1–5 after repair');
   }
+
+  const smoke = await smokeCreateWorkflow(cfg, templateId, repaired);
+
   console.log('[ensure-taskflow-template] OK — template ready for packing auto-create');
-  console.log(JSON.stringify({ ok: true, templateId, stageCount: repaired.length }));
+  console.log(JSON.stringify({
+    ok: true,
+    templateId,
+    stageCount: repaired.length,
+    smokeWorkflowId: smoke?.id || null,
+    smokeTrackingNumber: smoke?.tracking_number || null,
+  }));
 }
 
 main().catch((error) => {

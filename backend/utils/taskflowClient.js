@@ -7,11 +7,13 @@
 const crypto = require('crypto');
 
 function getConfig() {
-  const enabledFlag = String(process.env.TASKFLOW_ENABLED || '').trim().toLowerCase();
+  const enabledRaw = String(process.env.TASKFLOW_ENABLED || '').trim();
+  // Accept true / 1 / "true" (quoted secret values are a common GitHub Secrets mistake)
+  const enabledFlag = enabledRaw.replace(/^["']|["']$/g, '').trim().toLowerCase();
   const url = String(process.env.TASKFLOW_SUPABASE_URL || '').trim().replace(/\/$/, '');
   const serviceKey = String(process.env.TASKFLOW_SERVICE_ROLE_KEY || process.env.TASKFLOW_API_KEY || '').trim();
-  const templateId = String(process.env.TASKFLOW_TEMPLATE_ID || '').trim();
-  const raisedBy = String(process.env.TASKFLOW_RAISED_BY_USER_ID || '').trim();
+  const templateId = String(process.env.TASKFLOW_TEMPLATE_ID || '').trim().replace(/^["']|["']$/g, '');
+  const raisedBy = String(process.env.TASKFLOW_RAISED_BY_USER_ID || '').trim().replace(/^["']|["']$/g, '');
   const webhookSecret = String(process.env.TASKFLOW_WEBHOOK_SECRET || '').trim();
   const mcpPat = String(process.env.TASKFLOW_MCP_PAT || '').trim();
   const configured = Boolean(url && serviceKey && templateId && raisedBy);
@@ -25,6 +27,7 @@ function getConfig() {
     mcpPat,
     configured,
     enabled,
+    enabledFlagRaw: enabledRaw || null,
   };
 }
 

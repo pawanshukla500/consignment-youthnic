@@ -663,9 +663,30 @@ async function syncConsignmentStages(consignment, stages = [], options = {}) {
 }
 
 function notifyTaskflowCreated(consignment) {
-  if (!isTaskflowEnabled()) return;
+  if (!isTaskflowEnabled()) {
+    const status = getTaskflowStatus();
+    console.warn(
+      '[TaskFlowBridge] skipped create — not enabled/configured.',
+      'missing=', status.missing,
+      'enabledFlagRaw=', status.enabledFlagRaw
+    );
+    if (consignment?.id) {
+      persistTaskflowMeta(consignment.id, {
+        lastError: `TaskFlow skipped on create: ${status.missing.join(', ') || 'disabled'}`,
+        lastErrorAt: new Date().toISOString(),
+      }).catch(() => {});
+    }
+    return;
+  }
+  // Run soon, but do not block the HTTP response.
   setImmediate(() => {
-    syncConsignmentCreated(consignment).catch(() => {});
+    syncConsignmentCreated(consignment)
+      .then((result) => {
+        console.log('[TaskFlowBridge] create sync result:', consignment?.id, result?.ok || result?.skipped, result?.workflowId || result?.reason || '');
+      })
+      .catch((error) => {
+        console.error('[TaskFlowBridge] create sync error:', consignment?.id, error.message);
+      });
   });
 }
 
@@ -770,6 +791,18 @@ function getTaskflowStatus() {
     retryQueueLength: retryQueue.length,
     eventMap: { ...EVENT_TO_TARGET_POSITION },
     positionDepartments: { ...POSITION_DEPARTMENTS },
+    // Helps diagnose mis-set secrets like TASKFLOW_ENABLED="true" with quotes
+    enabledFlagRaw: cfg.enabledFlagRaw,
+    missing: [
+      !cfg.url ? 'TASKFLOW_SUPABASE_URL' : null,
+      !cfg.serviceKey ? 'TASKFLOW_SERVICE_ROLE_KEY' : null,
+      !cfg.templateId ? 'TASKFLOW_TEMPLATE_ID' : null,
+      !cfg.raisedBy ? 'TASKFLOW_RAISED_BY_USER_ID' : null,
+      !(String(process.env.TASKFLOW_ENABLED || '').replace(/^["']|["']$/g, '').trim().toLowerCase() === 'true'
+        || String(process.env.TASKFLOW_ENABLED || '').replace(/^["']|["']$/g, '').trim() === '1')
+        ? 'TASKFLOW_ENABLED must be true'
+        : null,
+    ].filter(Boolean),
   };
 }
 
