@@ -59,6 +59,7 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
   const [busyStage, setBusyStage] = useState(null)
   const [assigning, setAssigning] = useState(false)
   const [forms, setForms] = useState(() => emptyForms(consignment))
+  const [resyncingTaskflow, setResyncingTaskflow] = useState(false)
 
   const isElevated = user?.role === 'admin' || user?.role === 'organization_head'
   const canAssign = isElevated || user?.permissions?.consignments === true
@@ -122,6 +123,22 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
       addToast(e.response?.data?.error || 'Assign failed', 'error')
     } finally {
       setAssigning(false)
+    }
+  }
+
+  const handleTaskflowResync = async () => {
+    setResyncingTaskflow(true)
+    try {
+      const res = await workflowAPI.taskflowResync(consignment.id)
+      onUpdated?.(res.data.consignment)
+      const wfId = res.data?.result?.createdResult?.workflowId
+        || res.data?.result?.stagesResult?.workflowId
+        || consignment?.taskflow?.workflowId
+      addToast(wfId ? `TaskFlow synced (${wfId.slice(0, 8)}…)` : 'TaskFlow synced', 'success')
+    } catch (e) {
+      addToast(e.response?.data?.error || 'TaskFlow resync failed', 'error')
+    } finally {
+      setResyncingTaskflow(false)
     }
   }
 
@@ -461,6 +478,31 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
           )}
         </div>
       </div>
+
+      {isElevated && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-2">
+          <div className="text-[11px] text-slate-600 min-w-0">
+            <span className="font-semibold text-slate-800">TaskFlow Pro</span>
+            {consignment?.taskflow?.trackingNumber
+              ? <> · {consignment.taskflow.trackingNumber}</>
+              : consignment?.taskflow?.workflowId
+                ? <> · linked</>
+                : <> · not linked yet</>}
+            {consignment?.taskflow?.lastError
+              ? <span className="text-amber-700"> · last sync error</span>
+              : null}
+          </div>
+          <button
+            type="button"
+            onClick={handleTaskflowResync}
+            disabled={resyncingTaskflow}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+          >
+            {resyncingTaskflow ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+            Resync to TaskFlow
+          </button>
+        </div>
+      )}
 
       <div className="grid sm:grid-cols-2 gap-3 mb-4 text-xs">
         <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">

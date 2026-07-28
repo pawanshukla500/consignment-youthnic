@@ -77,6 +77,7 @@ assert.ok(deploySrc.includes('gcloud-deploy.sh'), 'deploy must use gcloud-deploy
 
 const deployScriptSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'gcloud-deploy.sh'), 'utf8');
 assert.ok(deployScriptSrc.includes('MAILGUN_API_KEY'), 'gcloud-deploy must set MAILGUN_API_KEY as env');
+assert.ok(deployScriptSrc.includes('TASKFLOW_SERVICE_ROLE_KEY'), 'gcloud-deploy must pass TaskFlow service role when set');
 assert.ok(deployScriptSrc.includes('--env-vars-file'), 'gcloud-deploy must use Cloud Run env vars file');
 assert.ok(deployScriptSrc.includes('--clear-secrets'), 'gcloud-deploy must clear legacy Secret Manager mounts');
 assert.ok(!deployScriptSrc.includes('RESEND_API_KEY'), 'gcloud-deploy must not reference Resend');

@@ -34,6 +34,11 @@ const {
   userInDepartment,
   NEXT_ASSIGNMENT_DEPARTMENT,
 } = require('../utils/departments');
+const {
+  notifyTaskflowStages,
+  resyncConsignmentToTaskflow,
+  getTaskflowStatus,
+} = require('../utils/taskflowBridge');
 
 /** Prevent duplicate Org Head emails within the same UTC calendar day */
 let lastWeeklyReportKey = null;
@@ -277,6 +282,11 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
       assignedDepartment: nextDept || null,
     });
     emitConsignmentChange(next);
+
+    const taskflowStages = [stage, ...(result.autoStages || [])];
+    notifyTaskflowStages(next, taskflowStages, {
+      note: note || `Confirmed in Packing: ${STAGE_LABELS[stage] || stage}`,
+    });
 
     const mail = buildWorkflowEmail({
       title: 'Stage confirmed',
@@ -546,6 +556,36 @@ router.get('/assignees', authenticateToken, requireAnyPermission(['consignments'
 /** Department catalog for user management + workflow UI */
 router.get('/departments', authenticateToken, (_req, res) => {
   res.json({ departments: listDepartmentOptions() });
+});
+
+/** TaskFlow Pro integration status (admin) */
+router.get('/taskflow/status', authenticateToken, requireRole('admin'), (_req, res) => {
+  res.json({ taskflow: getTaskflowStatus() });
+});
+
+/** Resync one consignment into TaskFlow (admin) — create/advance to match packing stages */
+router.post('/:id/taskflow-resync', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const consignment = await firestoreHelpers.getDocument('consignments', req.params.id);
+    if (!consignment) return res.status(404).json({ error: 'Consignment not found.' });
+    const result = await resyncConsignmentToTaskflow(enrichWorkflowFields(consignment));
+    if (!result.ok) {
+      return res.status(400).json({ error: result.error || 'TaskFlow resync failed' });
+    }
+    await addAuditLog('taskflow_resync', 'consignment', consignment.id, req.user.id, {
+      workflowId: result.createdResult?.workflowId || result.stagesResult?.workflowId || null,
+      confirmedStages: result.confirmedStages || [],
+    });
+    const refreshed = await firestoreHelpers.getDocument('consignments', consignment.id);
+    res.json({
+      ok: true,
+      result,
+      consignment: enrichWorkflowFields(refreshed || consignment),
+    });
+  } catch (error) {
+    console.error('[taskflow-resync]', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 module.exports = {

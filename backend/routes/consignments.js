@@ -7,6 +7,10 @@ const { enrichConsignment, buildMarketplaceMap, sortByDispatchPriority } = requi
 const { getPool, pgEnabled } = require('../config/database');
 const pgHelpers = require('../utils/pgHelpers');
 const { emitConsignmentChange } = require('../utils/syncBus');
+const {
+  notifyTaskflowCreated,
+  syncConsignmentIdChange,
+} = require('../utils/taskflowBridge');
 const { getSaveBoxUpdates } = require('../utils/shipmentStatus');
 const {
   enrichWorkflowFields,
@@ -1395,6 +1399,7 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
       internalShipmentNo: planned.internalShipmentNo,
       updatedAt: planned.updatedAt,
     });
+    notifyTaskflowCreated(planned);
     try {
       require('../utils/inventoryNotify').scheduleInventoryPlanningCheck('new_shortage');
     } catch (_) { /* non-blocking */ }
@@ -1429,6 +1434,7 @@ router.post('/:id/reassign-id', authenticateToken, requirePermission('consignmen
       internalShipmentNo: enriched.internalShipmentNo,
       updatedAt: enriched.updatedAt,
     });
+    syncConsignmentIdChange(result.oldId, enriched).catch(() => {});
     res.json({ consignment: enriched, oldId: result.oldId, newId: result.newId });
   } catch (error) {
     sendError(res, error);

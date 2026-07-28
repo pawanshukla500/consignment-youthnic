@@ -97,6 +97,8 @@ export const workflowAPI = {
   runTatCheck: () => api.post('/workflow/run-tat-check'),
   orgHeadSummary: () => api.get('/workflow/org-head/summary'),
   sendWeeklyReport: (data) => api.post('/workflow/org-head/send-weekly-report', data),
+  taskflowStatus: () => api.get('/workflow/taskflow/status'),
+  taskflowResync: (id) => api.post(`/workflow/${id}/taskflow-resync`),
 };
 
 // Uploads API
