@@ -337,6 +337,13 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           SHARE_LINK_SECRET: ${{ secrets.SHARE_LINK_SECRET }}
+          TASKFLOW_ENABLED: ${{ secrets.TASKFLOW_ENABLED }}
+          TASKFLOW_SUPABASE_URL: ${{ secrets.TASKFLOW_SUPABASE_URL }}
+          TASKFLOW_SERVICE_ROLE_KEY: ${{ secrets.TASKFLOW_SERVICE_ROLE_KEY }}
+          TASKFLOW_TEMPLATE_ID: ${{ secrets.TASKFLOW_TEMPLATE_ID }}
+          TASKFLOW_RAISED_BY_USER_ID: ${{ secrets.TASKFLOW_RAISED_BY_USER_ID }}
+          TASKFLOW_MCP_PAT: ${{ secrets.TASKFLOW_MCP_PAT }}
+          TASKFLOW_WEBHOOK_SECRET: ${{ secrets.TASKFLOW_WEBHOOK_SECRET }}
         run: |
           if [ "${{ github.event.inputs.skip_build }}" = "true" ]; then
             export IMAGE_REF="gcr.io/$PROJECT_ID/$IMAGE_NAME:latest"

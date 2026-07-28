@@ -342,6 +342,11 @@ router.get('/system-health', authenticateToken, requireRole('admin'), async (req
       jwtConfigured: Boolean(String(process.env.SUPABASE_JWT_SECRET || '').trim()),
     };
 
+    let taskflowService = { enabled: false, configured: false };
+    try {
+      taskflowService = require('../utils/taskflowBridge').getTaskflowStatus();
+    } catch (_) { /* optional */ }
+
     const uptimeSeconds = Math.floor((Date.now() - APP_START_TIME) / 1000);
     const databaseHealthy = dataService.connected;
     const allHealthy = databaseHealthy && accessService.available && fileService.reachable;
@@ -363,6 +368,7 @@ router.get('/system-health', authenticateToken, requireRole('admin'), async (req
       accessService,
       fileService,
       liveSyncService,
+      taskflowService,
       alerts: [
         !validation.valid ? { level: 'critical', message: validation.error, hint: validation.hint } : null,
         !dataService.connected && dbDiag.configured ? { level: 'critical', message: dataService.error || 'PostgreSQL connection failed.' } : null,
@@ -370,6 +376,9 @@ router.get('/system-health', authenticateToken, requireRole('admin'), async (req
         !fileService.reachable && fileService.configured ? { level: 'warning', message: 'Cloudflare R2 storage is not reachable.' } : null,
         !fileService.configured ? { level: 'warning', message: 'Cloudflare R2 is not configured.' } : null,
         !liveSyncService.configured ? { level: 'warning', message: 'Supabase Realtime live sync is not configured (SSE/polling fallback remains).' } : null,
+        taskflowService.configured && !taskflowService.enabled
+          ? { level: 'warning', message: 'TaskFlow Pro credentials are present but TASKFLOW_ENABLED is off.' }
+          : null,
       ].filter(Boolean),
     });
   } catch (error) {
