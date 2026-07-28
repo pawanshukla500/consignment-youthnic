@@ -1,8 +1,8 @@
 /**
  * Consignment Packing → TaskFlow Pro bridge.
  *
- * Packing remains source of truth. This module creates/advances TaskFlow runs
- * keyed by consignment id + internalShipmentNo.
+ * Driven by consignment workflow stages (not packing-station scan data).
+ * Packing remains source of truth; TaskFlow gets auto create/advance + assignees.
  */
 const {
   isTaskflowEnabled,
@@ -13,9 +13,13 @@ const {
   advanceWorkflowThroughPosition,
   upsertFieldValues,
   getWorkflow,
+  findProfileByNameAndEmail,
+  updateWorkflow,
+  patchStageAssignee,
 } = require('./taskflowClient');
+const { getUserDepartments } = require('./departments');
 
-/** Packing status / stage → TaskFlow stage position to complete (1-based). */
+/** Packing workflow stage → TaskFlow stage position to complete (1-based). */
 const EVENT_TO_TARGET_POSITION = {
   created: 1,
   packing_completed: 2,
@@ -26,11 +30,28 @@ const EVENT_TO_TARGET_POSITION = {
   inward_completed: 5,
 };
 
+/** TaskFlow position → packing departments used to auto-pick assignees. */
+const POSITION_DEPARTMENTS = {
+  1: ['invoice', 'management'], // Consignment Creation
+  2: ['packing', 'ground_team'], // Consignment Packing
+  3: ['invoice'], // Invoice Creation
+  4: ['dispatch', 'ground_team'], // Dispatched / Outward
+  5: ['inward'], // Inwarding
+};
+
+/** TaskFlow position → packing stage key used for note text. */
+const POSITION_TO_PACKING_STAGE = {
+  1: 'created',
+  2: 'packing_completed',
+  3: 'invoice_created',
+  4: 'dispatched',
+  5: 'inward_completed',
+};
+
 const MAX_RETRIES = 5;
 const RETRY_BASE_MS = 2000;
 
-/** In-memory idempotency + retry queue (survives within process lifetime). */
-const recentEvents = new Map(); // eventKey → ts
+const recentEvents = new Map();
 const retryQueue = [];
 let retryTimer = null;
 let draining = false;
@@ -73,6 +94,281 @@ function buildTitle(consignment) {
   const name = String(consignment?.name || '').trim();
   if (name && name !== no) return `Consignment ${no} — ${name}`.slice(0, 180);
   return `Consignment ${no || consignment?.id || 'unknown'}`.slice(0, 180);
+}
+
+function fmtQty(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? String(n) : String(value);
+}
+
+function stageConf(consignment, key) {
+  return consignment?.stageConfirmations?.[key] || null;
+}
+
+/**
+ * Full workflow description shown in TaskFlow — updated as stages complete.
+ */
+function buildWorkflowDescription(consignment) {
+  const no = consignmentNoOf(consignment);
+  const lines = [
+    `Auto-triggered from Consignment Packing workflow for ${no}.`,
+    `Consignment ID: ${consignment?.id || '—'}`,
+    `Internal shipment: ${consignment?.internalShipmentNo || '—'}`,
+    `Marketplace shipment: ${consignment?.shipmentNo || '—'}`,
+    '',
+    'Workflow steps (from consignment stages):',
+  ];
+
+  const createdBy = consignment?.createdByName
+    || consignment?.createdByEmail
+    || (consignment?.createdBy ? `user ${consignment.createdBy}` : null);
+  lines.push(`1) Consignment created${createdBy ? ` by ${createdBy}` : ''}.`);
+
+  const packing = consignment?.packingCompletion || {};
+  const packingConf = stageConf(consignment, 'packing_completed');
+  if (packingConf?.confirmedAt) {
+    const planned = fmtQty(packing.plannedQty ?? consignment?.totalRequiredQty);
+    const actual = fmtQty(packing.actualPackedQty ?? consignment?.totalPackedQty);
+    const shortQty = fmtQty(packing.shortQty);
+    const bits = [
+      `Packing completed by ${packingConf.confirmedByName || packing.completedByName || 'team'}`,
+    ];
+    if (planned) bits.push(`planned qty ${planned}`);
+    if (actual) bits.push(`packed qty ${actual}`);
+    if (shortQty && Number(shortQty) > 0) bits.push(`short qty ${shortQty}`);
+    if (packing.shortReason) bits.push(`reason: ${packing.shortReason}`);
+    lines.push(`2) ${bits.join(' · ')}.`);
+  } else {
+    lines.push('2) Packing completed — pending.');
+  }
+
+  const invoice = consignment?.invoice || {};
+  const invoiceConf = stageConf(consignment, 'invoice_created');
+  if (invoiceConf?.confirmedAt) {
+    const invNo = invoice.number || consignment?.forwardInvoiceNo || invoiceConf.details?.invoiceNumber;
+    const amount = invoice.amount ?? invoiceConf.details?.invoiceAmount;
+    const bits = [
+      `Invoice ready / created by ${invoiceConf.confirmedByName || invoice.uploadedByName || 'team'}`,
+    ];
+    if (invNo) bits.push(`invoice no ${invNo}`);
+    if (invoice.date) bits.push(`date ${invoice.date}`);
+    if (amount !== undefined && amount !== null && amount !== '') bits.push(`amount ${amount}`);
+    lines.push(`3) ${bits.join(' · ')}.`);
+  } else {
+    lines.push('3) Invoice ready — pending.');
+  }
+
+  const dispatch = consignment?.dispatchDetails || {};
+  const dispatchConf = stageConf(consignment, 'dispatched');
+  if (dispatchConf?.confirmedAt) {
+    const docketNo = consignment?.docketNo || dispatch.docketNo || dispatchConf.details?.docketNo;
+    const courier = consignment?.docketCompany || dispatch.docketCompany || dispatchConf.details?.docketCompany;
+    const qty = fmtQty(dispatch.dispatchedQty ?? consignment?.unitsShipped ?? consignment?.totalPackedQty);
+    const boxes = fmtQty(dispatch.boxCount ?? consignment?.boxCount);
+    const bits = [
+      `Ready to dispatch / dispatched by ${dispatchConf.confirmedByName || dispatch.completedByName || 'team'}`,
+    ];
+    if (courier) bits.push(`docket company ${courier}`);
+    if (docketNo) bits.push(`docket id ${docketNo}`);
+    if (qty) bits.push(`dispatched qty ${qty}`);
+    if (boxes) bits.push(`boxes ${boxes}`);
+    if (consignment?.actualDispatchDate || dispatch.dispatchDate) {
+      bits.push(`date ${consignment?.actualDispatchDate || dispatch.dispatchDate}`);
+    }
+    lines.push(`4) ${bits.join(' · ')}.`);
+  } else {
+    lines.push('4) Ready to dispatch — pending.');
+  }
+
+  const inward = consignment?.inwardDetails || {};
+  const inwardConf = stageConf(consignment, 'inward_completed');
+  if (inwardConf?.confirmedAt) {
+    const inwardQty = fmtQty(
+      inward.receivedQty
+      ?? consignment?.unitsInwarded
+      ?? inwardConf.details?.inwardQty
+    );
+    const bits = [
+      `Inward done by ${inwardConf.confirmedByName || inward.completedByName || 'team'}`,
+    ];
+    if (inwardQty) bits.push(`inward qty ${inwardQty}`);
+    if (consignment?.dateOfInward || inward.inwardDate) {
+      bits.push(`date ${consignment?.dateOfInward || inward.inwardDate}`);
+    }
+    if (inward.inwardVarianceReason || inwardConf.details?.inwardVarianceReason) {
+      bits.push(`variance: ${inward.inwardVarianceReason || inwardConf.details.inwardVarianceReason}`);
+    }
+    lines.push(`5) ${bits.join(' · ')}.`);
+  } else {
+    lines.push('5) Inward done — pending.');
+  }
+
+  if (consignment?.groundTeamName || consignment?.groundTeamEmail) {
+    lines.push('');
+    lines.push(
+      `Assigned packing owner: ${[
+        consignment.groundTeamName,
+        consignment.groundTeamEmail,
+      ].filter(Boolean).join(' · ')}`
+    );
+  }
+
+  return lines.join('\n').slice(0, 4000);
+}
+
+/**
+ * Note written onto the TaskFlow stage being completed.
+ */
+function buildStageNote(consignment, packingStageKey) {
+  const no = consignmentNoOf(consignment);
+  if (packingStageKey === 'created') {
+    return [
+      `Consignment created in Packing app.`,
+      `Consignment no: ${no}`,
+      `ID: ${consignment?.id || '—'}`,
+      `Auto-triggered TaskFlow stage 1.`,
+    ].join(' ');
+  }
+
+  if (packingStageKey === 'packing_completed' || packingStageKey === 'ready_for_invoice') {
+    const packing = consignment?.packingCompletion || {};
+    const conf = stageConf(consignment, 'packing_completed') || {};
+    const planned = fmtQty(packing.plannedQty ?? consignment?.totalRequiredQty);
+    const actual = fmtQty(packing.actualPackedQty ?? consignment?.totalPackedQty);
+    const shortQty = fmtQty(packing.shortQty);
+    return [
+      'Packing completed.',
+      planned ? `Planned qty: ${planned}.` : null,
+      actual ? `Packed qty: ${actual}.` : null,
+      shortQty && Number(shortQty) > 0 ? `Short qty: ${shortQty}.` : null,
+      packing.shortReason ? `Short reason: ${packing.shortReason}.` : null,
+      conf.confirmedByName ? `Confirmed by: ${conf.confirmedByName}.` : null,
+      `Consignment: ${no}.`,
+    ].filter(Boolean).join(' ');
+  }
+
+  if (packingStageKey === 'invoice_created' || packingStageKey === 'ready_for_dispatch') {
+    const invoice = consignment?.invoice || {};
+    const conf = stageConf(consignment, 'invoice_created') || {};
+    const invNo = invoice.number || consignment?.forwardInvoiceNo || conf.details?.invoiceNumber;
+    const amount = invoice.amount ?? conf.details?.invoiceAmount;
+    return [
+      'Invoice ready / created.',
+      invNo ? `Invoice no: ${invNo}.` : null,
+      invoice.date ? `Invoice date: ${invoice.date}.` : null,
+      amount !== undefined && amount !== null && amount !== '' ? `Amount: ${amount}.` : null,
+      conf.confirmedByName ? `Confirmed by: ${conf.confirmedByName}.` : null,
+      `Consignment: ${no}.`,
+    ].filter(Boolean).join(' ');
+  }
+
+  if (packingStageKey === 'dispatched') {
+    const dispatch = consignment?.dispatchDetails || {};
+    const conf = stageConf(consignment, 'dispatched') || {};
+    const docketNo = consignment?.docketNo || dispatch.docketNo || conf.details?.docketNo;
+    const courier = consignment?.docketCompany || dispatch.docketCompany || conf.details?.docketCompany;
+    const qty = fmtQty(dispatch.dispatchedQty ?? consignment?.unitsShipped ?? consignment?.totalPackedQty);
+    return [
+      'Ready to dispatch / dispatched.',
+      courier ? `Docket company: ${courier}.` : null,
+      docketNo ? `Docket id: ${docketNo}.` : null,
+      qty ? `Dispatched qty: ${qty}.` : null,
+      conf.confirmedByName ? `Confirmed by: ${conf.confirmedByName}.` : null,
+      `Consignment: ${no}.`,
+    ].filter(Boolean).join(' ');
+  }
+
+  if (packingStageKey === 'inward_completed') {
+    const inward = consignment?.inwardDetails || {};
+    const conf = stageConf(consignment, 'inward_completed') || {};
+    const inwardQty = fmtQty(inward.receivedQty ?? consignment?.unitsInwarded ?? conf.details?.inwardQty);
+    return [
+      'Inward done.',
+      inwardQty ? `Inward qty: ${inwardQty}.` : null,
+      (consignment?.dateOfInward || inward.inwardDate)
+        ? `Inward date: ${consignment?.dateOfInward || inward.inwardDate}.`
+        : null,
+      conf.confirmedByName ? `Confirmed by: ${conf.confirmedByName}.` : null,
+      `Consignment: ${no}.`,
+    ].filter(Boolean).join(' ');
+  }
+
+  return `Auto sync from Packing workflow (${packingStageKey}) for ${no}.`;
+}
+
+function noteForTaskflowPosition(consignment, position) {
+  const packingStage = POSITION_TO_PACKING_STAGE[Number(position)] || 'created';
+  return buildStageNote(consignment, packingStage);
+}
+
+async function loadPackingUsers() {
+  try {
+    const { firestoreHelpers } = require('./helpers');
+    const users = await firestoreHelpers.getCollection('users');
+    return (users || []).filter((u) => u && u.isActive !== false && u.email);
+  } catch (error) {
+    console.warn('[TaskFlowBridge] load packing users failed:', error.message);
+    return [];
+  }
+}
+
+/**
+ * Match packing-app users to TaskFlow profiles by email (and name when available).
+ * Example: Chandan Yadav / dispatches@vbexports.co.in in both systems → same assignee.
+ */
+async function resolveStageAssignees(consignment) {
+  const packingUsers = await loadPackingUsers();
+  const assignees = {};
+  const matched = [];
+
+  const ground = packingUsers.find((u) => u.id === consignment?.groundTeamUserId) || null;
+
+  for (const [posRaw, deptKeys] of Object.entries(POSITION_DEPARTMENTS)) {
+    const position = Number(posRaw);
+    const candidates = [];
+
+    if (ground && getUserDepartments(ground).some((d) => deptKeys.includes(d))) {
+      candidates.push(ground);
+    }
+    for (const user of packingUsers) {
+      if (ground && user.id === ground.id) continue;
+      if (getUserDepartments(user).some((d) => deptKeys.includes(d))) {
+        candidates.push(user);
+      }
+    }
+
+    let profile = null;
+    let packingUser = null;
+    for (const user of candidates) {
+      // Prefer exact email match; name used for logging / soft confirmation.
+      // eslint-disable-next-line no-await-in-loop
+      const found = await findProfileByNameAndEmail({
+        name: user.name,
+        email: user.email,
+      });
+      if (found?.id) {
+        profile = found;
+        packingUser = user;
+        break;
+      }
+    }
+
+    if (profile?.id) {
+      assignees[position] = profile.id;
+      matched.push({
+        position,
+        packingUserId: packingUser?.id || null,
+        packingName: packingUser?.name || null,
+        packingEmail: packingUser?.email || null,
+        taskflowUserId: profile.id,
+        taskflowName: profile.name || null,
+        taskflowEmail: profile.email || null,
+      });
+    }
+  }
+
+  return { assignees, matched };
 }
 
 async function persistTaskflowMeta(consignmentId, patch) {
@@ -164,7 +460,7 @@ async function ensureWorkflow(consignment) {
   const existingId = consignment?.taskflow?.workflowId;
   if (existingId) {
     const wf = await getWorkflow(existingId);
-    if (wf) return wf;
+    if (wf) return { workflow: wf, created: false, matchedAssignees: [] };
   }
 
   const found = await findWorkflowByConsignmentId(consignmentId);
@@ -174,24 +470,81 @@ async function ensureWorkflow(consignment) {
       trackingNumber: found.tracking_number || null,
       lastError: null,
     });
-    return found;
+    return { workflow: found, created: false, matchedAssignees: [] };
   }
 
   const no = consignmentNoOf(consignment);
+  const { assignees, matched } = await resolveStageAssignees(consignment);
+  const description = buildWorkflowDescription(consignment);
+
   const created = await createWorkflowFromTemplate({
     title: buildTitle(consignment),
-    description: `Auto-created from Consignment Packing for ${no}`,
+    description,
     consignmentId,
     consignmentNo: no,
+    stageAssignees: assignees,
   });
 
   await persistTaskflowMeta(consignmentId, {
     workflowId: created.id,
     trackingNumber: created.tracking_number || null,
+    assigneeMatches: matched,
     lastError: null,
   });
 
-  return created;
+  return { workflow: created, created: true, matchedAssignees: matched };
+}
+
+async function refreshWorkflowDescription(workflowId, consignment) {
+  try {
+    await updateWorkflow(workflowId, {
+      description: buildWorkflowDescription(consignment),
+    });
+  } catch (error) {
+    console.warn('[TaskFlowBridge] description update failed:', error.message);
+  }
+}
+
+/**
+ * Re-match packing users → TaskFlow assignees on open stages (e.g. after ground-team assign).
+ */
+async function refreshAssigneesForConsignment(consignment) {
+  if (!isTaskflowEnabled() || !consignment?.id) return { skipped: true };
+  try {
+    const workflowId = consignment?.taskflow?.workflowId;
+    let wf = workflowId ? await getWorkflow(workflowId) : null;
+    if (!wf) wf = await findWorkflowByConsignmentId(consignment.id);
+    if (!wf) return { skipped: true, reason: 'no_workflow' };
+
+    const { assignees, matched } = await resolveStageAssignees(consignment);
+    for (const stage of wf.stages || []) {
+      if (stage.is_terminal || stage.status === 'completed') continue;
+      const assigneeId = assignees[Number(stage.position)];
+      if (!assigneeId) continue;
+      // eslint-disable-next-line no-await-in-loop
+      await patchStageAssignee(stage.id, assigneeId);
+    }
+    await refreshWorkflowDescription(wf.id, consignment);
+    await persistTaskflowMeta(consignment.id, {
+      workflowId: wf.id,
+      trackingNumber: wf.tracking_number || null,
+      assigneeMatches: matched,
+      lastSyncedEvent: 'refresh-assignees',
+      lastSyncedAt: new Date().toISOString(),
+      lastError: null,
+    });
+    return { ok: true, workflowId: wf.id, matched };
+  } catch (error) {
+    console.warn('[TaskFlowBridge] refresh assignees failed:', error.message);
+    return { ok: false, error: error.message };
+  }
+}
+
+function notifyTaskflowAssigneesRefresh(consignment) {
+  if (!isTaskflowEnabled()) return;
+  setImmediate(() => {
+    refreshAssigneesForConsignment(consignment).catch(() => {});
+  });
 }
 
 /**
@@ -209,19 +562,22 @@ async function syncConsignmentCreated(consignment, options = {}) {
   }
 
   try {
-    const wf = await ensureWorkflow(consignment);
+    const { workflow: wf, matchedAssignees } = await ensureWorkflow(consignment);
     const advanced = await advanceWorkflowThroughPosition(wf.id, 1, {
-      note: 'Auto: consignment created in Packing app',
+      note: buildStageNote(consignment, 'created'),
+      noteForPosition: (pos) => noteForTaskflowPosition(consignment, pos),
     });
+    await refreshWorkflowDescription(advanced.workflow?.id || wf.id, consignment);
     await persistTaskflowMeta(consignment.id, {
       workflowId: advanced.workflow?.id || wf.id,
       trackingNumber: advanced.workflow?.tracking_number || wf.tracking_number || null,
       syncedThroughPosition: 1,
       lastSyncedEvent: 'created',
       lastSyncedAt: new Date().toISOString(),
+      assigneeMatches: matchedAssignees?.length ? matchedAssignees : undefined,
       lastError: null,
     });
-    return { ok: true, workflowId: wf.id, advanced };
+    return { ok: true, workflowId: wf.id, advanced, matchedAssignees };
   } catch (error) {
     console.error('[TaskFlowBridge] create sync failed:', error.message);
     await persistTaskflowMeta(consignment.id, {
@@ -237,8 +593,6 @@ async function syncConsignmentCreated(consignment, options = {}) {
 
 /**
  * Stage confirmations → advance TaskFlow through mapped positions.
- * @param {object} consignment
- * @param {string[]} stages — packing stage keys (confirmed + auto)
  */
 async function syncConsignmentStages(consignment, stages = [], options = {}) {
   if (!isTaskflowEnabled()) {
@@ -267,17 +621,18 @@ async function syncConsignmentStages(consignment, stages = [], options = {}) {
     return { skipped: true, reason: 'duplicate_event' };
   }
 
-  // Also skip if already synced through this position on the document.
   const alreadyThrough = Number(consignment?.taskflow?.syncedThroughPosition) || 0;
   if (!options.force && alreadyThrough >= target) {
     return { skipped: true, reason: 'already_synced_through', target };
   }
 
   try {
-    const wf = await ensureWorkflow(consignment);
+    const { workflow: wf } = await ensureWorkflow(consignment);
     const advanced = await advanceWorkflowThroughPosition(wf.id, target, {
-      note: options.note || `Auto: packing stages [${list.join(', ')}]`,
+      note: options.note || buildStageNote(consignment, primaryEvent),
+      noteForPosition: (pos) => noteForTaskflowPosition(consignment, pos),
     });
+    await refreshWorkflowDescription(advanced.workflow?.id || wf.id, consignment);
     await persistTaskflowMeta(consignment.id, {
       workflowId: advanced.workflow?.id || wf.id,
       trackingNumber: advanced.workflow?.tracking_number || wf.tracking_number || null,
@@ -307,7 +662,6 @@ async function syncConsignmentStages(consignment, stages = [], options = {}) {
   }
 }
 
-/** Fire-and-forget wrappers for route handlers. */
 function notifyTaskflowCreated(consignment) {
   if (!isTaskflowEnabled()) return;
   setImmediate(() => {
@@ -337,7 +691,6 @@ async function syncConsignmentIdChange(oldId, newConsignment) {
       wf = await findWorkflowByConsignmentId(newConsignment.id);
     }
     if (!wf) {
-      // No prior run — create under the new id.
       return syncConsignmentCreated(newConsignment, { force: true });
     }
 
@@ -354,6 +707,7 @@ async function syncConsignmentIdChange(oldId, newConsignment) {
         value: consignmentNoOf(newConsignment),
       },
     ]);
+    await refreshWorkflowDescription(wf.id, newConsignment);
     await persistTaskflowMeta(newConsignment.id, {
       workflowId: wf.id,
       trackingNumber: wf.tracking_number || null,
@@ -368,9 +722,6 @@ async function syncConsignmentIdChange(oldId, newConsignment) {
   }
 }
 
-/**
- * Full resync for admin: ensure workflow exists and advance to match packing stageConfirmations.
- */
 async function resyncConsignmentToTaskflow(consignment) {
   if (!isTaskflowConfigured()) {
     return { ok: false, error: 'TaskFlow is not configured' };
@@ -384,11 +735,13 @@ async function resyncConsignmentToTaskflow(consignment) {
     if (sc[stage]?.confirmedAt) confirmed.push(stage);
   }
 
-  // Always ensure create + stage 1.
   const createdResult = await syncConsignmentCreated(consignment, { force: true });
   let stagesResult = null;
   if (confirmed.length) {
-    stagesResult = await syncConsignmentStages(consignment, confirmed, { force: true, note: 'Admin resync' });
+    stagesResult = await syncConsignmentStages(consignment, confirmed, {
+      force: true,
+      note: 'Admin resync from consignment workflow stages',
+    });
   }
 
   return {
@@ -396,6 +749,7 @@ async function resyncConsignmentToTaskflow(consignment) {
     createdResult,
     stagesResult,
     confirmedStages: confirmed,
+    descriptionPreview: buildWorkflowDescription(consignment),
     config: {
       enabled: isTaskflowEnabled(),
       templateId: getConfig().templateId,
@@ -415,18 +769,24 @@ function getTaskflowStatus() {
     mcpPatConfigured: Boolean(cfg.mcpPat),
     retryQueueLength: retryQueue.length,
     eventMap: { ...EVENT_TO_TARGET_POSITION },
+    positionDepartments: { ...POSITION_DEPARTMENTS },
   };
 }
 
 module.exports = {
   EVENT_TO_TARGET_POSITION,
+  POSITION_DEPARTMENTS,
   targetPositionForEvent,
   maxTargetFromStages,
+  buildWorkflowDescription,
+  buildStageNote,
   notifyTaskflowCreated,
   notifyTaskflowStages,
+  notifyTaskflowAssigneesRefresh,
   syncConsignmentCreated,
   syncConsignmentStages,
   syncConsignmentIdChange,
+  refreshAssigneesForConsignment,
   resyncConsignmentToTaskflow,
   getTaskflowStatus,
   isTaskflowEnabled,
