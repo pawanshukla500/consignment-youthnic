@@ -353,6 +353,26 @@ jobs:
           chmod +x scripts/gcloud-deploy.sh
           bash scripts/gcloud-deploy.sh
 
+      - name: Ensure TaskFlow Consignments Packing template
+        env:
+          TASKFLOW_ENABLED: ${{ secrets.TASKFLOW_ENABLED }}
+          TASKFLOW_SUPABASE_URL: ${{ secrets.TASKFLOW_SUPABASE_URL }}
+          TASKFLOW_SERVICE_ROLE_KEY: ${{ secrets.TASKFLOW_SERVICE_ROLE_KEY }}
+          TASKFLOW_TEMPLATE_ID: ${{ secrets.TASKFLOW_TEMPLATE_ID }}
+          TASKFLOW_RAISED_BY_USER_ID: ${{ secrets.TASKFLOW_RAISED_BY_USER_ID }}
+        run: |
+          if [ "${TASKFLOW_ENABLED}" != "true" ] && [ "${TASKFLOW_ENABLED}" != "1" ]; then
+            echo "TASKFLOW_ENABLED is not true — skipping template ensure"
+            exit 0
+          fi
+          if [ -z "${TASKFLOW_SUPABASE_URL}" ] || [ -z "${TASKFLOW_SERVICE_ROLE_KEY}" ]; then
+            echo "::warning::TaskFlow secrets incomplete — skipping template ensure"
+            exit 0
+          fi
+          cd backend
+          npm ci --omit=dev
+          node scripts/ensure-taskflow-template.js
+
       - name: Verify deployment health
         env:
           CUSTOM_DOMAIN: ${{ vars.CUSTOM_DOMAIN || 'https://consignment.youthnic.shop' }}
