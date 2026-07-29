@@ -437,14 +437,6 @@ export default function Consignments() {
     return {
       total: consignments.length,
       ...byBucket,
-      critical: consignments.filter((c) => getShipmentPriority(c).level === 'critical').length,
-      high: consignments.filter((c) => getShipmentPriority(c).level === 'high').length,
-      medium: consignments.filter((c) => getShipmentPriority(c).level === 'medium').length,
-      needingAction: consignments.filter((c) => {
-        const b = getWorkflowBucket(c);
-        return b !== 'shipped' && b !== 'inwarded';
-      }).length,
-      escalated: consignments.filter((c) => c.isEscalated).length,
     };
   }, [consignments]);
 
@@ -506,8 +498,28 @@ export default function Consignments() {
 
   return (
     <div className="space-y-3">
-      {/* Toolbar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-end gap-2">
+      {/* Toolbar + list mode */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex gap-0.5 bg-slate-100 rounded-md p-0.5">
+            <button type="button" onClick={() => setListTab('all')}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold flex items-center gap-1 ${listTab === 'all' ? 'bg-white shadow-sm text-primary-700' : 'text-slate-600'}`}>
+              <LayoutList className="w-3 h-3" /> All Consignments
+            </button>
+            <button type="button" onClick={() => setListTab('live')}
+              className={`px-2.5 py-1 rounded text-[11px] font-semibold flex items-center gap-1 ${listTab === 'live' ? 'bg-white shadow-sm text-primary-700' : 'text-slate-600'}`}>
+              <Activity className="w-3 h-3" /> Live
+              {pendingChanges.length > 0 && (
+                <span className="bg-red-500 text-white text-[8px] font-bold px-1 py-px rounded-full min-w-[14px] text-center">{pendingChanges.length}</span>
+              )}
+            </button>
+          </div>
+          <div className="flex items-center gap-1 text-[10px] text-slate-500">
+            <Radio className={`w-3 h-3 ${connected ? 'text-emerald-500' : 'text-amber-500'}`} />
+            {connected ? 'Sync active' : 'Polling'}
+            {lastSyncAt && <span className="text-slate-400">· {new Date(lastSyncAt).toLocaleTimeString()}</span>}
+          </div>
+        </div>
         <div className="flex items-center gap-1.5 flex-wrap sm:ml-auto">
           {refreshing && <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary-500" />}
           <button
@@ -521,49 +533,6 @@ export default function Consignments() {
           </button>
           <button type="button" onClick={() => handleExport()} className="flex items-center gap-1.5 px-2.5 py-1.5 border border-slate-200 text-slate-700 bg-white rounded-md hover:bg-slate-50 text-xs"><FileSpreadsheet className="w-3.5 h-3.5" />Export</button>
           <button type="button" onClick={openCreateModal} className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-600 text-white rounded-md hover:bg-primary-700 text-xs font-medium"><Plus className="w-3.5 h-3.5" />New</button>
-        </div>
-      </div>
-
-      {/* Summary stats — workflow + criticality */}
-      <div className="flex flex-wrap gap-1.5">
-        {[
-          { label: 'Total', value: stats.total, className: 'text-slate-800' },
-          { label: 'Needs action', value: stats.needingAction, className: 'text-amber-700' },
-          { label: 'Escalated', value: stats.escalated, className: 'text-red-600' },
-          { label: 'Critical', value: stats.critical, className: 'text-red-600' },
-          { label: 'High', value: stats.high, className: 'text-orange-600' },
-          ...WORKFLOW_BUCKET_ORDER.map((key) => ({
-            label: WORKFLOW_BUCKET_SHORT[key],
-            value: stats[key],
-            className: 'text-slate-700',
-          })),
-        ].map(({ label, value, className }) => (
-          <div key={label} className="inline-flex items-center gap-1.5 bg-white rounded-md border border-slate-200 px-2 py-1 text-xs">
-            <span className="text-[10px] font-medium text-slate-500">{label}</span>
-            <span className={`font-semibold tabular-nums ${className}`}>{loading ? '—' : value}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* List / Live tabs */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex gap-0.5 bg-slate-100 rounded-md p-0.5">
-          <button type="button" onClick={() => setListTab('all')}
-            className={`px-2.5 py-1 rounded text-[11px] font-semibold flex items-center gap-1 ${listTab === 'all' ? 'bg-white shadow-sm text-primary-700' : 'text-slate-600'}`}>
-            <LayoutList className="w-3 h-3" /> All Consignments
-          </button>
-          <button type="button" onClick={() => setListTab('live')}
-            className={`px-2.5 py-1 rounded text-[11px] font-semibold flex items-center gap-1 ${listTab === 'live' ? 'bg-white shadow-sm text-primary-700' : 'text-slate-600'}`}>
-            <Activity className="w-3 h-3" /> Live
-            {pendingChanges.length > 0 && (
-              <span className="bg-red-500 text-white text-[8px] font-bold px-1 py-px rounded-full min-w-[14px] text-center">{pendingChanges.length}</span>
-            )}
-          </button>
-        </div>
-        <div className="flex items-center gap-1 text-[10px] text-slate-500">
-          <Radio className={`w-3 h-3 ${connected ? 'text-emerald-500' : 'text-amber-500'}`} />
-          {connected ? 'Sync active' : 'Polling'}
-          {lastSyncAt && <span className="text-slate-400">· {new Date(lastSyncAt).toLocaleTimeString()}</span>}
         </div>
       </div>
 
@@ -931,7 +900,7 @@ export default function Consignments() {
         open={showCreate}
         onClose={closeCreateModal}
         title="Create New Consignment"
-        subtitle={<>Fields marked <span className="text-red-500">*</span> are required</>}
+        subtitle={<>Fields marked <span className="text-red-500">*</span> are required · IDs must be unique</>}
         size="xl"
         footer={
           <div className="flex justify-end gap-3">
@@ -943,50 +912,42 @@ export default function Consignments() {
           </div>
         }
       >
-        <form id="create-consignment-form" onSubmit={handleCreate} className="p-5 sm:p-6 space-y-6 bg-slate-50/40">
-              {/* ── Section 1: Shipment Details ── */}
-              <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
-                <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
-                  <div className="w-8 h-8 rounded-lg bg-primary-50 flex items-center justify-center text-primary-600">
-                    <Package className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h3 className="text-xs sm:text-sm font-bold text-slate-800">Shipment Information</h3>
-                    <p className="text-[10px] text-slate-400 leading-none mt-0.5">Core operational and scheduling details</p>
-                  </div>
+        <form id="create-consignment-form" onSubmit={handleCreate} className="p-4 sm:p-5 space-y-4">
+              {/* Identity + portal */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <Package className="w-4 h-4 text-primary-600" />
+                  <h3 className="text-sm font-semibold text-slate-800">Shipment</h3>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="rounded-lg border border-amber-100 bg-amber-50/70 px-3 py-2 text-[11px] text-amber-900">
+                  Consignment ID and Internal Shipment No. must be unique — including archived consignments.
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                      Internal Shipment No. <span className="text-primary-600">*</span>
+                    </label>
+                    <input type="text" required autoFocus value={form.internalShipmentNo} onChange={e=>setForm({...form,internalShipmentNo:e.target.value})} className="inp" placeholder="e.g. 6605JVXH" />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
                       Consignment ID <span className="text-slate-400 font-normal normal-case">(optional)</span>
                     </label>
-                    <input type="text" value={form.id} onChange={e=>setForm({...form,id:e.target.value})} className="inp" placeholder="Must be unique — blank uses Internal Shipment No." />
-                    <p className="text-[10px] text-slate-400 mt-1">Cannot reuse an existing Consignment ID (including archived).</p>
+                    <input type="text" value={form.id} onChange={e=>setForm({...form,id:e.target.value})} className="inp" placeholder="Blank → uses Internal Shipment No." />
                   </div>
-                  
                   <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">
-                      Internal Shipment No. <span className="text-primary-600 font-bold">*</span>
-                    </label>
-                    <input type="text" required value={form.internalShipmentNo} onChange={e=>setForm({...form,internalShipmentNo:e.target.value})} className="inp" placeholder="e.g., 6605JVXH" />
-                    <p className="text-[10px] text-slate-400 mt-1">Must be unique — same number cannot be created twice.</p>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">
-                      Marketplace <span className="text-primary-600 font-bold">*</span>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                      Marketplace <span className="text-primary-600">*</span>
                     </label>
                     <select required value={form.marketplaceId} onChange={e=>setForm(applyDispatchToForm({...form,marketplaceId:e.target.value,warehouse:''}, marketplaces))} className="inp bg-white">
                       <option value="">Select portal</option>
                       {marketplaces.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
                     </select>
                   </div>
-                  
                   <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">
-                      Warehouse
-                    </label>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Warehouse</label>
                     {form.marketplaceId && getMpWarehouses(form.marketplaceId).length===0 ? (
                       <div className="inp bg-slate-50 text-slate-400 text-xs flex items-center justify-between h-[38px]">
                         No warehouses
@@ -1001,130 +962,130 @@ export default function Consignments() {
                     ) : (
                       <select value={form.warehouse} onChange={e=>setForm(applyDispatchToForm({...form,warehouse:e.target.value}, marketplaces))} disabled={!form.marketplaceId} className="inp bg-white disabled:bg-slate-50 disabled:text-slate-400">
                         <option value="">Select warehouse</option>
-                        {getMpWarehouses(form.marketplaceId).map(w=><option key={w.name} value={w.name}>{w.name}{w.transitDays ? ` (${w.transitDays}d transit)` : ''}</option>)}
+                        {getMpWarehouses(form.marketplaceId).map(w=><option key={w.name} value={w.name}>{w.name}{w.transitDays ? ` (${w.transitDays}d)` : ''}</option>)}
                       </select>
                     )}
                   </div>
-                  
                   <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Expected Date</label>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Appointment Date</label>
+                    <input type="date" value={form.appointmentDate} onChange={e=>setForm(applyDispatchToForm({...form,appointmentDate:e.target.value}, marketplaces))} className="inp" />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                      Required Dispatch <span className="font-normal text-[10px] text-slate-400 normal-case">(auto)</span>
+                    </label>
+                    <input type="date" value={form.scheduledDispatchDate} readOnly className="inp bg-slate-50 text-slate-500" title="Appointment − warehouse transit days" />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Expected Date</label>
                     <input type="date" value={form.expectedDate} onChange={e=>setForm({...form,expectedDate:e.target.value})} className="inp" />
                   </div>
-                  
                   <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Shipment Status</label>
-                    <select value={form.shipmentStatus} onChange={e=>setForm({...form,shipmentStatus:e.target.value})} className="inp bg-white">
-                      <option>Planned</option>
-                      <option>Scheduled</option>
-                      <option>Under Packing</option>
-                      <option>Ready</option>
-                      <option>In Transit</option>
-                      <option>Forwarded</option>
-                      <option>Inwarded</option>
-                      <option>Missed</option>
-                    </select>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">PO Expiry Date</label>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">PO Expiry</label>
                     <input type="date" value={form.poExpiryDate} onChange={e=>setForm({...form,poExpiryDate:e.target.value})} className="inp" />
                   </div>
                 </div>
               </div>
 
-              {/* ── Advanced (collapsible) ── */}
-              <div className="border border-slate-200/80 rounded-2xl overflow-hidden bg-white shadow-sm transition-all duration-200">
+              {/* Advanced (collapsible) */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
                 <button type="button" onClick={()=>setShowAdvanced(a=>!a)}
-                  className="w-full flex items-center justify-between px-5 py-3.5 bg-slate-50/70 hover:bg-slate-100/50 transition-colors text-xs font-bold text-slate-700">
-                  <div className="flex items-center gap-2">
-                    <div className="w-5 h-5 rounded bg-slate-200/80 flex items-center justify-center text-slate-600">
-                      <RefreshCw className="w-3 h-3" />
-                    </div>
-                    <span>Additional Shipping Details <span className="font-normal text-slate-400 ml-1">(docket, invoice, dispatch dates)</span></span>
-                  </div>
+                  className="w-full flex items-center justify-between px-3.5 py-2.5 bg-slate-50 hover:bg-slate-100/70 transition-colors text-xs font-semibold text-slate-700">
+                  <span>More details <span className="font-normal text-slate-400">(docket, invoice, status, units)</span></span>
                   {showAdvanced ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
                 </button>
                 {showAdvanced && (
-                  <div className="p-5 grid grid-cols-2 md:grid-cols-4 gap-4 border-t border-slate-100 animate-slide-down">
-                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Docket Company</label><select value={form.docketCompany} onChange={e=>setForm({...form,docketCompany:e.target.value})} className="inp bg-white"><option value="">Select</option>{docketCompanies.map(dc=><option key={dc.id} value={dc.name}>{dc.name}</option>)}</select></div>
-                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Docket No</label><input type="text" value={form.docketNo} onChange={e=>setForm({...form,docketNo:e.target.value})} className="inp" placeholder="DK-12345" /></div>
-                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Forward Invoice No.</label><input type="text" value={form.forwardInvoiceNo} onChange={e=>setForm({...form,forwardInvoiceNo:e.target.value})} className="inp" placeholder="INV-12345" /></div>
-                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Marketplace Ticket ID</label><input type="text" value={form.marketplaceTicketId} onChange={e=>setForm({...form,marketplaceTicketId:e.target.value})} className="inp" placeholder="Optional" /></div>
-                    <label className="flex items-center gap-2 text-sm text-slate-700 border border-slate-200 rounded-lg px-3 py-2.5"><input type="checkbox" checked={!!form.isDisputed} onChange={e=>setForm({...form,isDisputed:e.target.checked})} /> Disputed (protect videos)</label>
-                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Appointment Date</label><input type="date" value={form.appointmentDate} onChange={e=>setForm(applyDispatchToForm({...form,appointmentDate:e.target.value}, marketplaces))} className="inp" /></div>
-                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5 flex items-center gap-1">Required Dispatch <span className="font-normal text-[10px] text-slate-400 lowercase">(auto)</span></label><input type="date" value={form.scheduledDispatchDate} readOnly className="inp bg-slate-50 text-slate-500" title="Appointment − warehouse transit days" /></div>
-                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Actual Dispatch</label><input type="date" value={form.actualDispatchDate} onChange={e=>setForm({...form,actualDispatchDate:e.target.value})} className="inp" /></div>
-                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Date of Inward</label><input type="date" value={form.dateOfInward} onChange={e=>setForm({...form,dateOfInward:e.target.value})} className="inp" /></div>
-                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Units Shipped</label><input type="number" min="0" value={form.unitsShipped} onChange={e=>setForm({...form,unitsShipped:e.target.value})} className="inp" placeholder="0" /></div>
-                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Units Received</label><input type="number" min="0" value={form.unitsReceived} onChange={e=>setForm({...form,unitsReceived:e.target.value})} className="inp" placeholder="0" /></div>
-                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Units Inwarded</label><input type="number" min="0" value={form.unitsInwarded} onChange={e=>setForm({...form,unitsInwarded:e.target.value})} className="inp" placeholder="0" /></div>
-                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">QA Fail / Excess</label><input type="number" min="0" value={form.qaFailExcessQty} onChange={e=>setForm({...form,qaFailExcessQty:e.target.value})} className="inp" placeholder="0" /></div>
+                  <div className="p-3.5 grid grid-cols-2 md:grid-cols-4 gap-3 border-t border-slate-100">
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Shipment Status</label>
+                      <select value={form.shipmentStatus} onChange={e=>setForm({...form,shipmentStatus:e.target.value})} className="inp bg-white">
+                        <option>Planned</option>
+                        <option>Scheduled</option>
+                        <option>Under Packing</option>
+                        <option>Ready</option>
+                        <option>In Transit</option>
+                        <option>Forwarded</option>
+                        <option>Inwarded</option>
+                        <option>Missed</option>
+                      </select>
+                    </div>
+                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Docket Company</label><select value={form.docketCompany} onChange={e=>setForm({...form,docketCompany:e.target.value})} className="inp bg-white"><option value="">Select</option>{docketCompanies.map(dc=><option key={dc.id} value={dc.name}>{dc.name}</option>)}</select></div>
+                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Docket No</label><input type="text" value={form.docketNo} onChange={e=>setForm({...form,docketNo:e.target.value})} className="inp" placeholder="DK-12345" /></div>
+                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Forward Invoice No.</label><input type="text" value={form.forwardInvoiceNo} onChange={e=>setForm({...form,forwardInvoiceNo:e.target.value})} className="inp" placeholder="INV-12345" /></div>
+                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Marketplace Ticket ID</label><input type="text" value={form.marketplaceTicketId} onChange={e=>setForm({...form,marketplaceTicketId:e.target.value})} className="inp" placeholder="Optional" /></div>
+                    <label className="flex items-center gap-2 text-sm text-slate-700 border border-slate-200 rounded-lg px-3 py-2"><input type="checkbox" checked={!!form.isDisputed} onChange={e=>setForm({...form,isDisputed:e.target.checked})} /> Disputed (protect videos)</label>
+                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Actual Dispatch</label><input type="date" value={form.actualDispatchDate} onChange={e=>setForm({...form,actualDispatchDate:e.target.value})} className="inp" /></div>
+                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Date of Inward</label><input type="date" value={form.dateOfInward} onChange={e=>setForm({...form,dateOfInward:e.target.value})} className="inp" /></div>
+                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Units Shipped</label><input type="number" min="0" value={form.unitsShipped} onChange={e=>setForm({...form,unitsShipped:e.target.value})} className="inp" placeholder="0" /></div>
+                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Units Received</label><input type="number" min="0" value={form.unitsReceived} onChange={e=>setForm({...form,unitsReceived:e.target.value})} className="inp" placeholder="0" /></div>
+                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">Units Inwarded</label><input type="number" min="0" value={form.unitsInwarded} onChange={e=>setForm({...form,unitsInwarded:e.target.value})} className="inp" placeholder="0" /></div>
+                    <div><label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">QA Fail / Excess</label><input type="number" min="0" value={form.qaFailExcessQty} onChange={e=>setForm({...form,qaFailExcessQty:e.target.value})} className="inp" placeholder="0" /></div>
                   </div>
                 )}
               </div>
 
-              {/* ── Section 2: SKU Items ── */}
-              <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm space-y-4">
-                <div className="flex items-center justify-between pb-3 border-b border-slate-100 flex-wrap gap-2">
+              {/* SKU Items */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg bg-primary-50 flex items-center justify-center text-primary-600">
-                      <LayoutList className="w-4 h-4" />
-                    </div>
+                    <LayoutList className="w-4 h-4 text-primary-600" />
                     <div>
-                      <h3 className="text-xs sm:text-sm font-bold text-slate-800">SKU Items</h3>
-                      <p className="text-[10px] text-slate-400 leading-none mt-0.5">Add or upload the items to pack</p>
+                      <h3 className="text-sm font-semibold text-slate-800">SKU Items</h3>
+                      <p className="text-[10px] text-slate-400">Marketplace barcode is required for scanning</p>
                     </div>
                   </div>
-                  
-                  <div className="flex items-center gap-2">
-                    <button type="button" onClick={async () => { try { const r = await templatesAPI.downloadConsignment(); const url = URL.createObjectURL(new Blob([r.data])); const a = document.createElement('a'); a.href = url; a.download = 'sku_template.csv'; a.click(); } catch(e){ addToast('Download failed','error'); } }} className="flex items-center gap-1.5 text-xs text-primary-600 hover:text-primary-700 font-bold px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors">
+                  <div className="flex items-center gap-1.5">
+                    <button type="button" onClick={async () => { try { const r = await templatesAPI.downloadConsignment(); const url = URL.createObjectURL(new Blob([r.data])); const a = document.createElement('a'); a.href = url; a.download = 'sku_template.csv'; a.click(); } catch(e){ addToast('Download failed','error'); } }} className="flex items-center gap-1 text-xs text-slate-600 hover:text-primary-700 font-medium px-2 py-1.5 rounded-md border border-slate-200 hover:bg-slate-50">
                       <Download className="w-3.5 h-3.5" />Template
                     </button>
-                    <label className="flex items-center gap-1.5 text-xs text-primary-600 hover:text-primary-700 font-bold px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors cursor-pointer">
-                      <Upload className="w-3.5 h-3.5" />Upload CSV
+                    <label className="flex items-center gap-1 text-xs text-slate-600 hover:text-primary-700 font-medium px-2 py-1.5 rounded-md border border-slate-200 hover:bg-slate-50 cursor-pointer">
+                      <Upload className="w-3.5 h-3.5" />CSV
                       <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleCsvUpload} />
                     </label>
-                    <button type="button" onClick={addSku} className="inline-flex items-center gap-1 text-xs bg-primary-50 hover:bg-primary-100/80 text-primary-700 font-bold px-3 py-1.5 rounded-lg transition-colors">
-                      <Plus className="w-3.5 h-3.5" />Add SKU row
+                    <button type="button" onClick={addSku} className="inline-flex items-center gap-1 text-xs bg-primary-600 hover:bg-primary-700 text-white font-medium px-2.5 py-1.5 rounded-md">
+                      <Plus className="w-3.5 h-3.5" />Add row
                     </button>
                   </div>
                 </div>
 
                 {form.skus.length > 0 && (
-                  <div className="flex items-center gap-1.5 px-3 py-2 bg-slate-50 border border-slate-100 rounded-lg text-[11px] text-slate-500">
-                    <span className="w-2 h-2 rounded-full bg-primary-500 animate-pulse" />
-                    <strong>{form.skus.length} SKU(s)</strong> loaded. Barcode scanning requires the exact marketplace identifier.
-                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    <strong className="text-slate-700">{form.skus.length}</strong> SKU row{form.skus.length === 1 ? '' : 's'} · use exact marketplace barcode for packing scans
+                  </p>
                 )}
 
-                {/* Column headers - hidden on mobile */}
-                <div className="hidden md:flex gap-3 items-center mb-1.5 px-1 bg-slate-50/50 py-1.5 rounded-lg">
-                  <span className="flex-[1.2] text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2">Marketplace Barcode</span>
-                  <span className="w-28 text-[10px] font-bold uppercase tracking-wider text-slate-400">Type</span>
-                  <span className="flex-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">Marketplace SKU / ID</span>
-                  <span className="flex-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">Internal SKU (OMS)</span>
-                  <span className="w-24 text-[10px] font-bold uppercase tracking-wider text-slate-400">Qty</span>
-                  {form.skus.length > 1 && <span className="w-9" />}
+                <div className="hidden md:grid grid-cols-[minmax(0,1.2fr)_7rem_minmax(0,1fr)_minmax(0,1fr)_5.5rem_2rem] gap-2 px-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  <span>Marketplace Barcode</span>
+                  <span>Type</span>
+                  <span>Marketplace SKU</span>
+                  <span>Internal SKU</span>
+                  <span>Qty</span>
+                  <span />
                 </div>
 
-                <div className="space-y-3 md:space-y-2">
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-0.5">
                   {form.skus.map((sku,i)=> {
-                    const inputClass = (isMono = false) => `min-w-0 px-3.5 py-2 border rounded-xl text-sm outline-none transition-all ${isMono ? 'font-mono' : ''} border-slate-200 focus:border-primary-500 focus:ring-3 focus:ring-primary-500/12`;
+                    const inputClass = (isMono = false) => `min-w-0 w-full px-2.5 py-1.5 border rounded-lg text-sm outline-none ${isMono ? 'font-mono' : ''} border-slate-200 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15`;
 
                     return (
-                      <div key={`sku-${i}-${getScanBarcode(sku) || sku.marketplaceSku || i}`} className="flex flex-col md:flex-row gap-2 md:gap-3 md:items-start border md:border-0 border-slate-100 rounded-xl p-3 md:p-0 bg-white shadow-sm md:shadow-none">
-                        <input type="text" value={sku.marketplaceBarcode || sku.barcode || ''} onChange={e=>updateSku(i,'marketplaceBarcode',e.target.value)} className={inputClass(true) + " flex-[1.2]"} placeholder="FNSKU / FSN / ASIN" />
-                        <input type="text" value={sku.marketplaceBarcodeType || ''} onChange={e=>updateSku(i,'marketplaceBarcodeType',e.target.value)} className={inputClass(true) + " md:w-28"} placeholder="FNSKU" />
-                        <input type="text" value={sku.marketplaceSku} onChange={e=>updateSku(i,'marketplaceSku',e.target.value)} className={inputClass(false) + " flex-1"} placeholder="Marketplace SKU / ID" />
-                        <input type="text" value={sku.internalSku} onChange={e=>updateSku(i,'internalSku',e.target.value)} className={inputClass(false) + " flex-1"} placeholder="Internal / OMS SKU" />
-                        <div className="flex gap-2 items-center w-full md:w-auto">
-                          <input type="number" value={sku.requiredQty} onChange={e=>updateSku(i,'requiredQty',e.target.value)} className={inputClass(false) + " flex-1 md:w-24 md:flex-none"} placeholder="Qty" min="0" />
+                      <div key={`sku-${i}-${getScanBarcode(sku) || sku.marketplaceSku || i}`} className="grid grid-cols-1 md:grid-cols-[minmax(0,1.2fr)_7rem_minmax(0,1fr)_minmax(0,1fr)_5.5rem_2rem] gap-2 items-center border md:border-0 border-slate-100 rounded-lg p-2 md:p-0">
+                        <input type="text" value={sku.marketplaceBarcode || sku.barcode || ''} onChange={e=>updateSku(i,'marketplaceBarcode',e.target.value)} className={inputClass(true)} placeholder="FNSKU / FSN / ASIN" />
+                        <input type="text" value={sku.marketplaceBarcodeType || ''} onChange={e=>updateSku(i,'marketplaceBarcodeType',e.target.value)} className={inputClass(true)} placeholder="FNSKU" />
+                        <input type="text" value={sku.marketplaceSku} onChange={e=>updateSku(i,'marketplaceSku',e.target.value)} className={inputClass(false)} placeholder="Marketplace SKU" />
+                        <input type="text" value={sku.internalSku} onChange={e=>updateSku(i,'internalSku',e.target.value)} className={inputClass(false)} placeholder="OMS SKU" />
+                        <div className="flex gap-1.5 items-center">
+                          <input type="number" value={sku.requiredQty} onChange={e=>updateSku(i,'requiredQty',e.target.value)} className={inputClass(false)} placeholder="Qty" min="0" />
                           {form.skus.length>1 && (
-                            <button type="button" onClick={()=>removeSku(i)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex-shrink-0" title="Remove row">
+                            <button type="button" onClick={()=>removeSku(i)} className="md:hidden p-1.5 text-slate-400 hover:text-red-600 rounded" title="Remove row">
                               <Trash2 className="w-4 h-4" />
                             </button>
                           )}
                         </div>
+                        {form.skus.length>1 ? (
+                          <button type="button" onClick={()=>removeSku(i)} className="hidden md:inline-flex p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded justify-center" title="Remove row">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        ) : <span className="hidden md:block" />}
                       </div>
                     );
                   })}
