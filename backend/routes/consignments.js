@@ -24,7 +24,11 @@ const { saveBoxWithPostgresTransaction } = require('../utils/packingPersistence'
 const { getMarketplaceBarcode, normalizeSkuInput } = require('../utils/skuIdentity');
 const { resolveStoragePath, resolvePublicUrl, deleteFile } = require('../utils/storage');
 const { requirePermission, requireAnyPermission, DELETE_CONSIGNMENTS } = require('../utils/permissions');
-const { buildConsignmentId } = require('../utils/resolveConsignment');
+const {
+  buildConsignmentId,
+  findConsignmentIdentityConflict,
+  formatIdentityConflictError,
+} = require('../utils/resolveConsignment');
 const { reassignConsignmentId } = require('../utils/consignmentIdMigration');
 const {
   buildOmsGuruTemplateCsv,
@@ -1308,20 +1312,33 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
     
     if (!internalShipmentNo) return res.status(400).json({ error: 'Internal Shipment No. is required' });
 
-    const resolvedId = buildConsignmentId(id, internalShipmentNo);
+    const trimmedInternal = String(internalShipmentNo || '').trim();
+    const trimmedRequestedId = String(id || '').trim();
+    const resolvedId = buildConsignmentId(trimmedRequestedId, trimmedInternal);
     if (!resolvedId) return res.status(400).json({ error: 'Internal Shipment No. is required to create a consignment.' });
 
-    const existing = await firestoreHelpers.getDocument('consignments', resolvedId);
-    if (existing) return res.status(409).json({ error: 'Consignment ID already exists' });
+    // Block reuse of the same Consignment ID / Internal Shipment No (including archived).
+    const conflict = await findConsignmentIdentityConflict({
+      keys: [resolvedId, trimmedRequestedId, trimmedInternal, shipmentNo],
+    });
+    if (conflict) {
+      return res.status(409).json({
+        error: formatIdentityConflictError(conflict),
+        code: 'CONSIGNMENT_ALREADY_EXISTS',
+        field: conflict.field,
+        value: conflict.value,
+        existingId: conflict.consignment?.id || null,
+      });
+    }
 
-    const pendingExternalId = !String(id || '').trim();
+    const pendingExternalId = !trimmedRequestedId;
 
     const consignmentData = {
       id: resolvedId,
-      internalShipmentNo,
+      internalShipmentNo: trimmedInternal,
       pendingExternalId,
-      name: name || internalShipmentNo,
-      shipmentNo: shipmentNo || internalShipmentNo || '',
+      name: name || trimmedInternal,
+      shipmentNo: String(shipmentNo || trimmedInternal || '').trim(),
       description: description || '',
       expectedDate: expectedDate || '',
       marketplaceId: marketplaceId || '',
@@ -1397,7 +1414,7 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
       ['consignments', resolvedId, planned],
       ...skuBatch.map(([skuId, skuData]) => ['skus', skuId, skuData]),
     ]);
-    addAuditLog('create', 'consignment', resolvedId, req.user.id, { internalShipmentNo, skuCount: skus.length, pendingExternalId })
+    addAuditLog('create', 'consignment', resolvedId, req.user.id, { internalShipmentNo: trimmedInternal, skuCount: skus.length, pendingExternalId })
       .catch((auditError) => console.warn('[Consignments] Create audit log failed:', auditError.message));
 
     // Create TaskFlow workflow before responding so failures are visible on consignment.taskflow.
@@ -1440,7 +1457,10 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
     } catch (_) { /* non-blocking */ }
   } catch (error) {
     if (error?.code === 'DOCUMENT_ALREADY_EXISTS' || error?.statusCode === 409) {
-      return res.status(409).json({ error: 'Consignment ID already exists' });
+      return res.status(409).json({
+        error: 'Consignment ID already exists. You cannot create the same consignment again.',
+        code: 'CONSIGNMENT_ALREADY_EXISTS',
+      });
     }
     sendError(res, error);
   }

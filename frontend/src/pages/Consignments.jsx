@@ -214,7 +214,10 @@ export default function Consignments() {
         'success'
       );
       closeCreateModal();
-    } catch (error) { addToast(error.response?.data?.error || 'Failed', 'error'); }
+    } catch (error) {
+      const msg = error.response?.data?.error || 'Failed';
+      addToast(msg, 'error');
+    }
     finally { setIsSubmitting(false); }
   };
 
@@ -958,8 +961,8 @@ export default function Consignments() {
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">
                       Consignment ID <span className="text-slate-400 font-normal normal-case">(optional)</span>
                     </label>
-                    <input type="text" value={form.id} onChange={e=>setForm({...form,id:e.target.value})} className="inp" placeholder="Assign later if unknown — uses Internal Shipment No." />
-                    <p className="text-[10px] text-slate-400 mt-1">Leave blank to pack immediately with the internal shipment number.</p>
+                    <input type="text" value={form.id} onChange={e=>setForm({...form,id:e.target.value})} className="inp" placeholder="Must be unique — blank uses Internal Shipment No." />
+                    <p className="text-[10px] text-slate-400 mt-1">Cannot reuse an existing Consignment ID (including archived).</p>
                   </div>
                   
                   <div>
@@ -967,6 +970,7 @@ export default function Consignments() {
                       Internal Shipment No. <span className="text-primary-600 font-bold">*</span>
                     </label>
                     <input type="text" required value={form.internalShipmentNo} onChange={e=>setForm({...form,internalShipmentNo:e.target.value})} className="inp" placeholder="e.g., 6605JVXH" />
+                    <p className="text-[10px] text-slate-400 mt-1">Must be unique — same number cannot be created twice.</p>
                   </div>
                   
                   <div>
