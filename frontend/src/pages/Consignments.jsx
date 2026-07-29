@@ -93,6 +93,7 @@ export default function Consignments() {
   const [search, setSearch] = useState('');
   const [workflowFilter, setWorkflowFilter] = useState('');
   const [mpFilter, setMpFilter] = useState('');
+  const [shortPackOnly, setShortPackOnly] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [showFinalDelete, setShowFinalDelete] = useState(false);
@@ -128,6 +129,7 @@ export default function Consignments() {
           page: page,
           archivedOnly: workflowFilter === 'archived' ? 'true' : undefined,
           includeArchived: workflowFilter === 'archived' || debouncedSearch ? 'true' : undefined,
+          shortPackOnly: shortPackOnly ? 'true' : undefined,
         }),
         marketplacesAPI.getAll(),
         docketCompaniesAPI.getAll()
@@ -139,12 +141,12 @@ export default function Consignments() {
       setDocketCompanies(dcRes.data.companies || []);
     } catch (error) { addToast('Failed to load', 'error'); }
     finally { setLoading(false); setRefreshing(false); }
-  }, [mpFilter, debouncedSearch, page, pageSize, workflowFilter, addToast]);
+  }, [mpFilter, debouncedSearch, page, pageSize, workflowFilter, shortPackOnly, addToast]);
 
   // Reset page to 1 when search or filters change
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, workflowFilter, mpFilter]);
+  }, [debouncedSearch, workflowFilter, mpFilter, shortPackOnly]);
 
   useEffect(() => {
     fetchData({ silent: didInitialLoad.current });
@@ -212,7 +214,10 @@ export default function Consignments() {
         'success'
       );
       closeCreateModal();
-    } catch (error) { addToast(error.response?.data?.error || 'Failed', 'error'); }
+    } catch (error) {
+      const msg = error.response?.data?.error || 'Failed';
+      addToast(msg, 'error');
+    }
     finally { setIsSubmitting(false); }
   };
 
@@ -621,13 +626,26 @@ export default function Consignments() {
                 </TagButton>
               ))}
             </TagButtonGroup>
+            <button
+              type="button"
+              onClick={() => setShortPackOnly((v) => !v)}
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-semibold border transition-colors ${
+                shortPackOnly
+                  ? 'bg-red-50 text-red-700 border-red-200'
+                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+              }`}
+              title="Show consignments confirmed short at packing"
+            >
+              Short pack
+            </button>
             <div className="w-px h-6 bg-slate-200 hidden sm:block" />
             <select
               value={mpFilter}
               onChange={e => setMpFilter(e.target.value)}
-              className="inp py-1 px-2 text-xs w-auto min-w-[120px] max-w-[180px]"
+              title={marketplaces.find((m) => m.id === mpFilter)?.name || 'All marketplaces'}
+              className="inp py-1 px-1.5 text-[11px] w-[7.5rem] sm:w-[8.5rem] shrink-0 truncate"
             >
-              <option value="">All Marketplaces</option>
+              <option value="">All MPs</option>
               {marketplaces.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
             <button
@@ -776,6 +794,14 @@ export default function Consignments() {
                       <span className={`inline-flex px-1.5 py-px rounded text-[10px] font-semibold border ${WORKFLOW_BUCKET_CLASS[getWorkflowBucket(c)] || WORKFLOW_BUCKET_CLASS.new}`}>
                         {WORKFLOW_BUCKET_LABELS[getWorkflowBucket(c)] || 'New'}
                       </span>
+                      {c.hasPackingShort && (
+                        <span
+                          className="ml-1 inline-flex px-1.5 py-px rounded text-[10px] font-semibold bg-red-50 text-red-700 border border-red-100"
+                          title={c.packingCompletion?.shortReason || `Short ${c.packingShortQty || c.packingTotals?.short || 0}`}
+                        >
+                          Short {c.packingShortQty || c.packingTotals?.short || ''}
+                        </span>
+                      )}
                       {c.isEscalated && <span className="ml-1 inline-flex px-1.5 py-px rounded text-[10px] font-semibold bg-red-100 text-red-800">Escalated</span>}
                       {c.isTatOverdue && !c.isEscalated && <span className="ml-1 inline-flex px-1.5 py-px rounded text-[10px] font-semibold bg-amber-100 text-amber-900">TAT</span>}
                     </td>
@@ -935,8 +961,8 @@ export default function Consignments() {
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">
                       Consignment ID <span className="text-slate-400 font-normal normal-case">(optional)</span>
                     </label>
-                    <input type="text" value={form.id} onChange={e=>setForm({...form,id:e.target.value})} className="inp" placeholder="Assign later if unknown — uses Internal Shipment No." />
-                    <p className="text-[10px] text-slate-400 mt-1">Leave blank to pack immediately with the internal shipment number.</p>
+                    <input type="text" value={form.id} onChange={e=>setForm({...form,id:e.target.value})} className="inp" placeholder="Must be unique — blank uses Internal Shipment No." />
+                    <p className="text-[10px] text-slate-400 mt-1">Cannot reuse an existing Consignment ID (including archived).</p>
                   </div>
                   
                   <div>
@@ -944,6 +970,7 @@ export default function Consignments() {
                       Internal Shipment No. <span className="text-primary-600 font-bold">*</span>
                     </label>
                     <input type="text" required value={form.internalShipmentNo} onChange={e=>setForm({...form,internalShipmentNo:e.target.value})} className="inp" placeholder="e.g., 6605JVXH" />
+                    <p className="text-[10px] text-slate-400 mt-1">Must be unique — same number cannot be created twice.</p>
                   </div>
                   
                   <div>

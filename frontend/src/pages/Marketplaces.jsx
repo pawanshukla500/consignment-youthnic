@@ -204,6 +204,14 @@ export default function Marketplaces() {
     if (!form.billTo.trim()) errors.billTo = 'Bill To details are required';
     if (form.warehouses.length === 0) errors.warehouses = 'Add at least one warehouse';
     if (form.warehouses.some((w) => !w.name.trim())) errors.warehouses = 'All warehouses need a name';
+    const badGst = form.warehouses.find((w) => {
+      const gst = String(w.gst || '').trim()
+      if (!gst) return false
+      return !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/i.test(gst)
+    })
+    if (badGst) errors.warehouses = `Invalid GSTIN on warehouse "${badGst.name}"`
+    const badState = form.warehouses.find((w) => String(w.state || '').trim().length > 48)
+    if (badState) errors.warehouses = `State too long on warehouse "${badState.name}"`
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   };
@@ -303,6 +311,15 @@ export default function Marketplaces() {
 
   const saveEdit = async (id) => {
     if (!editForm.name.trim()) return;
+    const badGst = (editForm.warehouses || []).find((w) => {
+      const gst = String(w.gst || '').trim()
+      if (!gst) return false
+      return !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/i.test(gst)
+    })
+    if (badGst) {
+      addToast(`Invalid GSTIN on warehouse "${badGst.name}"`, 'error')
+      return
+    }
     setIsSubmitting(true);
     try {
       await marketplacesAPI.update(id, { name: editForm.name.trim(), billTo: editForm.billTo.trim(), warehouses: editForm.warehouses });

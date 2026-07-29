@@ -455,6 +455,38 @@ router.post('/reconcile', authenticateToken, requireRole('admin'), async (req, r
   }
 });
 
+// Persist Ship=Inwarded for archived/inward-done rows stuck on In Transit / Forwarded / Ready.
+// Admin-only; does not touch auth/login paths. Batched document updates only (no SKU scans).
+router.post('/heal-shipment-statuses', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const { resolveHealedShipmentStatus } = require('../utils/consignmentWorkflow');
+    const consignments = await firestoreHelpers.getCollection('consignments');
+    let scanned = 0;
+    let fixed = 0;
+    const issues = [];
+
+    for (const c of consignments) {
+      scanned++;
+      const healed = resolveHealedShipmentStatus(c);
+      if (!healed || healed === c.shipmentStatus) continue;
+      await firestoreHelpers.setDocument('consignments', c.id, {
+        shipmentStatus: healed,
+        updatedAt: now(),
+      });
+      fixed++;
+      if (issues.length < 100) {
+        issues.push(`${c.internalShipmentNo || c.id}: ${c.shipmentStatus || '(empty)'} → ${healed}`);
+      }
+    }
+
+    await addAuditLog('heal_shipment_statuses', 'settings', 'data-integrity', req.user.id, { scanned, fixed });
+    res.json({ ok: true, scanned, fixed, issues });
+  } catch (error) {
+    console.error('Heal shipment statuses error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Migrate Firestore to PostgreSQL (admin only)
 router.post(['/import-legacy-data', '/migrate-to-postgres'], authenticateToken, requireRole('admin'), async (req, res) => {
   try {

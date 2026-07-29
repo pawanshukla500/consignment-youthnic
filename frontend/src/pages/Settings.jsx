@@ -27,6 +27,8 @@ export default function Settings() {
   ).trim();
   const [reconciling, setReconciling] = useState(false);
   const [reconcileResult, setReconcileResult] = useState(null);
+  const [healingShip, setHealingShip] = useState(false);
+  const [healShipResult, setHealShipResult] = useState(null);
   const [fbAuthEnabled, setFbAuthEnabled] = useState(null);
   const [syncingFb, setSyncingFb] = useState(false);
   const [fbSyncResult, setFbSyncResult] = useState(null);
@@ -106,6 +108,19 @@ export default function Settings() {
       addToast(e.response?.data?.error || 'Reconcile failed', 'error');
     }
     setReconciling(false);
+  };
+
+  const handleHealShipmentStatuses = async () => {
+    setHealingShip(true);
+    setHealShipResult(null);
+    try {
+      const res = await settingsAPI.healShipmentStatuses();
+      setHealShipResult(res.data);
+      addToast(`Healed ${res.data.fixed} of ${res.data.scanned} consignments`, 'success');
+    } catch (e) {
+      addToast(e.response?.data?.error || 'Heal statuses failed', 'error');
+    }
+    setHealingShip(false);
   };
 
   const handleMigration = async () => {
@@ -409,11 +424,39 @@ export default function Settings() {
                 </div>
               )}
 
-              <button onClick={handleReconcile} disabled={reconciling}
+              <button onClick={handleReconcile} disabled={reconciling || healingShip}
                 className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm font-medium transition-colors disabled:opacity-50">
                 {reconciling ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
                 {reconciling ? 'Reconciling…' : 'Reconcile All Data'}
               </button>
+
+              <div className="mt-6 pt-6 border-t border-slate-100">
+                <h3 className="text-sm font-semibold text-slate-900 mb-1">Heal Ship statuses</h3>
+                <p className="text-sm text-slate-500 mb-3">
+                  Fix archived / inward-done consignments still showing Ship as In Transit, Forwarded, or Ready.
+                  Sets them to <strong>Inwarded</strong> in the database (safe, admin-only).
+                </p>
+                {healShipResult && (
+                  <div className="mb-4 p-4 bg-slate-50 rounded-xl border border-slate-100 text-sm">
+                    <p className="font-semibold text-slate-800 mb-1">
+                      Scanned {healShipResult.scanned} — fixed {healShipResult.fixed}
+                    </p>
+                    {healShipResult.issues?.length > 0 ? (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-xs text-primary-600">View {healShipResult.issues.length} updates</summary>
+                        <ul className="mt-2 space-y-0.5 max-h-40 overflow-y-auto">
+                          {healShipResult.issues.map((it, i) => <li key={i} className="text-[11px] text-slate-500 font-mono">{it}</li>)}
+                        </ul>
+                      </details>
+                    ) : <p className="text-xs text-emerald-600">Nothing to heal — all Ship statuses look correct.</p>}
+                  </div>
+                )}
+                <button onClick={handleHealShipmentStatuses} disabled={healingShip || reconciling}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-slate-800 text-white rounded-lg hover:bg-slate-900 text-sm font-medium transition-colors disabled:opacity-50">
+                  {healingShip ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                  {healingShip ? 'Healing…' : 'Heal Ship Statuses'}
+                </button>
+              </div>
             </div>
           </div>
 

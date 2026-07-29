@@ -1,4 +1,8 @@
 const { firestoreHelpers, now } = require('./helpers');
+const {
+  findConsignmentIdentityConflict,
+  formatIdentityConflictError,
+} = require('./resolveConsignment');
 
 const RELATED_COLLECTIONS = [
   'skus',
@@ -20,8 +24,13 @@ async function reassignConsignmentId(oldId, newId, userId) {
   const existing = await firestoreHelpers.getDocument('consignments', oldId);
   if (!existing) return { ok: false, error: 'Consignment not found.' };
 
-  const conflict = await firestoreHelpers.getDocument('consignments', trimmedNew);
-  if (conflict) return { ok: false, error: 'Target consignment ID already exists.' };
+  const conflict = await findConsignmentIdentityConflict({
+    keys: [trimmedNew],
+    excludeId: oldId,
+  });
+  if (conflict) {
+    return { ok: false, error: formatIdentityConflictError(conflict) };
+  }
 
   const updatedConsignment = {
     ...existing,
