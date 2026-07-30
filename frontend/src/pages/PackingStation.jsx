@@ -350,7 +350,7 @@ export default function PackingStation() {
       setUploadProgress(Number(current?.progress) || 0);
       if (Array.isArray(items)) setBoxVideoStatuses(items);
     });
-    const handleOnline = () => runPendingSync(true);
+    const handleOnline = () => runPendingSync(false);
     const handleOffline = () => setSyncState('offline');
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
@@ -397,7 +397,7 @@ export default function PackingStation() {
     window.addEventListener('video-upload-error', onError);
 
     Promise.all([getPendingScanCount(), getPendingSyncJobCount(), getQueueCount()])
-      .then(([scans, saveJobs, videos]) => { if (scans + saveJobs + videos > 0) runPendingSync(true); });
+      .then(([scans, saveJobs, videos]) => { if (scans + saveJobs + videos > 0) runPendingSync(false); });
     return () => {
       clearInterval(si);
       unsubVideo();
@@ -987,7 +987,7 @@ export default function PackingStation() {
 
   /** Stop+finalize current box video before advancing.
    *  - requireUploaded=false (NEXT BOX / Save): durable IndexedDB finalize only; cloud upload runs in background
-   *  - requireUploaded=true (Done/Finish): wait until cloud upload completes (compliance gate)
+   *  - requireUploaded=true (Done/Finish): wait until cloud upload completes (compliance gate) + show progress popup
    */
   const ensureBoxVideoSafe = async ({ requireUploaded = false, silent = false } = {}) => {
     const wasRecording = mediaRecorderRef.current?.state === 'recording' || Boolean(recordingSessionIdRef.current);
@@ -1004,7 +1004,13 @@ export default function PackingStation() {
 
     const cid = stateRef.current.cid || S.cid;
     setShowUpload(true);
-    if (!silent) toast('Finishing video upload(s)…', 'info', 3500);
+    // Finish/Done is the only place we block with the upload progress popup.
+    try {
+      await refreshUploadLogFromQueue();
+    } catch (_) {
+      setShowUploadLog(true);
+    }
+    if (!silent) toast('Finishing video upload(s) — keep this tab open…', 'info', 4500);
 
     const deadline = Date.now() + VIDEO_UPLOAD_CONFIG.finishDrainTimeoutMs;
     while (Date.now() < deadline) {
@@ -1145,10 +1151,18 @@ export default function PackingStation() {
     commitPackingState((prev) => ({ ...prev, box: null }));
     setZoneState(2);
     window.setTimeout(() => inBoxRef.current?.focus(), 50);
+    // Next Box must stay non-blocking: queue cloud upload in background only (no popup).
     const count = await getQueueCount();
     const { getFailedCount } = await import('../utils/videoQueue');
     const failed = await getFailedCount();
-    if (count > 0 || failed > 0) void processVideoQueue(true);
+    if (count > 0 || failed > 0) {
+      void processVideoQueue(false);
+      if (failed > 0) {
+        toast(`${failed} video(s) need retry — packing continues; fix before Done`, 'warning', 4500);
+      } else if (count > 0) {
+        toast(`${count} video(s) uploading in background`, 'info', 2500);
+      }
+    }
   };
 
   const doBox = async () => {
@@ -1912,9 +1926,13 @@ export default function PackingStation() {
     const pct = totalReq > 0 ? Math.round(totalPkd / totalReq * 100) : 0;
 
     setMoConfig({
-      title: 'Finish ' + S.cid + '?',
+      title: 'Finish ' + (S.intShip || S.cid) + '?',
       body: (
         <div>
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 mb-2 text-[11px] text-amber-900 leading-relaxed">
+            <strong>Keep this tab open.</strong> Done waits until every box video is uploaded and verified.
+            Closing early can lose unfinished uploads.
+          </div>
           <div className="grid grid-cols-3 gap-1.5 my-2">
             <div className="bg-slate-50 p-2 rounded-md text-center"><div className="text-lg font-extrabold text-emerald-600">{totalPkd}/{totalReq}</div><div className="text-[8px] text-slate-400 uppercase">Packed</div></div>
             <div className="bg-slate-50 p-2 rounded-md text-center"><div className="text-lg font-extrabold text-red-500">{pct}%</div><div className="text-[8px] text-slate-400 uppercase">Complete</div></div>
@@ -1937,7 +1955,7 @@ export default function PackingStation() {
       actions: (
         <>
           <button onClick={() => setShowMo(false)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-[11px] font-medium">Cancel</button>
-          <button onClick={finishPacking} className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-[11px] font-medium">Finish</button>
+          <button onClick={finishPacking} className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-[11px] font-medium">Finish &amp; upload videos</button>
         </>
       )
     });
@@ -1982,15 +2000,17 @@ export default function PackingStation() {
   const finishPacking = async () => {
     setShowMo(false);
     setLoading(true);
+    const finishedLabel = S.intShip || S.cid;
     try {
       // Save leftover box + durable-finalize video locally (fast)
       await autoSaveCurrentBox();
 
-      // Compliance gate: all box videos must be uploaded before finish
+      // Compliance gate: show upload popup and wait until all box videos are verified
       try {
         await ensureBoxVideoSafe({ requireUploaded: true, silent: true });
       } catch (err) {
         toast(err.message || 'Upload all box videos before finishing', 'error', 8000);
+        try { await refreshUploadLogFromQueue(); } catch (_) { setShowUploadLog(true); }
         return;
       }
 
@@ -2013,16 +2033,54 @@ export default function PackingStation() {
         })
       }
 
+      setShowUploadLog(false);
+      const leftQty = (summary.totalRequiredQty || 0) - (summary.totalPackedQty || 0);
+      setMoConfig({
+        title: summary.fully_packed ? 'Packing complete' : 'Packing saved',
+        body: (
+          <div className="space-y-2 text-left">
+            <div className={`rounded-lg px-3 py-2 text-[12px] font-semibold ${summary.fully_packed ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-amber-50 text-amber-900 border border-amber-200'}`}>
+              {summary.fully_packed
+                ? `${finishedLabel} is complete. Box videos are verified — safe to close this tab.`
+                : `${finishedLabel} saved with ${leftQty} item(s) still pending. Videos are verified.`}
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              <div className="bg-slate-50 p-2 rounded-md text-center">
+                <div className="text-base font-extrabold text-emerald-600">{summary.totalPackedQty}/{summary.totalRequiredQty}</div>
+                <div className="text-[8px] text-slate-400 uppercase">Packed</div>
+              </div>
+              <div className="bg-slate-50 p-2 rounded-md text-center">
+                <div className="text-base font-extrabold text-slate-700">{summary.boxCount ?? '—'}</div>
+                <div className="text-[8px] text-slate-400 uppercase">Boxes</div>
+              </div>
+              <div className="bg-slate-50 p-2 rounded-md text-center">
+                <div className="text-base font-extrabold text-emerald-600">OK</div>
+                <div className="text-[8px] text-slate-400 uppercase">Videos</div>
+              </div>
+            </div>
+          </div>
+        ),
+        actions: (
+          <button
+            type="button"
+            onClick={() => { setShowMo(false); resetAll(); }}
+            className="px-3 py-1.5 bg-primary-600 text-white rounded-lg text-[11px] font-medium"
+          >
+            Done
+          </button>
+        ),
+      });
+      setShowMo(true);
       if (!summary.fully_packed) {
-        toast(S.cid + ' saved - still ' + (summary.totalRequiredQty - summary.totalPackedQty) + ' items pending', 'warning', 5000);
+        toast(finishedLabel + ' saved - still ' + leftQty + ' items pending', 'warning', 5000);
       } else {
-        toast(S.cid + ' COMPLETE!', 'success', 5000);
+        toast(finishedLabel + ' COMPLETE!', 'success', 5000);
       }
-      resetAll();
     } catch (e) {
       if (e.response?.data?.code === 'VIDEOS_PENDING') {
         const boxes = (e.response.data.missingBoxes || []).join(', ');
         toast(`Upload videos for Box ${boxes} before finishing`, 'error', 7000);
+        try { await refreshUploadLogFromQueue(); } catch (_) { setShowUploadLog(true); }
       } else {
         toast(e.response?.data?.error || 'Finish failed', 'error');
       }
@@ -2655,14 +2713,14 @@ export default function PackingStation() {
       {/* Hidden Print Pending */}
       <button id="print-pending-btn" className="hidden" onClick={printPendingSkus} />
 
-      {/* ── Video Upload Progress Modal ── */}
+      {/* ── Video Upload Progress Modal (Finish / Done only — not Next Box) ── */}
       {showUploadLog && (
         <div className="fixed inset-0 bg-black/50 z-[10001] flex items-center justify-center backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-[420px] max-w-[95vw] overflow-hidden animate-pop-in">
             <div className="bg-gradient-to-r from-primary-600 to-primary-400 px-5 py-4 flex items-center justify-between">
               <div>
-                <h3 className="text-white font-bold text-sm">Video Upload Progress</h3>
-                <p className="text-white/70 text-[11px]">Uploading packing videos to cloud</p>
+                <h3 className="text-white font-bold text-sm">Finishing — video upload</h3>
+                <p className="text-white/80 text-[11px]">Keep this tab open until every box video is verified</p>
               </div>
               {uploadLog.every(l => ['completed', 'done', 'failed', 'error', 'retrying'].includes(l.status)) && (
                 <button onClick={() => setShowUploadLog(false)} className="text-white/70 hover:text-white text-lg leading-none px-2">✕</button>
