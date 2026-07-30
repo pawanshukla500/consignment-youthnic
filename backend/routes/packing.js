@@ -1463,6 +1463,7 @@ router.post('/finish', authenticateToken, async (req, res) => {
           fully_packed: allCompleted,
           totalPackedQty,
           totalRequiredQty,
+          boxCount: validBoxes.length,
           status: finishUpdates.status,
           shipmentStatus: finishUpdates.shipmentStatus,
         },
