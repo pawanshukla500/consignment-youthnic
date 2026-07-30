@@ -1,19 +1,31 @@
 import JsBarcode from 'jsbarcode'
 import { escapeHtml, openEscapedPrintWindow } from './printHtml'
 
-const ROWS_PER_PAGE = 28
+const ROWS_PER_PAGE = 32
 
 /**
- * Build 4×6 shipment box label HTML (text only — no graphical barcode).
- * Shows consignment ID, shipment number, box number, barcode SKU, internal SKU, qty.
+ * Build 4×6 shipment box label HTML — Excel-style bordered grid.
+ * Columns: # | Barcode SKU | Internal SKU | Qty
  */
 export function buildShipmentBoxLabelHtml({ consignmentId, internalShipmentNo, shipmentNo, box }) {
   const items = box?.items || []
   const totalQty = items.reduce((sum, item) => sum + (Number(item.qty) || 0), 0)
-  const shipmentId = internalShipmentNo || consignmentId || ''
-  const shipNo = shipmentNo || ''
+  const shipmentId = String(internalShipmentNo || consignmentId || '').trim()
+  const shipNo = String(shipmentNo || '').trim()
   const boxNo = String(box?.boxNo || '')
-  const cid = consignmentId || ''
+  const cid = String(consignmentId || '').trim()
+  const weight = box?.weight != null && box.weight !== '' ? `${box.weight} ${box.weightUnit || 'KG'}` : ''
+
+  // Avoid repeating the same value three times when IDs match.
+  const metaRows = []
+  if (shipmentId) metaRows.push(['Internal Shipment', shipmentId, true])
+  if (cid && cid.toLowerCase() !== shipmentId.toLowerCase()) {
+    metaRows.push(['Consignment ID', cid, false])
+  }
+  if (shipNo && shipNo.toLowerCase() !== shipmentId.toLowerCase() && shipNo.toLowerCase() !== cid.toLowerCase()) {
+    metaRows.push(['Shipment No', shipNo, false])
+  }
+  if (!metaRows.length && cid) metaRows.push(['Consignment ID', cid, true])
 
   const pages = []
   for (let i = 0; i < items.length; i += ROWS_PER_PAGE) {
@@ -23,11 +35,13 @@ export function buildShipmentBoxLabelHtml({ consignmentId, internalShipmentNo, s
 
   return pages.map((pageItems, idx) => {
     const isLast = idx === pages.length - 1
-    const rows = pageItems.map((item) => {
+    const rowOffset = idx * ROWS_PER_PAGE
+    const rows = pageItems.map((item, i) => {
       const barcodeSku = item.barcode || item.marketplaceBarcode || item.marketplaceSku || '—'
       const internalSku = item.internalSku || item.name || '—'
       return `
       <tr>
+        <td class="num-cell">${rowOffset + i + 1}</td>
         <td class="sku-cell barcode-cell">${escapeHtml(barcodeSku)}</td>
         <td class="sku-cell internal-cell">${escapeHtml(internalSku)}</td>
         <td class="qty-cell">${Number(item.qty) || 0}</td>
@@ -35,35 +49,64 @@ export function buildShipmentBoxLabelHtml({ consignmentId, internalShipmentNo, s
     }).join('')
 
     const totalRow = isLast
-      ? `<tr class="total-row"><td colspan="2">Packed Qty</td><td class="qty-cell">${totalQty}</td></tr>`
+      ? `<tr class="total-row">
+          <td class="num-cell"></td>
+          <td colspan="2" class="total-label">Packed Qty</td>
+          <td class="qty-cell">${totalQty}</td>
+        </tr>`
       : ''
 
     const pageNote = pages.length > 1
-      ? `<div class="page-note">Page ${idx + 1} of ${pages.length}</div>`
+      ? `<span class="page-note">Page ${idx + 1}/${pages.length}</span>`
       : ''
+
+    const metaHtml = metaRows.map(([label, value, strong]) => `
+      <tr>
+        <td class="meta-label">${escapeHtml(label)}</td>
+        <td class="meta-value${strong ? ' strong' : ''}" colspan="3">${escapeHtml(value)}</td>
+      </tr>`).join('')
 
     return `
       <div class="label-page" style="${idx > 0 ? 'page-break-before:always;' : ''}">
-        <div class="header">
-          <div class="meta-line"><span class="meta-label">Consignment ID</span><span class="meta-value">${escapeHtml(cid)}</span></div>
-          <div class="meta-line"><span class="meta-label">Shipment No</span><span class="meta-value">${escapeHtml(shipNo || shipmentId)}</span></div>
-          <div class="meta-line"><span class="meta-label">Internal Shipment</span><span class="meta-value strong">${escapeHtml(shipmentId)}</span></div>
-          <div class="box-line">Box #${escapeHtml(boxNo)} · Packed: <strong>${totalQty}</strong></div>
-          ${pageNote}
+        <div class="label-frame">
+          <table class="meta-table">
+            <tbody>
+              ${metaHtml}
+              <tr class="box-row">
+                <td class="meta-label">Box</td>
+                <td class="meta-value strong">#${escapeHtml(boxNo)}</td>
+                <td class="meta-label center">Items</td>
+                <td class="meta-value strong center">${items.length}${weight ? ` · ${escapeHtml(weight)}` : ''}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="section-title">
+            <span>SKU DETAILS</span>
+            <span>Packed: <strong>${totalQty}</strong>${pageNote ? ` · ${pageNote}` : ''}</span>
+          </div>
+
+          <table class="sku-table">
+            <colgroup>
+              <col class="col-num" />
+              <col class="col-barcode" />
+              <col class="col-internal" />
+              <col class="col-qty" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="num-head">#</th>
+                <th>Barcode SKU</th>
+                <th>Internal SKU</th>
+                <th class="qty-head">Qty</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows || '<tr><td colspan="4" class="empty">No items in this box</td></tr>'}
+              ${totalRow}
+            </tbody>
+          </table>
         </div>
-        <table class="sku-table">
-          <thead>
-            <tr>
-              <th>Barcode SKU</th>
-              <th>Internal SKU</th>
-              <th class="qty-head">Qty</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows || '<tr><td colspan="3" class="empty">No items</td></tr>'}
-            ${totalRow}
-          </tbody>
-        </table>
       </div>
     `
   }).join('')
@@ -78,35 +121,110 @@ export function openShipmentLabelPrintWindow(innerHtml, title = 'Shipment Label'
         <title>${safeTitle}</title>
         <style>
           @page { size: 4in 6in; margin: 0; }
-          body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #0f172a; }
+          * { box-sizing: border-box; }
+          body { margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; color: #0f172a; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .label-page {
-            width: 4in; height: 6in; padding: 0.12in 0.14in;
-            box-sizing: border-box; display: flex; flex-direction: column;
-            page-break-inside: avoid;
+            width: 4in; height: 6in; padding: 0.08in;
+            box-sizing: border-box; page-break-inside: avoid;
           }
-          .header { margin-bottom: 6px; border-bottom: 1.5px solid #0f172a; padding-bottom: 6px; }
-          .meta-line { display: flex; justify-content: space-between; gap: 6px; font-size: 7.5pt; line-height: 1.35; margin-bottom: 1px; }
-          .meta-label { color: #64748b; text-transform: uppercase; letter-spacing: 0.3px; flex-shrink: 0; }
-          .meta-value { font-weight: 600; text-align: right; word-break: break-all; }
-          .meta-value.strong { font-size: 11pt; font-weight: 800; }
-          .box-line { margin-top: 4px; font-size: 9pt; font-weight: 700; }
-          .page-note { font-size: 7pt; color: #64748b; margin-top: 2px; }
-          .sku-table { width: 100%; border-collapse: collapse; flex: 1; table-layout: fixed; }
+          .label-frame {
+            width: 100%; height: 100%;
+            border: 2px solid #0f172a;
+            display: flex; flex-direction: column;
+            overflow: hidden;
+          }
+
+          /* Header meta — Excel-like bordered cells */
+          .meta-table {
+            width: 100%; border-collapse: collapse; table-layout: fixed;
+            border-bottom: 2px solid #0f172a;
+          }
+          .meta-table td {
+            border: 1px solid #0f172a;
+            padding: 3px 5px;
+            vertical-align: middle;
+            line-height: 1.2;
+          }
+          .meta-label {
+            width: 28%;
+            font-size: 6.5pt;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.2px;
+            color: #334155;
+            background: #f1f5f9;
+          }
+          .meta-value {
+            font-size: 8pt;
+            font-weight: 700;
+            word-break: break-all;
+          }
+          .meta-value.strong { font-size: 10pt; font-weight: 800; }
+          .meta-value.center, .meta-label.center { text-align: center; }
+          .box-row .meta-value { font-size: 10pt; }
+
+          .section-title {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 3px 5px;
+            font-size: 7pt; font-weight: 800;
+            text-transform: uppercase; letter-spacing: 0.3px;
+            background: #0f172a; color: #fff;
+            border-bottom: 1px solid #0f172a;
+          }
+          .section-title strong { font-size: 8pt; }
+          .page-note { font-weight: 600; opacity: 0.9; }
+
+          /* SKU grid — full Excel-style borders on every cell */
+          .sku-table {
+            width: 100%; border-collapse: collapse; table-layout: fixed;
+            flex: 1;
+          }
+          .col-num { width: 8%; }
+          .col-barcode { width: 42%; }
+          .col-internal { width: 38%; }
+          .col-qty { width: 12%; }
+
+          .sku-table th, .sku-table td {
+            border: 1px solid #0f172a;
+            padding: 3px 4px;
+            vertical-align: middle;
+          }
           .sku-table th {
-            text-align: left; font-size: 6.5pt; text-transform: uppercase; color: #475569;
-            border-bottom: 1px solid #000; padding: 3px 2px 4px; font-weight: 700;
+            text-align: left;
+            font-size: 6.5pt;
+            text-transform: uppercase;
+            letter-spacing: 0.2px;
+            color: #0f172a;
+            background: #e2e8f0;
+            font-weight: 800;
           }
-          .qty-head, .qty-cell { text-align: right; width: 36px; }
+          .num-head, .num-cell { text-align: center; width: 8%; font-variant-numeric: tabular-nums; }
+          .qty-head, .qty-cell {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+          }
+          .num-cell {
+            font-size: 6.5pt; font-weight: 700; color: #64748b; background: #f8fafc;
+          }
           .sku-cell {
-            font-size: 7pt; font-weight: 600; padding: 4px 2px;
-            border-bottom: 1px solid #e2e8f0; vertical-align: top;
-            word-break: break-word; overflow-wrap: anywhere; line-height: 1.25;
+            font-size: 7pt; font-weight: 700;
+            word-break: break-word; overflow-wrap: anywhere; line-height: 1.2;
           }
-          .barcode-cell { color: #334155; width: 46%; }
-          .internal-cell { color: #0f172a; width: 42%; }
-          .qty-cell { font-size: 8pt; font-weight: 800; padding: 4px 2px; border-bottom: 1px solid #e2e8f0; }
-          .total-row td { border-top: 1.5px solid #000; padding-top: 5px; font-size: 8pt; font-weight: 800; }
-          .empty { text-align: center; color: #94a3b8; padding: 12px 0; font-size: 8pt; }
+          .barcode-cell { color: #1e293b; font-family: Consolas, "Courier New", monospace; font-size: 6.5pt; }
+          .internal-cell { color: #0f172a; }
+          .qty-cell { font-size: 8pt; font-weight: 800; }
+
+          .total-row td {
+            background: #f1f5f9;
+            border-top: 2px solid #0f172a;
+            font-size: 8pt; font-weight: 800;
+            padding: 4px;
+          }
+          .total-label { text-align: right; text-transform: uppercase; letter-spacing: 0.3px; }
+          .empty {
+            text-align: center; color: #94a3b8; padding: 10px 0; font-size: 8pt; font-weight: 600;
+          }
+
           @media print { .no-print { display: none !important; } }
         </style>
       </head>

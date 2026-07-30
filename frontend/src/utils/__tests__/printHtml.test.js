@@ -37,6 +37,10 @@ describe('printHtml XSS escaping', () => {
         ],
       },
     })
+    expect(html).toContain('Barcode SKU')
+    expect(html).toContain('Internal SKU')
+    expect(html).toContain('label-frame')
+    expect(html).toContain('sku-table')
     expect(html).not.toMatch(/<script>/i)
     expect(html).not.toMatch(/<img\s/i)
     expect(html).toContain('&lt;script&gt;')
