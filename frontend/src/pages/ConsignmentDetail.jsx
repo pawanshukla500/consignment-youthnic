@@ -153,11 +153,11 @@ function VideoFileCard({ video, boxNo, onDelete, addToast, canDelete }) {
         : null;
 
       setLinks({
-        // Prefer public/durable R2-backed URLs for display + copy (never expose JWT query tokens).
-        previewUrl: share?.streamUrl || play?.publicStreamUrl || play?.r2SignedUrl || play?.publicUrl || share?.r2SignedUrl || share?.publicUrl || null,
+        // Prefer real R2 URLs for preview/copy. Dispute link is always the details page.
+        previewUrl: play?.r2SignedUrl || play?.publicUrl || share?.r2SignedUrl || share?.publicUrl || share?.streamUrl || play?.publicStreamUrl || null,
         downloadUrl: absoluteDownload || play?.r2SignedUrl || share?.r2SignedUrl || play?.publicUrl || share?.publicUrl || null,
         disputeUrl: share?.shareUrl || share?.pageUrl || play?.shareUrl || null,
-        r2Url: play?.r2SignedUrl || play?.publicUrl || share?.r2SignedUrl || share?.publicUrl || share?.streamUrl || play?.publicStreamUrl || null,
+        r2Url: play?.r2SignedUrl || play?.publicUrl || share?.r2SignedUrl || share?.publicUrl || null,
         r2SignedUrl: play?.r2SignedUrl || share?.r2SignedUrl || null,
         publicUrl: play?.publicUrl || share?.publicUrl || null,
         storagePath: play?.storagePath || share?.storagePath || video.storagePath || null,

@@ -505,7 +505,7 @@ async function checkStorageReachable() {
   }
 }
 
-async function getSignedReadUrl(storagePath, expiresMs = READ_URL_TTL_SECONDS * 1000) {
+async function getSignedReadUrl(storagePath, expiresMs = READ_URL_TTL_SECONDS * 1000, options = {}) {
   if (!r2Configured || !storagePath) return null;
   try {
     const meta = await getStorageFileMeta(storagePath);
@@ -514,10 +514,20 @@ async function getSignedReadUrl(storagePath, expiresMs = READ_URL_TTL_SECONDS * 
       return null;
     }
     const { client, bucket } = requireR2();
-    const expiresIn = Math.max(60, Math.floor(expiresMs / 1000));
+    const expiresIn = Math.max(60, Math.floor((Number(expiresMs) || READ_URL_TTL_SECONDS * 1000) / 1000));
+    const commandInput = {
+      Bucket: bucket,
+      Key: storagePath,
+    };
+    if (options.responseContentDisposition) {
+      commandInput.ResponseContentDisposition = String(options.responseContentDisposition);
+    }
+    if (options.responseContentType) {
+      commandInput.ResponseContentType = String(options.responseContentType);
+    }
     return getSignedUrl(
       client,
-      new GetObjectCommand({ Bucket: bucket, Key: storagePath }),
+      new GetObjectCommand(commandInput),
       { expiresIn }
     );
   } catch (e) {
