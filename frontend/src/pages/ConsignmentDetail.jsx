@@ -9,7 +9,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { printShipmentBoxLabel, printAllShipmentBoxLabels } from '../utils/shipmentLabel';
 import { consignmentsAPI, uploadsAPI, packingAPI } from '../services/api';
 import { useToast } from '../context/ToastContext';
-import { buildUploadStreamUrl, verifyUploadStream, fetchAuthenticatedStream } from '../utils/videoPlayback';
+import { buildUploadStreamUrl, fetchAuthenticatedStream } from '../utils/videoPlayback';
 import { uploadFileToStorage } from '../hooks/useStorageUpload';
 import { getShipmentPriority } from '../utils/priority';
 import { useConsignmentSync } from '../context/ConsignmentSyncContext';
@@ -116,132 +116,129 @@ async function loadConsignmentWithLiveSession(consignmentId, { withSyncStatus = 
   return mergeLivePackingSession(consignment, syncRes?.data)
 }
 
-function VideoPreviewCard({ video, boxNo, onDelete, addToast, canDelete }) {
-  const [src, setSrc] = useState(null);
-  const [loadingSrc, setLoadingSrc] = useState(true);
-  const [loadError, setLoadError] = useState('');
-  const refreshAttempted = useRef(false);
+function VideoFileCard({ video, boxNo, onDelete, addToast, canDelete }) {
+  const [links, setLinks] = useState(null);
+  const [loadingLinks, setLoadingLinks] = useState(true);
+  const [busy, setBusy] = useState('');
 
-  const loadPlayUrl = async (force = false) => {
+  const formatSize = (bytes) => {
+    const n = Number(bytes) || 0;
+    if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+    if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+    return `${n} B`;
+  };
+
+  const loadLinks = async () => {
     if (!video?.id) return;
-    if (force) refreshAttempted.current = false;
-    if (refreshAttempted.current && !force) return;
-    refreshAttempted.current = true;
-    setLoadingSrc(true);
-    setLoadError('');
-
-    const cacheBust = video.uploadedAt || video.updatedAt || video.size || video.originalName || Date.now();
-
-    // Prefer authenticated no-store stream for in-app preview (avoids Chrome 24h share cache).
-    const verified = await verifyUploadStream(video.id, 'video');
-    if (verified.ok && verified.streamUrl) {
-      const streamSrc = buildUploadStreamUrl(video.id, 'video', cacheBust) || verified.streamUrl;
-      setSrc(streamSrc);
-      setLoadingSrc(false);
-      return;
-    }
-
+    setLoadingLinks(true);
     try {
-      const { data } = await uploadsAPI.getShareLink(video.id, 'video');
-      if (data?.shareUrl) {
-        setSrc(data.shareUrl);
-        setLoadingSrc(false);
-        return;
-      }
-    } catch {
-      // fall through
-    }
+      const [{ data: play }, shareRes] = await Promise.all([
+        uploadsAPI.getPlayUrl(video.id, 'video').catch(() => ({ data: null })),
+        uploadsAPI.getShareLink(video.id, 'video').catch(() => ({ data: null })),
+      ]);
+      const share = shareRes?.data || null;
+      const streamSrc = buildUploadStreamUrl(video.id, 'video', video.uploadedAt || video.updatedAt || video.size)
+        || play?.streamUrl
+        || play?.playUrl
+        || null;
+      const absoluteStream = streamSrc
+        ? (String(streamSrc).startsWith('http') ? streamSrc : `${window.location.origin}${streamSrc}`)
+        : (share?.streamUrl || null);
+      const downloadSrc = play?.downloadUrl
+        || (streamSrc ? `${streamSrc}${String(streamSrc).includes('?') ? '&' : '?'}download=1` : null)
+        || share?.downloadUrl
+        || null;
+      const absoluteDownload = downloadSrc
+        ? (String(downloadSrc).startsWith('http') ? downloadSrc : `${window.location.origin}${downloadSrc}`)
+        : null;
 
-    try {
-      const { data } = await uploadsAPI.getPlayUrl(video.id, 'video');
-      const streamPath = data?.streamUrl || data?.playUrl || data?.url;
-      if (streamPath && String(streamPath).startsWith('/api/')) {
-        const streamSrc = buildUploadStreamUrl(video.id, 'video', cacheBust);
-        if (streamSrc) {
-          setSrc(streamSrc);
-          setLoadingSrc(false);
-          return;
-        }
-      }
+      setLinks({
+        previewUrl: share?.streamUrl || absoluteStream || play?.r2Url || share?.r2Url || null,
+        downloadUrl: absoluteDownload || play?.r2SignedUrl || share?.r2SignedUrl || play?.r2Url || null,
+        disputeUrl: share?.shareUrl || share?.pageUrl || play?.shareUrl || null,
+        r2Url: play?.r2Url || share?.r2Url || absoluteStream || null,
+        r2SignedUrl: play?.r2SignedUrl || share?.r2SignedUrl || null,
+        publicUrl: play?.publicUrl || share?.publicUrl || null,
+        storagePath: play?.storagePath || share?.storagePath || video.storagePath || null,
+        mimeType: play?.mimeType || share?.mimeType || video.mimeType || null,
+        size: play?.size || share?.size || video.size || 0,
+        originalName: play?.originalName || share?.originalName || video.originalName || null,
+        uploadedAt: play?.uploadedAt || share?.uploadedAt || video.uploadedAt || null,
+      });
     } catch {
-      // fall through
+      setLinks(null);
+      addToast?.('Could not resolve Cloudflare R2 video link', 'error');
+    } finally {
+      setLoadingLinks(false);
     }
-
-    const message = verified.error || 'Could not load video preview';
-    setLoadError(message);
-    addToast?.(message, 'error');
-    setLoadingSrc(false);
   };
 
   useEffect(() => {
-    refreshAttempted.current = false;
-    setSrc(null);
-    setLoadError('');
-    loadPlayUrl();
+    loadLinks();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [video?.id, video?.playUrl, video?.url, video?.storageUrl, video?.uploadedAt, video?.updatedAt, video?.size, video?.originalName]);
+  }, [video?.id, video?.uploadedAt, video?.updatedAt, video?.size, video?.originalName]);
 
-  const refreshPlayUrl = () => loadPlayUrl(true);
-
-  const handleShare = async () => {
+  const handleCopy = async (value, label) => {
+    if (!value) {
+      addToast('Link unavailable', 'error');
+      return;
+    }
     try {
-      const { data } = await uploadsAPI.getShareLink(video.id, 'video');
-      const link = data?.shareUrl || data?.pageUrl || data?.url;
-      if (!link) throw new Error('No URL');
-      await navigator.clipboard?.writeText(link);
-      addToast('Dispute share link copied (Cloudflare R2 — no login needed)', 'success');
+      await navigator.clipboard?.writeText(value);
+      addToast(`${label} copied`, 'success');
     } catch {
-      addToast('Could not copy video link — check permissions', 'error');
+      addToast('Could not copy link', 'error');
     }
   };
 
-  const handleOpen = async (e) => {
+  const handlePreviewOpen = async (e) => {
     e.preventDefault();
+    setBusy('open');
     try {
-      const { data } = await uploadsAPI.getShareLink(video.id, 'video');
-      const link = data?.shareUrl || data?.pageUrl;
-      if (link) {
-        window.open(link, '_blank', 'noopener,noreferrer');
+      const url = links?.previewUrl || links?.r2Url || links?.disputeUrl;
+      if (url) {
+        window.open(url, '_blank', 'noopener,noreferrer');
         return;
       }
-    } catch {
-      // fall through
+      addToast('Preview link unavailable — sign in again', 'error');
+    } finally {
+      setBusy('');
     }
-    const streamSrc = buildUploadStreamUrl(video.id, 'video');
-    if (streamSrc) {
-      window.open(streamSrc, '_blank', 'noopener,noreferrer');
-      return;
-    }
-    addToast('Video link unavailable — please sign in again', 'error');
   };
 
   const handleDownload = async () => {
+    setBusy('download');
     try {
-      let downloadUrl = null;
-      let fileName = video.originalName || `box_${boxNo || video.boxNo || 'video'}.webm`;
-      try {
-        const { data } = await uploadsAPI.getShareLink(video.id, 'video');
-        downloadUrl = data?.shareUrl || null;
-        if (data?.originalName) fileName = data.originalName;
-      } catch {
-        // fall through
+      const fileName = links?.originalName || video.originalName || `box_${boxNo || video.boxNo || 'video'}.mp4`;
+      // Prefer authenticated R2 stream with attachment disposition (original bytes).
+      if (links?.downloadUrl && String(links.downloadUrl).includes('/api/uploads/')) {
+        const response = await fetchAuthenticatedStream(video.id, 'video', { download: true }).catch(() => null);
+        if (response?.ok) {
+          const blob = await response.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = objectUrl;
+          a.download = fileName;
+          a.click();
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
       }
 
-      if (!downloadUrl) {
-        const response = await fetchAuthenticatedStream(video.id, 'video');
+      if (links?.r2SignedUrl || links?.publicUrl || links?.downloadUrl) {
+        const response = await fetch(links.r2SignedUrl || links.publicUrl || links.downloadUrl);
+        if (!response.ok) throw new Error(`Download failed (${response.status})`);
         const blob = await response.blob();
-        downloadUrl = URL.createObjectURL(blob);
+        const objectUrl = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = downloadUrl;
+        a.href = objectUrl;
         a.download = fileName;
         a.click();
-        URL.revokeObjectURL(downloadUrl);
+        URL.revokeObjectURL(objectUrl);
         return;
       }
 
-      // Stream original bytes from durable share URL (same object as uploaded).
-      const response = await fetch(downloadUrl);
-      if (!response.ok) throw new Error(`Download failed (${response.status})`);
+      const response = await fetchAuthenticatedStream(video.id, 'video');
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -250,74 +247,122 @@ function VideoPreviewCard({ video, boxNo, onDelete, addToast, canDelete }) {
       a.click();
       URL.revokeObjectURL(objectUrl);
     } catch {
-      addToast('Could not download video', 'error');
+      addToast('Could not download original video from Cloudflare R2', 'error');
+    } finally {
+      setBusy('');
     }
   };
 
+  const displayName = links?.originalName || video.originalName || 'Packing video';
+  const sizeLabel = formatSize(links?.size ?? video.size);
+  const typeLabel = (links?.mimeType || video.mimeType || 'video/mp4').split(';')[0];
+  const whenLabel = links?.uploadedAt || video.uploadedAt
+    ? new Date(links?.uploadedAt || video.uploadedAt).toLocaleString()
+    : '—';
+  const r2Link = links?.r2Url || links?.previewUrl || '';
+
   return (
-    <div className="border border-slate-200 rounded-lg overflow-hidden hover:shadow-md transition-shadow">
-      {loadingSrc && !src ? (
-        <div className="aspect-video bg-slate-900 flex items-center justify-center">
-          <Loader2 className="w-8 h-8 text-slate-500 animate-spin" />
+    <div className="border border-slate-200 rounded-xl bg-white overflow-hidden hover:shadow-md transition-shadow">
+      <div className="px-3.5 py-2.5 border-b border-slate-100 bg-slate-50/80 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
+            <CheckCircle2 className="w-4 h-4" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-slate-900 truncate">
+              {boxNo ? `Box #${boxNo}` : 'Video'} · available
+            </p>
+            <p className="text-[11px] text-slate-500 truncate" title={displayName}>{displayName}</p>
+          </div>
         </div>
-      ) : src ? (
-        <video
-          key={src}
-          src={src}
-          controls
-          className="w-full aspect-video bg-slate-900"
-          preload="metadata"
-          playsInline
-          onLoadedData={() => setLoadingSrc(false)}
-          onError={() => {
-            if (!loadError) {
-              setLoadError('Video failed to play');
-              refreshPlayUrl();
-            }
-          }}
-        />
-      ) : (
-        <div className="aspect-video bg-slate-900 flex flex-col items-center justify-center gap-2 px-4 text-center">
-          <Video className="w-12 h-12 text-slate-600" />
-          {loadError && <p className="text-xs text-red-300">{loadError}</p>}
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-sky-700 bg-sky-50 border border-sky-100 px-2 py-0.5 rounded shrink-0">
+          Cloudflare R2
+        </span>
+      </div>
+
+      <div className="p-3.5 space-y-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Size</p>
+            <p className="mt-0.5 font-semibold text-slate-800 tabular-nums">{sizeLabel}</p>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2">
+            <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Type</p>
+            <p className="mt-0.5 font-semibold text-slate-800 truncate" title={typeLabel}>{typeLabel}</p>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 sm:col-span-2">
+            <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Uploaded</p>
+            <p className="mt-0.5 font-semibold text-slate-800">{whenLabel}</p>
+          </div>
         </div>
-      )}
-      <div className="p-3">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-medium text-slate-900 truncate flex-1">
-            {boxNo ? `Box #${boxNo}` : video.originalName}
-          </p>
-          <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded shrink-0">{Math.round((video.size || 0) / 1024)} KB</span>
+
+        {links?.storagePath ? (
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold mb-1">R2 object path</p>
+            <p className="text-[11px] font-mono text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 break-all">{links.storagePath}</p>
+          </div>
+        ) : null}
+
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold mb-1">Cloudflare R2 link</p>
+          {loadingLinks ? (
+            <div className="flex items-center gap-2 text-xs text-slate-500 py-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Resolving R2 link…
+            </div>
+          ) : (
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                readOnly
+                value={r2Link}
+                placeholder="Link unavailable"
+                className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-mono text-slate-700"
+              />
+              <button
+                type="button"
+                onClick={() => handleCopy(r2Link, 'R2 link')}
+                disabled={!r2Link}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-900 disabled:opacity-50"
+              >
+                <Copy className="w-3.5 h-3.5" /> Copy
+              </button>
+            </div>
+          )}
         </div>
-        {boxNo ? <p className="text-xs text-slate-500 mt-0.5 truncate" title={video.originalName}>{video.originalName}</p> : null}
-        <p className="text-xs text-slate-500 mt-0.5">{new Date(video.uploadedAt).toLocaleString()}</p>
-        <div className="flex items-center gap-2 mt-2 flex-wrap">
+
+        <div className="flex items-center gap-2 flex-wrap pt-1">
           <button
             type="button"
-            onClick={handleOpen}
-            className="flex items-center gap-1 text-xs text-primary-600 hover:text-primary-700 bg-primary-50 px-2 py-1 rounded"
+            onClick={handlePreviewOpen}
+            disabled={loadingLinks || busy === 'open'}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary-700 bg-primary-50 hover:bg-primary-100 px-2.5 py-1.5 rounded-lg disabled:opacity-50"
           >
-            <ExternalLink className="w-3 h-3" /> Open
+            {busy === 'open' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ExternalLink className="w-3.5 h-3.5" />}
+            Preview open
           </button>
           <button
             type="button"
-            onClick={handleShare}
-            className="flex items-center gap-1 text-xs text-slate-600 hover:text-slate-800 bg-slate-100 px-2 py-1 rounded transition-colors"
+            onClick={handleDownload}
+            disabled={loadingLinks || busy === 'download'}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1.5 rounded-lg disabled:opacity-50"
           >
-            <Copy className="w-3 h-3" /> Copy Dispute Link
+            {busy === 'download' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+            Download original
           </button>
-          {src && (
+          <button
+            type="button"
+            onClick={() => handleCopy(links?.disputeUrl, 'Dispute share link')}
+            disabled={!links?.disputeUrl}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-lg disabled:opacity-50"
+          >
+            <Copy className="w-3.5 h-3.5" /> Copy dispute link
+          </button>
+          {canDelete && (
             <button
               type="button"
-              onClick={handleDownload}
-              className="flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-700 bg-emerald-50 px-2 py-1 rounded transition-colors"
+              onClick={onDelete}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 px-2.5 py-1.5 rounded-lg ml-auto"
             >
-              <Download className="w-3 h-3" /> Download
-            </button>
-          )}
-          {canDelete && (
-            <button type="button" onClick={onDelete} className="flex items-center gap-1 text-xs text-red-600 hover:text-red-700 ml-auto bg-red-50 px-2 py-1 rounded transition-colors">
-              <Trash2 className="w-3 h-3" /> Delete
+              <Trash2 className="w-3.5 h-3.5" /> Delete
             </button>
           )}
         </div>
@@ -1991,7 +2036,7 @@ const ConsignmentDetail = () => {
                         </div>
                         {video ? (
                           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            <VideoPreviewCard
+                            <VideoFileCard
                               video={video}
                               boxNo={boxNo}
                               addToast={addToast}

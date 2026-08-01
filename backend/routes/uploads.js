@@ -7,6 +7,7 @@ const {
   resolveStoragePath,
   resolveVideoStoragePath,
   resolvePublicUrl,
+  buildPublicObjectUrl,
   enrichFileRecord,
   finalizeClientStorageUpload,
   verifyStorageObject,
@@ -14,6 +15,7 @@ const {
   createStorageReadStream,
   deleteFile,
   generateSignedUploadUrl,
+  getSignedReadUrl,
   createMultipartUpload,
   generateSignedPartUrls,
   completeMultipartUpload,
@@ -51,14 +53,21 @@ async function streamFileRecord(req, res, record, fileType, options = {}) {
   const fileSize = fileMeta.size;
   const rangeHeader = req.headers.range;
   const publicShare = options.publicShare === true;
+  const forceDownload = options.download === true
+    || String(req.query.download || '') === '1'
+    || String(req.query.download || '').toLowerCase() === 'true';
   const etag = fileMeta.metadata?.etag || fileMeta.metadata?.ETag || null;
+  const safeName = String(record.originalName || 'video').replace(/[^\w.\-]+/g, '_');
 
   res.setHeader('Accept-Ranges', 'bytes');
   // Never allow Chrome/CDN to pin packing videos for a full day — revalidate on each play.
   res.setHeader('Cache-Control', publicShare ? 'public, max-age=0, must-revalidate' : 'private, no-store');
   if (etag) res.setHeader('ETag', etag);
   res.setHeader('Content-Type', contentType);
-  res.setHeader('Content-Disposition', `inline; filename="${String(record.originalName || 'video').replace(/[^\w.\-]+/g, '_')}"`);
+  res.setHeader(
+    'Content-Disposition',
+    `${forceDownload ? 'attachment' : 'inline'}; filename="${safeName}"`
+  );
 
   if (etag && req.headers['if-none-match'] && req.headers['if-none-match'] === etag && !rangeHeader) {
     return res.status(304).end();
@@ -774,11 +783,20 @@ router.get('/share/:fileId', authenticateToken, requireAnyPermission(['consignme
     const version = record.uploadedAt || record.updatedAt || record.size || Date.now();
     const shareUrl = `${durable.shareUrl}${durable.shareUrl.includes('?') ? '&' : '?'}v=${encodeURIComponent(String(version))}`;
     const streamUrl = `${durable.streamUrl}${durable.streamUrl.includes('?') ? '&' : '?'}v=${encodeURIComponent(String(version))}`;
+    const downloadUrl = `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}download=1`;
+    const storagePath = await resolveRecordStoragePath(record, fileType);
+    const [publicUrl, r2SignedUrl, fileMeta] = await Promise.all([
+      Promise.resolve(storagePath ? (buildPublicObjectUrl(storagePath) || resolvePublicUrl({ ...record, storagePath })) : null),
+      storagePath ? getSignedReadUrl(storagePath) : Promise.resolve(null),
+      storagePath ? getStorageFileMeta(storagePath) : Promise.resolve(null),
+    ]);
+
     res.json({
       shareUrl,
       url: shareUrl,
       playUrl: shareUrl,
       streamUrl,
+      downloadUrl,
       pageUrl: shareUrl,
       path: `${durable.path}?v=${encodeURIComponent(String(version))}`,
       requiresAuth: false,
@@ -790,6 +808,12 @@ router.get('/share/:fileId', authenticateToken, requireAnyPermission(['consignme
       boxNo: record.boxNo || null,
       type: record.type || fileType || 'document',
       originalName: record.originalName,
+      mimeType: record.mimeType || fileMeta?.metadata?.contentType || null,
+      size: record.size || fileMeta?.size || null,
+      storagePath: storagePath || null,
+      publicUrl: publicUrl || null,
+      r2Url: r2SignedUrl || publicUrl || streamUrl,
+      r2SignedUrl: r2SignedUrl || null,
       uploadedAt: record.uploadedAt || null,
       updatedAt: record.updatedAt || null,
     });
@@ -828,6 +852,7 @@ router.get('/s/:token/meta', async (req, res) => {
       uploadedAt: record.uploadedAt || null,
       storageProvider: 'cloudflare-r2',
       streamPath: `/api/uploads/s/${encodeURIComponent(req.params.token)}`,
+      downloadPath: `/api/uploads/s/${encodeURIComponent(req.params.token)}?download=1`,
     });
   } catch (error) {
     console.error('Error reading share meta:', error);
@@ -863,7 +888,7 @@ router.get('/s/:token', async (req, res) => {
   }
 });
 
-/** Fresh play URL for video preview and download (uses authenticated stream proxy). */
+/** Fresh play / download URLs backed by Cloudflare R2 (no in-app preview required). */
 router.get('/play/:fileId', authenticateToken, requireAnyPermission(['consignments', 'packing'], 'play uploads'), async (req, res) => {
   try {
     const { fileId } = req.params;
@@ -881,12 +906,34 @@ router.get('/play/:fileId', authenticateToken, requireAnyPermission(['consignmen
     }
 
     const streamPath = buildStreamPath(fileId, fileType);
+    const downloadPath = `${streamPath}${streamPath.includes('?') ? '&' : '?'}download=1`;
+    const [publicUrl, r2SignedUrl, fileMeta] = await Promise.all([
+      Promise.resolve(buildPublicObjectUrl(storagePath) || resolvePublicUrl({ ...record, storagePath })),
+      getSignedReadUrl(storagePath),
+      getStorageFileMeta(storagePath),
+    ]);
+    const durable = buildDurableShareUrl(req, fileId, fileType);
+
     res.json({
       url: streamPath,
       playUrl: streamPath,
       streamUrl: streamPath,
-      mimeType: record.mimeType || null,
+      downloadUrl: downloadPath,
+      shareUrl: durable.shareUrl,
+      pageUrl: durable.shareUrl,
+      publicStreamUrl: durable.streamUrl,
+      storageProvider: 'cloudflare-r2',
+      storagePath,
+      publicUrl: publicUrl || null,
+      r2Url: r2SignedUrl || publicUrl || durable.streamUrl,
+      r2SignedUrl: r2SignedUrl || null,
+      mimeType: record.mimeType || fileMeta?.metadata?.contentType || null,
+      size: record.size || fileMeta?.size || null,
       originalName: record.originalName || null,
+      boxNo: record.boxNo || null,
+      consignmentId: record.consignmentId || null,
+      uploadedAt: record.uploadedAt || null,
+      updatedAt: record.updatedAt || null,
     });
   } catch (error) {
     console.error('Error resolving play URL:', error);

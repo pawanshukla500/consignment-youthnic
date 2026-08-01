@@ -51,9 +51,12 @@ export async function verifyUploadStream(fileId, type = 'video') {
 }
 
 /** Fetch stream with Authorization header (for download / fallback checks). */
-export async function fetchAuthenticatedStream(fileId, type = 'video') {
-  const streamUrl = buildUploadStreamUrl(fileId, type)
+export async function fetchAuthenticatedStream(fileId, type = 'video', options = {}) {
+  let streamUrl = buildUploadStreamUrl(fileId, type)
   if (!streamUrl) throw new Error('Not signed in')
+  if (options.download) {
+    streamUrl += (streamUrl.includes('?') ? '&' : '?') + 'download=1'
+  }
   const token = getAppAuthToken()
   const response = await fetch(streamUrl, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
