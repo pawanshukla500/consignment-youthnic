@@ -27,7 +27,27 @@ const {
 const { requestUserHasPermission, requirePermission, requireAnyPermission, DELETE_VIDEOS } = require('../utils/permissions');
 const { isStoragePathForConsignment } = require('../utils/storagePathValidation');
 const { checkConsignmentVideos } = require('../utils/videoHealthCheck');
-const { buildDurableShareUrl, verifyShareToken } = require('../utils/shareLinks');
+const { buildDurableShareUrl, verifyShareToken, getPublicApiBase } = require('../utils/shareLinks');
+
+function wantsBrowserHtmlPage(req) {
+  const accept = String(req.headers.accept || '');
+  return accept.includes('text/html');
+}
+
+function isDownloadRequest(req) {
+  const raw = String(req.query.download || '');
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
+
+function buildSharePagePath(token) {
+  return `/share/video/${encodeURIComponent(token)}`;
+}
+
+function buildAppBaseUrl(req) {
+  const configured = String(process.env.APP_URL || '').trim().replace(/\/$/, '');
+  if (configured) return configured;
+  return getPublicApiBase(req);
+}
 
 function buildStreamPath(fileId, type = 'video') {
   return `/api/uploads/stream/${encodeURIComponent(fileId)}?type=${encodeURIComponent(type)}`;
@@ -812,7 +832,8 @@ router.get('/share/:fileId', authenticateToken, requireAnyPermission(['consignme
       size: record.size || fileMeta?.size || null,
       storagePath: storagePath || null,
       publicUrl: publicUrl || null,
-      r2Url: r2SignedUrl || publicUrl || streamUrl,
+      // Never fall back to auth/proxy stream URLs for the copyable "R2 link".
+      r2Url: r2SignedUrl || publicUrl || null,
       r2SignedUrl: r2SignedUrl || null,
       uploadedAt: record.uploadedAt || null,
       updatedAt: record.updatedAt || null,
@@ -842,17 +863,44 @@ router.get('/s/:token/meta', async (req, res) => {
       return res.status(404).json({ error: 'File not found.' });
     }
 
+    const storagePath = await resolveRecordStoragePath(record, parsed.type);
+    const [publicUrl, r2SignedUrl, fileMeta] = await Promise.all([
+      Promise.resolve(storagePath ? (buildPublicObjectUrl(storagePath) || resolvePublicUrl({ ...record, storagePath })) : null),
+      storagePath ? getSignedReadUrl(storagePath) : Promise.resolve(null),
+      storagePath ? getStorageFileMeta(storagePath) : Promise.resolve(null),
+    ]);
+    const streamPath = `/api/uploads/s/${encodeURIComponent(req.params.token)}`;
+    const downloadPath = `${streamPath}?download=1`;
+    const previewUrl = r2SignedUrl || publicUrl || streamPath;
+    const safeName = String(record.originalName || 'video').replace(/[^\w.\-]+/g, '_');
+    const attachmentUrl = storagePath
+      ? await getSignedReadUrl(storagePath, undefined, {
+        responseContentDisposition: `attachment; filename="${safeName}"`,
+        responseContentType: record.mimeType || fileMeta?.metadata?.contentType || undefined,
+      })
+      : null;
+    const downloadUrl = attachmentUrl || r2SignedUrl || downloadPath;
+
     res.json({
       ok: true,
       type: parsed.type,
+      consignmentId: record.consignmentId || null,
       boxNo: record.boxNo || null,
       originalName: record.originalName || null,
-      mimeType: record.mimeType || null,
-      size: record.size || null,
+      mimeType: record.mimeType || fileMeta?.metadata?.contentType || null,
+      size: record.size || fileMeta?.size || null,
       uploadedAt: record.uploadedAt || null,
+      updatedAt: record.updatedAt || null,
       storageProvider: 'cloudflare-r2',
-      streamPath: `/api/uploads/s/${encodeURIComponent(req.params.token)}`,
-      downloadPath: `/api/uploads/s/${encodeURIComponent(req.params.token)}?download=1`,
+      storagePath: storagePath || null,
+      publicUrl: publicUrl || null,
+      r2SignedUrl: r2SignedUrl || null,
+      r2Url: r2SignedUrl || publicUrl || null,
+      streamPath,
+      downloadPath,
+      previewUrl,
+      downloadUrl,
+      pagePath: buildSharePagePath(req.params.token),
     });
   } catch (error) {
     console.error('Error reading share meta:', error);
@@ -873,13 +921,40 @@ router.get('/s/:token', async (req, res) => {
       return res.status(403).json({ error: 'Invalid share link.' });
     }
 
+    const forceDownload = isDownloadRequest(req);
+    const hasRange = Boolean(req.headers.range);
+
+    // Opening this URL in a browser tab should show the dispute details page,
+    // not dump raw bytes through Cloud Run (which often 500s on large videos).
+    if (wantsBrowserHtmlPage(req) && !forceDownload && !hasRange) {
+      return res.redirect(302, `${buildAppBaseUrl(req)}${buildSharePagePath(req.params.token)}`);
+    }
+
     const collectionName = parsed.type === 'video' ? 'videos' : 'documents';
     const record = await firestoreHelpers.getDocument(collectionName, parsed.fileId);
     if (!record || record.active === false) {
       return res.status(404).json({ error: 'File not found.' });
     }
 
-    await streamFileRecord(req, res, { ...record, id: parsed.fileId }, parsed.type, { publicShare: true });
+    const storagePath = await resolveRecordStoragePath(record, parsed.type);
+    if (!storagePath) {
+      return res.status(404).json({ error: 'File is not available in storage.' });
+    }
+
+    // Prefer a short-lived signed R2 URL so playback/download does not proxy through Cloud Run.
+    const safeName = String(record.originalName || 'video').replace(/[^\w.\-]+/g, '_');
+    const signed = await getSignedReadUrl(storagePath, undefined, {
+      responseContentDisposition: `${forceDownload ? 'attachment' : 'inline'}; filename="${safeName}"`,
+      responseContentType: record.mimeType || undefined,
+    });
+    if (signed) {
+      return res.redirect(302, signed);
+    }
+
+    await streamFileRecord(req, res, { ...record, id: parsed.fileId }, parsed.type, {
+      publicShare: true,
+      download: forceDownload,
+    });
   } catch (error) {
     console.error('Error streaming shared file:', error);
     if (!res.headersSent) {
@@ -925,7 +1000,7 @@ router.get('/play/:fileId', authenticateToken, requireAnyPermission(['consignmen
       storageProvider: 'cloudflare-r2',
       storagePath,
       publicUrl: publicUrl || null,
-      r2Url: r2SignedUrl || publicUrl || durable.streamUrl,
+      r2Url: r2SignedUrl || publicUrl || null,
       r2SignedUrl: r2SignedUrl || null,
       mimeType: record.mimeType || fileMeta?.metadata?.contentType || null,
       size: record.size || fileMeta?.size || null,

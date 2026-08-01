@@ -1,57 +1,75 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router'
-import { Cloud, Copy, AlertTriangle, Download, ExternalLink } from 'lucide-react'
+import { Cloud, Copy, AlertTriangle, Download, ExternalLink, Loader2 } from 'lucide-react'
 
 /**
  * Public dispute share page — no login required.
- * Streams packing evidence from Cloudflare R2 via durable HMAC token.
+ * Shows Cloudflare R2 file details + Preview / Download actions.
  */
 export default function ShareVideo() {
   const { token } = useParams()
-  const [copied, setCopied] = useState(false)
+  const [copiedKey, setCopiedKey] = useState('')
   const [error, setError] = useState('')
   const [meta, setMeta] = useState(null)
+  const [loading, setLoading] = useState(true)
   const [downloading, setDownloading] = useState(false)
-
-  const streamUrl = useMemo(() => {
-    if (!token) return ''
-    return `/api/uploads/s/${encodeURIComponent(token)}`
-  }, [token])
-
-  const downloadUrl = useMemo(() => {
-    if (!streamUrl) return ''
-    return `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}download=1`
-  }, [streamUrl])
 
   const pageUrl = useMemo(() => {
     if (typeof window === 'undefined' || !token) return ''
     return `${window.location.origin}/share/video/${encodeURIComponent(token)}`
   }, [token])
 
+  const streamUrl = useMemo(() => {
+    if (!token) return ''
+    return meta?.streamPath || `/api/uploads/s/${encodeURIComponent(token)}`
+  }, [token, meta?.streamPath])
+
+  const previewUrl = useMemo(() => {
+    return meta?.previewUrl || meta?.r2SignedUrl || meta?.publicUrl || streamUrl || ''
+  }, [meta, streamUrl])
+
+  const downloadUrl = useMemo(() => {
+    return meta?.downloadUrl
+      || meta?.downloadPath
+      || (streamUrl ? `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}download=1` : '')
+  }, [meta, streamUrl])
+
+  const r2Link = useMemo(() => {
+    return meta?.r2Url || meta?.r2SignedUrl || meta?.publicUrl || ''
+  }, [meta])
+
   useEffect(() => {
     if (!token) return undefined
     let cancelled = false
+    setLoading(true)
     fetch(`/api/uploads/s/${encodeURIComponent(token)}/meta`)
       .then(async (res) => {
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Video not found')
         return res.json()
       })
       .then((data) => {
-        if (!cancelled) setMeta(data)
+        if (!cancelled) {
+          setMeta(data)
+          setError('')
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(err.message || 'This share link is invalid or the video was deleted.')
       })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
     return () => { cancelled = true }
   }, [token])
 
-  const copyLink = async () => {
+  const copyValue = async (value, key) => {
+    if (!value) return
     try {
-      await navigator.clipboard?.writeText(pageUrl)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      await navigator.clipboard?.writeText(value)
+      setCopiedKey(key)
+      setTimeout(() => setCopiedKey(''), 2000)
     } catch {
-      setCopied(false)
+      setCopiedKey('')
     }
   }
 
@@ -76,7 +94,6 @@ export default function ShareVideo() {
       a.click()
       URL.revokeObjectURL(objectUrl)
     } catch {
-      // Fallback: open stream so browser can save
       window.open(downloadUrl, '_blank', 'noopener,noreferrer')
     } finally {
       setDownloading(false)
@@ -111,6 +128,11 @@ export default function ShareVideo() {
               </div>
             </div>
           </div>
+        ) : loading ? (
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-8 flex items-center justify-center gap-2 text-slate-300">
+            <Loader2 className="h-5 w-5 animate-spin" />
+            Loading dispute details…
+          </div>
         ) : (
           <div className="rounded-2xl border border-white/10 bg-white/5 p-4 sm:p-5 backdrop-blur space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
@@ -119,6 +141,12 @@ export default function ShareVideo() {
                 <p className="mt-0.5 text-sm font-semibold">{meta?.boxNo ? `#${meta.boxNo}` : '—'}</p>
               </div>
               <div>
+                <p className="text-[11px] uppercase tracking-wider text-slate-400">Consignment</p>
+                <p className="mt-0.5 truncate text-sm font-semibold" title={meta?.consignmentId || ''}>
+                  {meta?.consignmentId || '—'}
+                </p>
+              </div>
+              <div className="sm:col-span-2">
                 <p className="text-[11px] uppercase tracking-wider text-slate-400">File</p>
                 <p className="mt-0.5 truncate text-sm font-semibold" title={meta?.originalName || ''}>
                   {meta?.originalName || 'Packing video'}
@@ -140,9 +168,39 @@ export default function ShareVideo() {
               </div>
             </div>
 
+            {meta?.storagePath ? (
+              <div>
+                <p className="text-[11px] uppercase tracking-wider text-slate-400">R2 object path</p>
+                <p className="mt-1 break-all rounded-lg border border-white/10 bg-slate-900/80 px-3 py-2 font-mono text-[11px] text-slate-300">
+                  {meta.storagePath}
+                </p>
+              </div>
+            ) : null}
+
+            <div>
+              <p className="text-[11px] uppercase tracking-wider text-slate-400">Cloudflare R2 link</p>
+              <div className="mt-1 flex flex-col gap-2 sm:flex-row">
+                <input
+                  readOnly
+                  value={r2Link}
+                  placeholder={r2Link ? undefined : 'Signed R2 link unavailable — use Preview / Download'}
+                  className="w-full rounded-lg border border-white/10 bg-slate-900/80 px-3 py-2 font-mono text-xs text-slate-200"
+                />
+                <button
+                  type="button"
+                  onClick={() => copyValue(r2Link, 'r2')}
+                  disabled={!r2Link}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-50"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  {copiedKey === 'r2' ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            </div>
+
             <div className="flex flex-wrap gap-2">
               <a
-                href={streamUrl || '#'}
+                href={previewUrl || '#'}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-400"
@@ -156,7 +214,7 @@ export default function ShareVideo() {
                 disabled={!downloadUrl || downloading}
                 className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-400 disabled:opacity-50"
               >
-                <Download className="h-3.5 w-3.5" />
+                {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                 {downloading ? 'Downloading…' : 'Download original'}
               </button>
             </div>
@@ -171,11 +229,11 @@ export default function ShareVideo() {
                 />
                 <button
                   type="button"
-                  onClick={copyLink}
+                  onClick={() => copyValue(pageUrl, 'page')}
                   className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white hover:bg-white/10"
                 >
                   <Copy className="h-3.5 w-3.5" />
-                  {copied ? 'Copied' : 'Copy link'}
+                  {copiedKey === 'page' ? 'Copied' : 'Copy link'}
                 </button>
               </div>
             </div>
