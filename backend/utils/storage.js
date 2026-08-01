@@ -719,6 +719,7 @@ module.exports = {
   resolveStoragePath,
   resolveVideoStoragePath,
   resolvePublicUrl,
+  buildPublicObjectUrl,
   getSignedReadUrl,
   resolveReadableUrl,
   enrichFileRecord,
