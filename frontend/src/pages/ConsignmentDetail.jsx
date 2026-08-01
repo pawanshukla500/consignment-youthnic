@@ -153,10 +153,11 @@ function VideoFileCard({ video, boxNo, onDelete, addToast, canDelete }) {
         : null;
 
       setLinks({
-        previewUrl: share?.streamUrl || absoluteStream || play?.r2Url || share?.r2Url || null,
-        downloadUrl: absoluteDownload || play?.r2SignedUrl || share?.r2SignedUrl || play?.r2Url || null,
+        // Prefer public/durable R2-backed URLs for display + copy (never expose JWT query tokens).
+        previewUrl: share?.streamUrl || play?.publicStreamUrl || play?.r2SignedUrl || play?.publicUrl || share?.r2SignedUrl || share?.publicUrl || null,
+        downloadUrl: absoluteDownload || play?.r2SignedUrl || share?.r2SignedUrl || play?.publicUrl || share?.publicUrl || null,
         disputeUrl: share?.shareUrl || share?.pageUrl || play?.shareUrl || null,
-        r2Url: play?.r2Url || share?.r2Url || absoluteStream || null,
+        r2Url: play?.r2SignedUrl || play?.publicUrl || share?.r2SignedUrl || share?.publicUrl || share?.streamUrl || play?.publicStreamUrl || null,
         r2SignedUrl: play?.r2SignedUrl || share?.r2SignedUrl || null,
         publicUrl: play?.publicUrl || share?.publicUrl || null,
         storagePath: play?.storagePath || share?.storagePath || video.storagePath || null,
@@ -164,6 +165,7 @@ function VideoFileCard({ video, boxNo, onDelete, addToast, canDelete }) {
         size: play?.size || share?.size || video.size || 0,
         originalName: play?.originalName || share?.originalName || video.originalName || null,
         uploadedAt: play?.uploadedAt || share?.uploadedAt || video.uploadedAt || null,
+        authStreamUrl: absoluteStream,
       });
     } catch {
       setLinks(null);
@@ -195,7 +197,7 @@ function VideoFileCard({ video, boxNo, onDelete, addToast, canDelete }) {
     e.preventDefault();
     setBusy('open');
     try {
-      const url = links?.previewUrl || links?.r2Url || links?.disputeUrl;
+      const url = links?.previewUrl || links?.r2Url || links?.disputeUrl || links?.authStreamUrl;
       if (url) {
         window.open(url, '_blank', 'noopener,noreferrer');
         return;
