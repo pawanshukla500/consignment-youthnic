@@ -142,6 +142,22 @@ async function notifyMany(recipients, payload) {
   return results;
 }
 
+/**
+ * Build the audience for a completed stage. The next department is the action
+ * owner, while management receives visibility on every hand-off. If there is
+ * no next department (or assignment failed), keep the current owner informed.
+ */
+function buildStageEmailAudience({ autoAssign, consignment, managers = [] }) {
+  const recipients = [];
+  if (autoAssign?.ok && autoAssign.notifiedUsers?.length) {
+    recipients.push(...autoAssign.notifiedUsers.map((u) => u.email));
+  } else if (consignment?.groundTeamEmail) {
+    recipients.push(consignment.groundTeamEmail);
+  }
+  recipients.push(...managers.map((manager) => manager.email));
+  return [...new Set(recipients.map((email) => String(email || '').trim().toLowerCase()).filter(Boolean))];
+}
+
 /** Assign / reassign ground team member */
 router.post('/:id/assign-ground-team', authenticateToken, requireAnyPermission(['consignments', 'users'], 'assign ground team'), async (req, res) => {
   try {
@@ -290,13 +306,16 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
       note: note || `Confirmed in Packing: ${STAGE_LABELS[stage] || stage}`,
     });
 
+    const actionOwner = autoAssign?.ok ? departmentLabel(nextDept) : null;
     const mail = buildWorkflowEmail({
-      title: 'Stage confirmed',
-      headline: `${STAGE_LABELS[stage] || stage} confirmed`,
+      title: actionOwner ? `Action required — ${next.pendingAction}` : 'Workflow stage completed',
+      headline: actionOwner
+        ? `${actionOwner}: ${next.pendingAction}`
+        : `${STAGE_LABELS[stage] || stage} confirmed`,
       intro: `Confirmed by ${escapeHtml(req.user.name || req.user.email || 'team member')}. Consignment workflow has been updated automatically.`,
       consignment: next,
       stageLabel: STAGE_LABELS[stage] || stage,
-      badge: next.pendingAction ? 'Next action pending' : 'Stage complete',
+      badge: actionOwner ? 'Action required' : 'Stage complete',
       accent: '#047857',
       extraHtml: [
         next.pendingAction
@@ -308,14 +327,8 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
       ].join(''),
     });
 
-    const recipients = [];
-    if (autoAssign?.ok && autoAssign.notifiedUsers?.length) {
-      recipients.push(...autoAssign.notifiedUsers.map((u) => u.email));
-    } else if (next.groundTeamEmail) {
-      recipients.push(next.groundTeamEmail);
-    }
     const managers = await listManagementEmails();
-    recipients.push(...managers.map((m) => m.email));
+    const recipients = buildStageEmailAudience({ autoAssign, consignment: next, managers });
     const emailResults = await notifyMany(recipients, { ...mail, tags: ['workflow', 'stage-confirm'] });
 
     res.json({
@@ -327,6 +340,11 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
         ? { ok: autoAssign.ok, reason: autoAssign.reason || null, userId: autoAssign.assignee?.id || null }
         : null,
       emailSent: emailResults.some((r) => r.ok),
+      emailDelivery: {
+        attempted: emailResults.length,
+        sent: emailResults.filter((result) => result.ok).length,
+        failed: emailResults.filter((result) => !result.ok).length,
+      },
     });
   } catch (error) {
     console.error('[confirm-stage]', error);
@@ -592,6 +610,7 @@ router.post('/:id/taskflow-resync', authenticateToken, requireRole('admin'), asy
 
 module.exports = {
   router,
+  buildStageEmailAudience,
   sendWeeklyOrgHeadReport,
   processTatRemindersAndEscalations,
   canAdvanceLogistics,

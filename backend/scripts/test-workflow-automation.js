@@ -19,6 +19,28 @@ const baseUser = { id: 'u1', name: 'Packer', email: 'p@test.com', role: 'user', 
 const invoiceUser = { id: 'u2', name: 'Invoice', email: 'i@test.com', role: 'user', department: 'invoice' };
 const dispatchUser = { id: 'u3', name: 'Dispatch', email: 'd@test.com', role: 'user', department: 'dispatch' };
 const inwardUser = { id: 'u4', name: 'Inward', email: 'n@test.com', role: 'user', department: 'inward' };
+const { buildStageEmailAudience } = require('../routes/workflow');
+
+// Every active member of the next department receives the hand-off, with
+// management copied once even when addresses differ only by case.
+{
+  const audience = buildStageEmailAudience({
+    autoAssign: {
+      ok: true,
+      notifiedUsers: [invoiceUser, { ...invoiceUser, id: 'u2b', email: 'SECOND@test.com' }],
+    },
+    consignment: { groundTeamEmail: 'packer@test.com' },
+    managers: [{ email: 'head@test.com' }, { email: 'second@TEST.com' }],
+  });
+  assert.deepStrictEqual(audience, ['i@test.com', 'second@test.com', 'head@test.com']);
+
+  const fallbackAudience = buildStageEmailAudience({
+    autoAssign: { ok: false },
+    consignment: { groundTeamEmail: 'owner@test.com' },
+    managers: [],
+  });
+  assert.deepStrictEqual(fallbackAudience, ['owner@test.com']);
+}
 
 function packingDoneShort() {
   return {

@@ -20,11 +20,12 @@
     "test:shipment-status": "node scripts/test-shipment-status.js",
     "test:packing-increment": "node scripts/test-packing-increment-integrity.js",
     "test:workflow-pending": "node scripts/test-workflow-pending-action.js",
+    "test:workflow-automation": "node scripts/test-workflow-automation.js",
     "test:inventory-email-policy": "node scripts/test-inventory-email-policy.js",
     "backup:postgres": "node scripts/backup-postgres.js",
     "test:inventory-planning": "node scripts/test-inventory-planning.js",
     "test:storage-verify": "node scripts/test-storage-verify.js",
-    "test:security": "npm run test:sanitize-user && npm run test:env-validation && npm run test:permissions && npm run test:cors && npm run test:auth-active && npm run test:login-path && npm run test:reliability && npm run test:packing-stability && npm run test:shipment-status && npm run test:packing-increment && npm run test:packing-quantity && npm run test:inventory-planning && npm run test:workflow-pending && npm run test:inventory-email-policy && npm run test:storage-verify",
+    "test:security": "npm run test:sanitize-user && npm run test:env-validation && npm run test:permissions && npm run test:cors && npm run test:auth-active && npm run test:login-path && npm run test:reliability && npm run test:packing-stability && npm run test:shipment-status && npm run test:packing-increment && npm run test:packing-quantity && npm run test:inventory-planning && npm run test:workflow-pending && npm run test:workflow-automation && npm run test:inventory-email-policy && npm run test:storage-verify",
     "lint": "node -e \"console.log('backend lint: no ESLint config (scripts validated via npm test)')\""
   },
   "dependencies": {
