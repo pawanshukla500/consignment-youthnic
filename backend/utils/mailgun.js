@@ -10,6 +10,7 @@ const { getLogoFilePath, LOGO_CID } = require('./emailTemplates');
 
 const API_KEY = () => process.env.MAILGUN_API_KEY || '';
 const DOMAIN = () => process.env.MAILGUN_DOMAIN || '';
+const API_URL = () => (process.env.MAILGUN_API_URL || 'https://api.mailgun.net').replace(/\/$/, '');
 const FROM_EMAIL = () => process.env.MAIL_FROM_EMAIL || 'consignment@youthnic.shop';
 const FROM_NAME = () => process.env.MAIL_FROM_NAME || 'Consignment App';
 
@@ -17,7 +18,10 @@ let mgClient = null;
 
 function getClient() {
   if (!mgClient && API_KEY()) {
-    mgClient = mailgun.client({ username: 'api', key: API_KEY() });
+    // Mailgun EU domains must use https://api.eu.mailgun.net. Keeping this
+    // configurable also makes the sender usable with Mailgun-compatible test
+    // endpoints without changing application code.
+    mgClient = mailgun.client({ username: 'api', key: API_KEY(), url: API_URL() });
   }
   return mgClient;
 }
@@ -126,6 +130,7 @@ async function sendViaMailgun({ to, cc, subject, html, text, tags = [], attachme
 module.exports = {
   API_KEY,
   DOMAIN,
+  API_URL,
   FROM_EMAIL,
   FROM_NAME,
   isMailgunConfigured,
