@@ -326,8 +326,7 @@ jobs:
           DB_SSL: ${{ vars.DB_SSL || 'true' }}
           # Sensitive values as normal Cloud Run env vars (GitHub Secrets → env; no Secret Manager)
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
-          MAILGUN_DOMAIN: ${{ secrets.MAILGUN_DOMAIN }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}

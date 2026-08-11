@@ -302,8 +302,8 @@ app.get('/api/health', async (req, res) => {
       : (databaseError ? 'Database unavailable' : null),
     email: (() => {
       try {
-        const { isMailgunConfigured } = require('./utils/mailgun');
-        return isMailgunConfigured() ? 'configured' : 'not_configured';
+        const { isResendConfigured } = require('./utils/resend');
+        return isResendConfigured() ? 'configured' : 'not_configured';
       } catch {
         return 'unknown';
       }
@@ -437,13 +437,13 @@ app.listen(PORT, async () => {
   // Workflow: TAT reminders hourly + Org Head email (Tue & Fri 08:00 UTC)
   try {
     const { processTatRemindersAndEscalations, sendWeeklyOrgHeadReport } = require('./routes/workflow');
-    const { isMailgunConfigured } = require('./utils/mailgun');
+    const { isResendConfigured } = require('./utils/resend');
     const HOUR = 60 * 60 * 1000;
 
-    if (!isMailgunConfigured()) {
-      console.warn('[Workflow] Mailgun not configured — automatic workflow emails are DISABLED until MAILGUN_API_KEY + MAILGUN_DOMAIN are set');
+    if (!isResendConfigured()) {
+      console.warn('[Workflow] Resend not configured — automatic workflow emails are DISABLED until RESEND_API_KEY is set');
     } else {
-      console.log('[Workflow] Mailgun ready — assignment, TAT, escalation, and Org Head emails will send automatically');
+      console.log('[Workflow] Resend ready — assignment, TAT, escalation, and Org Head emails will send automatically');
     }
 
     // First TAT sweep shortly after boot (don't wait a full hour)

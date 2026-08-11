@@ -23,7 +23,7 @@ for a reliable setup if you follow this checklist.
 setx BACKUP_ENCRYPTION_KEY "replace-with-a-long-random-secret-at-least-32-chars"
 ```
 
-3. Optional alert recipient (uses Mailgun):
+3. Optional alert recipient (uses Resend):
 
 ```bat
 setx BACKUP_ALERT_TO "admin@yourdomain.com"
@@ -63,7 +63,7 @@ Env knobs:
 |----------|---------|---------|
 | `BACKUP_DIR` | `backend/backups` | Local archive directory |
 | `BACKUP_RETENTION_DAYS` | `30` | Auto-delete older local `.dump.enc` |
-| `BACKUP_ALERT_TO` | unset | Mailgun failure alert recipient |
+| `BACKUP_ALERT_TO` | unset | Resend failure alert recipient |
 | `BACKUP_ENCRYPTION_KEY` | required | AES-256-GCM key material |
 
 ## Restore test (monthly)

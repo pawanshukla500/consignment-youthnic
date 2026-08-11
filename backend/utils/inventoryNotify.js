@@ -4,7 +4,7 @@
 
 const { generateId, addAuditLog } = require('./helpers');
 const { getPool, pgEnabled } = require('../config/database');
-const { isMailgunConfigured, sendViaMailgun } = require('./mailgun');
+const { isResendConfigured, sendViaResend } = require('./resend');
 const { getInventorySettings, saveInventorySettings, resolveOrganisationHeadCcEmails } = require('./inventorySettings');
 const { buildInventoryPlanningReport } = require('./inventoryReportBuilder');
 const { buildInventoryPlanningWorkbook } = require('./inventoryPlanningExcel');
@@ -143,8 +143,8 @@ async function sendInventoryPlanningNotification({
   if (!to.length) {
     return { ok: false, reason: 'no_recipients' };
   }
-  if (!isMailgunConfigured()) {
-    return { ok: false, reason: 'mailgun_not_configured' };
+  if (!isResendConfigured()) {
+    return { ok: false, reason: 'resend_not_configured' };
   }
 
   const report = existingReport || await buildInventoryPlanningReport({
@@ -225,7 +225,7 @@ async function sendInventoryPlanningNotification({
 
   const historyId = generateId();
   try {
-    await sendViaMailgun({
+    await sendViaResend({
       to,
       cc,
       subject,
@@ -278,7 +278,7 @@ async function sendInventoryPlanningNotification({
     // One extra retry after short delay for transient failures
     try {
       await new Promise((r) => setTimeout(r, 1500));
-      await sendViaMailgun({
+      await sendViaResend({
         to,
         cc,
         subject,

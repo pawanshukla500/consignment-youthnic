@@ -1,6 +1,6 @@
 /**
- * Email routes — powered by Mailgun
- * Configure MAILGUN_API_KEY, MAILGUN_DOMAIN, MAIL_FROM_EMAIL, MAIL_FROM_NAME
+ * Email routes — powered by Resend
+ * Configure RESEND_API_KEY, MAIL_FROM_EMAIL, MAIL_FROM_NAME, MAIL_USER_DOMAIN
  *
  * Security: never email plaintext passwords. Welcome/invite mails use a
  * Firebase password-setup link instead.
@@ -9,8 +9,9 @@ const express = require('express');
 const router = express.Router();
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { requireAnyPermission } = require('../utils/permissions');
-const { addAuditLog } = require('../utils/helpers');
-const { sendViaMailgun, isMailgunConfigured, DOMAIN, FROM_EMAIL } = require('../utils/mailgun');
+const { addAuditLog, firestoreHelpers } = require('../utils/helpers');
+const { sendViaResend, isResendConfigured, USER_DOMAIN, FROM_EMAIL } = require('../utils/resend');
+const { buildWorkflowEmail } = require('../utils/emailTemplates');
 const { sendPasswordResetEmail } = require('../utils/passwordReset');
 const { normalizeEmail } = require('../utils/defaultAdmin');
 
@@ -27,7 +28,7 @@ function nameToEmail(name) {
   if (!name) return null;
   const first = name.trim().split(/\s+/)[0].toLowerCase().replace(/[^a-z0-9]/g, '');
   if (!first) return null;
-  return `${first}@${DOMAIN()}`;
+  return `${first}@${USER_DOMAIN()}`;
 }
 
 function escapeHtml(value) {
@@ -121,11 +122,11 @@ router.post('/send', authenticateToken, requireRole('admin'), async (req, res) =
     if (!isValidEmail(to)) {
       return res.status(400).json({ error: 'A valid recipient email is required.' });
     }
-    if (!isMailgunConfigured()) {
+    if (!isResendConfigured()) {
       return res.status(503).json({ error: 'Email is not configured on the server.' });
     }
 
-    await sendViaMailgun({
+    await sendViaResend({
       to,
       toName: toName || to,
       subject,
@@ -161,7 +162,7 @@ router.post('/welcome', authenticateToken, requireRole('admin'), async (req, res
     if (!isValidEmail(normalized)) {
       return res.status(400).json({ error: 'A valid email is required.' });
     }
-    if (!isMailgunConfigured()) {
+    if (!isResendConfigured()) {
       return res.json({ ok: false, reason: 'Email not configured' });
     }
 
@@ -185,7 +186,7 @@ router.post('/welcome', authenticateToken, requireRole('admin'), async (req, res
       role: role || 'user',
       setupUrl: link,
     });
-    await sendViaMailgun({
+    await sendViaResend({
       to: normalized,
       toName: name,
       subject: 'Welcome to Consignment App — Set your password',
@@ -204,7 +205,7 @@ router.post('/welcome', authenticateToken, requireRole('admin'), async (req, res
 router.post('/notify-consignment', authenticateToken, requireAnyPermission(['consignments', 'packing'], 'send consignment notifications'), async (req, res) => {
   try {
     const { consignmentId, internalShipmentNo, event, recipientName } = req.body;
-    if (!isMailgunConfigured()) return res.json({ ok: false, reason: 'Email not configured' });
+    if (!isResendConfigured()) return res.json({ ok: false, reason: 'Email not configured' });
 
     const senderName = recipientName || req.user.name || req.user.email;
     const toEmail = nameToEmail(senderName);
@@ -215,13 +216,30 @@ router.post('/notify-consignment', authenticateToken, requireAnyPermission(['con
       consignment_finished: 'Consignment Completed',
       consignment_created: 'Consignment Created',
     };
-    const label = labels[event] || escapeHtml(event || 'Update');
-    const subject = `[Youthnic] ${label}: ${escapeHtml(internalShipmentNo || consignmentId || '')}`;
-    const html = `<p><strong>${label}</strong></p>
-      <p>Consignment: ${escapeHtml(internalShipmentNo || consignmentId || 'n/a')}</p>
-      <p>By: ${escapeHtml(req.user.name || req.user.email)}</p>`;
+    const label = labels[event] || String(event || 'Update').replace(/_/g, ' ');
+    const actorName = req.user.name || req.user.email;
 
-    await sendViaMailgun({ to: toEmail, toName: senderName, subject, html });
+    let consignment = null;
+    if (consignmentId) {
+      try {
+        consignment = await firestoreHelpers.getDocument('consignments', consignmentId);
+      } catch (_) {
+        consignment = null;
+      }
+    }
+    const cidLabel = (consignment && (consignment.internalShipmentNo || consignment.id))
+      || internalShipmentNo || consignmentId || 'n/a';
+
+    const { subject, html, text } = buildWorkflowEmail({
+      title: label,
+      headline: label,
+      intro: `${escapeHtml(actorName)} just completed <strong>${escapeHtml(label)}</strong> on consignment <strong>${escapeHtml(cidLabel)}</strong>.`,
+      consignment: consignment || { id: consignmentId, internalShipmentNo },
+      stageLabel: label,
+      accent: '#0f172a',
+    });
+
+    await sendViaResend({ to: toEmail, subject, html, text, tags: ['consignment-notify', event || 'update'] });
     await addAuditLog('consignment_email', 'consignment', consignmentId || 'unknown', req.user.id, { event, toEmail });
     res.json({ ok: true, to: toEmail });
   } catch (err) {

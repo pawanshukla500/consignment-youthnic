@@ -43,14 +43,13 @@
     "express-validator": "^7.0.1",
     "fast-csv": "^5.0.0",
     "firebase-admin": "^13.10.0",
-    "form-data": "^4.0.6",
     "googleapis": "^173.0.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
-    "mailgun.js": "^13.2.0",
     "moment": "^2.29.4",
     "multer": "^2.2.0",
     "pg": "^8.11.3",
+    "resend": "^6.19.0",
     "uuid": "11.1.1"
   },
   "devDependencies": {

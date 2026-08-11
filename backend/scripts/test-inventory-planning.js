@@ -435,7 +435,7 @@ const {
   assert.ok(!text.includes('SKD21-KAASHI-WINE_L'), 'SKU codes must not appear in text body');
   assert.ok(html.includes('1217') && html.includes('18'), 'summary counts remain in body');
   const { getLogoFilePath } = require('../utils/emailTemplates');
-  assert.ok(getLogoFilePath(), 'email logo PNG must exist for Mailgun CID inline');
+  assert.ok(getLogoFilePath(), 'email logo PNG must exist for Resend CID inline');
 }
 
 console.log('Inventory planning tests passed.');

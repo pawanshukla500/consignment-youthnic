@@ -7,7 +7,7 @@ const { authenticateToken, requireRole } = require('../middleware/auth');
 const { requirePermission, requireAnyPermission } = require('../utils/permissions');
 const { firestoreHelpers, now, addAuditLog } = require('../utils/helpers');
 const { emitConsignmentChange } = require('../utils/syncBus');
-const { sendViaMailgun, isMailgunConfigured } = require('../utils/mailgun');
+const { sendViaResend, isResendConfigured } = require('../utils/resend');
 const {
   buildWorkflowEmail,
   buildWeeklyReportEmail,
@@ -117,15 +117,15 @@ async function listManagementEmails() {
 }
 
 async function notifyUser({ to, subject, html, text, tags = ['workflow'] }) {
-  if (!isMailgunConfigured()) {
-    console.warn(`[WorkflowEmail] Skipped (Mailgun not configured): ${subject} → ${to}`);
-    return { ok: false, reason: 'Mailgun not configured' };
+  if (!isResendConfigured()) {
+    console.warn(`[WorkflowEmail] Skipped (Resend not configured): ${subject} → ${to}`);
+    return { ok: false, reason: 'Resend not configured' };
   }
   if (!to) {
     return { ok: false, reason: 'No recipient' };
   }
   try {
-    await sendViaMailgun({ to, subject, html, text, tags });
+    await sendViaResend({ to, subject, html, text, tags });
     return { ok: true };
   } catch (error) {
     console.error('[WorkflowEmail] FAILED', subject, to, error.message);
@@ -411,8 +411,8 @@ router.post('/org-head/send-weekly-report', authenticateToken, requireRole('admi
 });
 
 async function sendWeeklyOrgHeadReport(extraEmails = [], { force = false } = {}) {
-  if (!isMailgunConfigured()) {
-    return { ok: false, reason: 'Mailgun not configured' };
+  if (!isResendConfigured()) {
+    return { ok: false, reason: 'Resend not configured' };
   }
 
   const d = new Date();
@@ -450,9 +450,9 @@ async function sendWeeklyOrgHeadReport(extraEmails = [], { force = false } = {})
 
 /** Scan TAT breaches → remind assignee + escalate to org heads/admins */
 async function processTatRemindersAndEscalations() {
-  if (!isMailgunConfigured()) {
-    console.warn('[Workflow] TAT check skipped — Mailgun not configured');
-    return { reminded: 0, escalated: 0, skipped: true, reason: 'Mailgun not configured' };
+  if (!isResendConfigured()) {
+    console.warn('[Workflow] TAT check skipped — Resend not configured');
+    return { reminded: 0, escalated: 0, skipped: true, reason: 'Resend not configured' };
   }
 
   const all = await firestoreHelpers.getCollection('consignments');

@@ -1165,9 +1165,25 @@ export default function PackingStation() {
     }
   };
 
+  /** Box-number field only accepts digits (1, 2, 3…) — strip anything else as it's typed/scanned. */
+  const handleBoxNumberInput = (e) => {
+    const raw = e.target.value;
+    const digitsOnly = raw.replace(/\D+/g, '');
+    if (digitsOnly !== raw) {
+      sfx.warn();
+      toast('Box number must be digits only (1, 2, 3…) — other characters were ignored', 'error', 3000);
+    }
+    e.target.value = digitsOnly;
+  };
+
   const doBox = async () => {
     const v = inBoxRef.current?.value.trim();
     if (!v) { toast('Enter box no', 'warning'); return; }
+    if (!/^\d+$/.test(v)) {
+      sfx.warn();
+      toast('Box number must contain digits only (e.g. 1, 2, 3)', 'error', 3500);
+      return;
+    }
 
     if (S.box && S.box !== v) await autoSaveCurrentBox();
 
@@ -2379,7 +2395,16 @@ export default function PackingStation() {
               <div className={`text-xs font-semibold ${zone===2?'text-emerald-600':'text-slate-500'}`}>Enter Box Number</div>
             </div>
             <div className="flex gap-2">
-              <input ref={inBoxRef} placeholder="Box no..." className="flex-1 px-2.5 py-2 border rounded-lg outline-none transition-all text-xs bg-slate-50 border-slate-200 text-slate-900 font-mono focus:ring-2 focus:ring-primary-500" onKeyDown={e => e.key==='Enter'&&doBox()} />
+              <input
+                ref={inBoxRef}
+                placeholder="Box no... (numbers only)"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="off"
+                className="flex-1 px-2.5 py-2 border rounded-lg outline-none transition-all text-xs bg-slate-50 border-slate-200 text-slate-900 font-mono focus:ring-2 focus:ring-primary-500"
+                onChange={handleBoxNumberInput}
+                onKeyDown={e => e.key==='Enter'&&doBox()}
+              />
               <button onClick={doBox} className="relative overflow-hidden px-4 py-2 rounded-lg text-xs font-semibold text-white cursor-pointer transition-all active:scale-[0.96] bg-emerald-500 hover:bg-emerald-600">Set</button>
             </div>
           </div>

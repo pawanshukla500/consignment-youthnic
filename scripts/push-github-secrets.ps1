@@ -33,8 +33,7 @@ $fe = Read-DotEnv (Join-Path $Root 'frontend\.env')
 $pairs = @(
   @{ Secret = 'JWT_SECRET'; Value = $be['JWT_SECRET'] }
   @{ Secret = 'DATABASE_URL'; Value = $be['DATABASE_URL'] }
-  @{ Secret = 'MAILGUN_API_KEY'; Value = $be['MAILGUN_API_KEY'] }
-  @{ Secret = 'MAILGUN_DOMAIN'; Value = $(if ($be['MAILGUN_DOMAIN']) { $be['MAILGUN_DOMAIN'] } else { 'youthnic.shop' }) }
+  @{ Secret = 'RESEND_API_KEY'; Value = $be['RESEND_API_KEY'] }
   @{ Secret = 'FIREBASE_SERVICE_ACCOUNT_JSON'; Value = $be['FIREBASE_SERVICE_ACCOUNT_JSON'] }
   @{ Secret = 'R2_ACCOUNT_ID'; Value = $be['R2_ACCOUNT_ID'] }
   @{ Secret = 'R2_ACCESS_KEY_ID'; Value = $be['R2_ACCESS_KEY_ID'] }

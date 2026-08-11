@@ -15,7 +15,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { Pool } = require('pg');
 const { resolveDatabaseUrl, validateDatabaseUrl, buildPoolConfig } = require('../utils/dbConnection');
-const { isMailgunConfigured, sendViaMailgun } = require('../utils/mailgun');
+const { isResendConfigured, sendViaResend } = require('../utils/resend');
 const { deriveBackupKey, encryptFile } = require('../utils/backupCrypto');
 
 function fail(message, code = 1) {
@@ -37,12 +37,12 @@ function pruneOldBackups(dir, retentionDays) {
 
 async function alertFailure(errorMessage) {
   const to = process.env.BACKUP_ALERT_TO;
-  if (!to || !isMailgunConfigured()) {
-    console.warn('[Backup] Failure alert skipped (BACKUP_ALERT_TO / Mailgun not configured).');
+  if (!to || !isResendConfigured()) {
+    console.warn('[Backup] Failure alert skipped (BACKUP_ALERT_TO / Resend not configured).');
     return;
   }
   try {
-    await sendViaMailgun({
+    await sendViaResend({
       to,
       subject: '[Youthnic] PostgreSQL backup FAILED',
       text: `Automated backup failed at ${new Date().toISOString()}.\n\n${errorMessage}\n`,

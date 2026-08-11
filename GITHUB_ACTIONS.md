@@ -112,8 +112,7 @@ Repository **Variables** (Settings → Secrets and variables → Actions → Var
 | `GCP_SA_KEY` | Full JSON key for the deploy service account |
 | `JWT_SECRET` | Strong random string (32+ chars) for app JWT signing |
 | `DATABASE_URL` | **Public** Postgres-compatible URL. Prefer Cockroach Cloud (`…cockroachlabs.cloud:26257/defaultdb?sslmode=verify-full`). LAN IPs crash Cloud Run with **503**. |
-| `MAILGUN_API_KEY` | Mailgun API key |
-| `MAILGUN_DOMAIN` | e.g. `youthnic.shop` |
+| `RESEND_API_KEY` | Resend API key |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Full Firebase Admin SDK JSON |
 | `VITE_FIREBASE_API_KEY` | Firebase web API key |
 | `VITE_FIREBASE_AUTH_DOMAIN` | e.g. `consignment-packing-app.firebaseapp.com` |
@@ -167,7 +166,7 @@ Deploy reads GitHub Actions secrets and sets them as **normal Cloud Run environm
 
 Values set on every deploy when present in GitHub Secrets:
 
-- `JWT_SECRET`, `MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, `DATABASE_URL`
+- `JWT_SECRET`, `RESEND_API_KEY`, `DATABASE_URL`
 - `SUPABASE_JWT_SECRET`, `FIREBASE_SERVICE_ACCOUNT_JSON`, `BOOTSTRAP_SECRET`
 - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `SHARE_LINK_SECRET`
 - `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` (Inventory Planning → Google Sheet AutoFetch)

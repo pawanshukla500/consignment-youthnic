@@ -490,9 +490,9 @@ export default function InventoryPlanning() {
                 {syncStatus.connection.googleSheetsConfigured && syncStatus.connection.googleSheetsJsonValid !== false
                   ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Google Sheets connected</span>
                   : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> Google Sheets not configured</span>}
-                {syncStatus.connection.mailgunConfigured
-                  ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Mailgun ready (auto email)</span>
-                  : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> Mailgun not configured</span>}
+                {syncStatus.connection.resendConfigured
+                  ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Resend ready (auto email)</span>
+                  : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="w-3.5 h-3.5" /> Resend not configured</span>}
                 <span className="text-slate-500">Inventory source: Google Sheet Column C (Inventory)</span>
               </div>
             )}

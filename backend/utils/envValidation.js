@@ -3,7 +3,7 @@
  * Fail closed in production when required secrets are missing.
  */
 
-const { isMailgunConfigured } = require('./mailgun');
+const { isResendConfigured } = require('./resend');
 
 function isProduction() {
   return process.env.NODE_ENV === 'production';
@@ -44,17 +44,17 @@ function validateAdminBootstrapConfig({ firebaseAdminExists = null } = {}) {
 }
 
 /**
- * Mailgun is required for branded password-reset / invite emails.
+ * Resend is required for branded password-reset / invite emails.
  * Missing config is a warning in development and a hard error in production
  * unless EMAIL_OPTIONAL=true (explicit opt-out).
  */
-function validateMailgunConfig() {
+function validateResendConfig() {
   const warnings = [];
   const errors = [];
-  const configured = isMailgunConfigured();
+  const configured = isResendConfigured();
 
   if (!configured) {
-    const msg = 'MAILGUN_API_KEY / MAILGUN_DOMAIN are not configured — password reset and invite emails will fail.';
+    const msg = 'RESEND_API_KEY is not configured — password reset and invite emails will fail.';
     if (isProduction() && process.env.EMAIL_OPTIONAL !== 'true') {
       errors.push(msg);
     } else {
@@ -70,7 +70,7 @@ function assertEnvAtModuleLoad() {
 }
 
 function logStartupEmailStatus() {
-  const result = validateMailgunConfig();
+  const result = validateResendConfig();
   for (const warning of result.warnings) {
     console.warn(`[Email] ${warning}`);
   }
@@ -78,10 +78,10 @@ function logStartupEmailStatus() {
     console.error(`[Email] ${error}`);
   }
   if (result.configured) {
-    console.log('[Email] Mailgun configured');
+    console.log('[Email] Resend configured');
   }
   if (!result.ok && isProduction()) {
-    throw new Error(result.errors[0] || 'Mailgun configuration invalid.');
+    throw new Error(result.errors[0] || 'Resend configuration invalid.');
   }
   return result;
 }
@@ -90,7 +90,7 @@ module.exports = {
   isProduction,
   requireJwtSecret,
   validateAdminBootstrapConfig,
-  validateMailgunConfig,
+  validateResendConfig,
   assertEnvAtModuleLoad,
   logStartupEmailStatus,
 };
