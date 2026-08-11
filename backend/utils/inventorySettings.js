@@ -238,9 +238,9 @@ function getConnectionStatus() {
   } = require('./googleSheetsInventory');
   const creds = getSheetsCredentialStatus();
 
-  let mailgunConfigured = false;
+  let resendConfigured = false;
   try {
-    mailgunConfigured = require('./mailgun').isMailgunConfigured();
+    resendConfigured = require('./resend').isResendConfigured();
   } catch (_) { /* ignore */ }
 
   return {
@@ -252,7 +252,7 @@ function getConnectionStatus() {
     googleApplicationCredentialsSet: creds.hasAdcPath,
     sheetIdFromEnv: process.env.INVENTORY_GOOGLE_SHEET_ID || null,
     inventorySource: 'google_sheet_column_c',
-    mailgunConfigured,
+    resendConfigured,
     parseError: creds.parseError || null,
     hint: creds.hint,
   };

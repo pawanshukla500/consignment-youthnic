@@ -28,7 +28,7 @@
 - **Primary store:** `documents(collection, id, data JSONB)` via `pgHelpers`
 - **Normalized tables:** Trigger mirrors for Realtime (INSERT/UPDATE + DELETE after H5)
 - **Auth credentials:** Firebase Authentication only
-- **Email:** Mailgun
+- **Email:** Resend
 - **Sync:** Supabase Realtime → SSE (LISTEN/NOTIFY) → polling
 
 ## Migrations added

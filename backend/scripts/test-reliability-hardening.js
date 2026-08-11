@@ -13,7 +13,7 @@ const {
   buildPoolConfig,
 } = require('../utils/dbConnection');
 const {
-  validateMailgunConfig,
+  validateResendConfig,
 } = require('../utils/envValidation');
 const emailRoute = require('../routes/email');
 const { deriveBackupKey, encryptBuffer, decryptBuffer } = require('../utils/backupCrypto');
@@ -70,47 +70,43 @@ assert.ok(serverSrc.includes("'/api/email'"), 'emailLimiter must cover /api/emai
 assert.ok(serverSrc.includes('send-password-link'), 'emailLimiter must cover send-password-link');
 
 const deploySrc = fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'deploy.yml'), 'utf8');
-assert.ok(deploySrc.includes('MAILGUN_API_KEY'), 'deploy must provision Mailgun');
-assert.ok(!deploySrc.includes('RESEND_API_KEY'), 'deploy must not reference Resend');
+assert.ok(deploySrc.includes('RESEND_API_KEY'), 'deploy must provision Resend');
+assert.ok(!deploySrc.includes('MAILGUN_API_KEY'), 'deploy must not reference Mailgun');
 assert.ok(!deploySrc.includes('sync-secrets-to-gcp.sh'), 'deploy must not sync to GCP Secret Manager');
 assert.ok(deploySrc.includes('gcloud-deploy.sh'), 'deploy must use gcloud-deploy.sh');
 
 const deployScriptSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'gcloud-deploy.sh'), 'utf8');
-assert.ok(deployScriptSrc.includes('MAILGUN_API_KEY'), 'gcloud-deploy must set MAILGUN_API_KEY as env');
+assert.ok(deployScriptSrc.includes('RESEND_API_KEY'), 'gcloud-deploy must set RESEND_API_KEY as env');
 assert.ok(deployScriptSrc.includes('TASKFLOW_SERVICE_ROLE_KEY'), 'gcloud-deploy must pass TaskFlow service role when set');
 assert.ok(deployScriptSrc.includes('--env-vars-file'), 'gcloud-deploy must use Cloud Run env vars file');
 assert.ok(deployScriptSrc.includes('--clear-secrets'), 'gcloud-deploy must clear legacy Secret Manager mounts');
-assert.ok(!deployScriptSrc.includes('RESEND_API_KEY'), 'gcloud-deploy must not reference Resend');
+assert.ok(!deployScriptSrc.includes('MAILGUN_API_KEY'), 'gcloud-deploy must not reference Mailgun');
 
 const syncSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'sync-secrets-to-gcp.sh'), 'utf8');
 assert.ok(syncSrc.includes('DEPRECATED'), 'sync-secrets-to-gcp.sh must be marked deprecated');
-assert.ok(!/sync_secret\s+"MAILGUN_API_KEY"/.test(syncSrc), 'deprecated sync script must not actively sync Mailgun');
-assert.ok(!syncSrc.includes('RESEND_API_KEY'));
+assert.ok(!/sync_secret\s+"RESEND_API_KEY"/.test(syncSrc), 'deprecated sync script must not actively sync Resend');
+assert.ok(!syncSrc.includes('MAILGUN_API_KEY'));
 
 const key = deriveBackupKey('x'.repeat(32));
 const roundTrip = decryptBuffer(encryptBuffer(Buffer.from('youthnic-backup-ok'), key), key).toString('utf8');
 assert.strictEqual(roundTrip, 'youthnic-backup-ok');
 
-const prevMailKey = process.env.MAILGUN_API_KEY;
-const prevMailDomain = process.env.MAILGUN_DOMAIN;
+const prevResendKey = process.env.RESEND_API_KEY;
 const prevEmailOptional = process.env.EMAIL_OPTIONAL;
 try {
-  delete process.env.MAILGUN_API_KEY;
-  delete process.env.MAILGUN_DOMAIN;
+  delete process.env.RESEND_API_KEY;
   delete process.env.EMAIL_OPTIONAL;
   process.env.NODE_ENV = 'development';
-  const dev = validateMailgunConfig();
+  const dev = validateResendConfig();
   assert.strictEqual(dev.ok, true);
   assert.ok(dev.warnings.length >= 1);
 
   process.env.NODE_ENV = 'production';
-  const prod = validateMailgunConfig();
+  const prod = validateResendConfig();
   assert.strictEqual(prod.ok, false);
 } finally {
-  if (prevMailKey === undefined) delete process.env.MAILGUN_API_KEY;
-  else process.env.MAILGUN_API_KEY = prevMailKey;
-  if (prevMailDomain === undefined) delete process.env.MAILGUN_DOMAIN;
-  else process.env.MAILGUN_DOMAIN = prevMailDomain;
+  if (prevResendKey === undefined) delete process.env.RESEND_API_KEY;
+  else process.env.RESEND_API_KEY = prevResendKey;
   if (prevEmailOptional === undefined) delete process.env.EMAIL_OPTIONAL;
   else process.env.EMAIL_OPTIONAL = prevEmailOptional;
   if (prevNode === undefined) delete process.env.NODE_ENV;

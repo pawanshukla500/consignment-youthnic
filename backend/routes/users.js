@@ -325,7 +325,7 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
       if (inviteSent) {
         console.log(`[SecureAccess] Invite email sent for ${normalizedEmail}`);
       } else {
-        console.warn(`[SecureAccess] Invite email not sent for ${normalizedEmail} (Mailgun/Firebase unavailable)`);
+        console.warn(`[SecureAccess] Invite email not sent for ${normalizedEmail} (Resend/Firebase unavailable)`);
       }
     } catch (e) {
       console.warn('[Users] Invite email failed:', e.message);

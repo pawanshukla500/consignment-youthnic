@@ -1100,8 +1100,8 @@ router.post('/quantity-removal/:id/complete', authenticateToken, async (req, res
     // Best-effort invoice team notification when invoice already exists
     if (result.invoiceWarning) {
       try {
-        const { isMailgunConfigured, sendViaMailgun } = require('../utils/mailgun');
-        if (isMailgunConfigured()) {
+        const { isResendConfigured, sendViaResend } = require('../utils/resend');
+        if (isResendConfigured()) {
           const users = await firestoreHelpers.getCollection('users').catch(() => []);
           const recipients = (users || [])
             .filter((u) => {
@@ -1124,7 +1124,7 @@ router.post('/quantity-removal/:id/complete', authenticateToken, async (req, res
               `By: ${result.adjustment.removedByName || req.user.name || req.user.email}`,
               'Dispatch is blocked until invoice quantity matches final packed quantity (or an authorized exception is approved).',
             ].join('\n');
-            await sendViaMailgun({
+            await sendViaResend({
               to: unique,
               subject,
               text,

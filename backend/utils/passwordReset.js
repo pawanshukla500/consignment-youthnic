@@ -1,9 +1,9 @@
 /**
- * Password reset — Firebase link generation + branded Mailgun email
+ * Password reset — Firebase link generation + branded Resend email
  */
 const { admin, firebaseInitialized } = require('../config/firebase');
 const { buildPasswordResetEmail, buildAppPasswordResetUrl } = require('./emailTemplates');
-const { sendViaMailgun, isMailgunConfigured, FROM_EMAIL } = require('./mailgun');
+const { sendViaResend, isResendConfigured, FROM_EMAIL } = require('./resend');
 const { normalizeEmail } = require('./defaultAdmin');
 const { firestoreHelpers } = require('./helpers');
 
@@ -100,13 +100,13 @@ async function sendPasswordResetEmail(email, appOrigin) {
     fromEmail: FROM_EMAIL(),
   });
 
-  if (!isMailgunConfigured()) {
-    console.warn(`[Auth] MAILGUN_API_KEY not set — password reset link for ${normalized}:`);
+  if (!isResendConfigured()) {
+    console.warn(`[Auth] RESEND_API_KEY not set — password reset link for ${normalized}:`);
     console.warn(resetUrl);
     return { sent: false, resetUrl, reason: 'email_not_configured' };
   }
 
-  await sendViaMailgun({ to: normalized, subject, html, text });
+  await sendViaResend({ to: normalized, subject, html, text });
   console.log(`[Auth] Branded password reset email sent to ${normalized}`);
   return { sent: true, resetUrl };
 }

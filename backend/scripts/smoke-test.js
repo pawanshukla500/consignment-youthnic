@@ -113,12 +113,12 @@ async function testInfrastructure() {
     results.push({ service: 'Cloudflare R2', ok: false, detail: e.message });
   }
 
-  // Mailgun
-  const mailgunKey = process.env.MAILGUN_API_KEY || '';
+  // Resend
+  const resendKey = process.env.RESEND_API_KEY || '';
   results.push({
-    service: 'Mailgun Email',
-    ok: mailgunKey && !mailgunKey.includes('your-mailgun'),
-    detail: mailgunKey && !mailgunKey.includes('your-mailgun') ? 'API key set' : 'placeholder key - emails disabled',
+    service: 'Resend Email',
+    ok: resendKey && !resendKey.includes('your-resend'),
+    detail: resendKey && !resendKey.includes('your-resend') ? 'API key set' : 'placeholder key - emails disabled',
   });
 
   return results;

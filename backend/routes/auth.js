@@ -9,7 +9,7 @@ const pgHelpers = require('../utils/pgHelpers');
 const { DEFAULT_PERMISSIONS, loadDefaultAdminForSession, normalizeEmail } = require('../utils/defaultAdmin');
 const { admin, firebaseInitialized, getFirebaseStatus } = require('../config/firebase');
 const { sendPasswordResetEmail } = require('../utils/passwordReset');
-const { isMailgunConfigured } = require('../utils/mailgun');
+const { isResendConfigured } = require('../utils/resend');
 const { syncDefaultAdminToFirebase } = require('../utils/adminBootstrap');
 const { sanitizeUserForApi } = require('../utils/sanitizeUser');
 const { requestUserHasAnyPermission, normalizePermissions } = require('../utils/permissions');
@@ -173,7 +173,7 @@ router.get('/status', async (req, res) => {
     secureSignInConfigured: Boolean(fbStatus.initialized && fbStatus.authAvailable),
     adminInFirebase,
     passwordSource: 'firebase_auth',
-    emailConfigured: isMailgunConfigured(),
+    emailConfigured: isResendConfigured(),
     supportedProviders: ['password', 'google.com', 'microsoft.com'],
     hints: [
       !fbStatus.initialized
@@ -386,7 +386,7 @@ router.post('/logout', authenticateToken, async (req, res) => {
 
 /**
  * POST /api/auth/forgot-password
- * Public. Sends branded password reset email via Mailgun (Firebase generates the link).
+ * Public. Sends branded password reset email via Resend (Firebase generates the link).
  * Body: { email }
  */
 router.post('/forgot-password', async (req, res) => {
@@ -419,8 +419,8 @@ router.post('/forgot-password', async (req, res) => {
       return res.status(503).json({
         ok: false,
         sent: false,
-        emailConfigured: isMailgunConfigured(),
-        error: isMailgunConfigured()
+        emailConfigured: isResendConfigured(),
+        error: isResendConfigured()
           ? 'Password reset email could not be sent. Please try again shortly.'
           : 'Password reset email is not configured. Contact your administrator.',
         ...(process.env.NODE_ENV === 'development' && result.resetUrl ? { devResetUrl: result.resetUrl } : {}),
@@ -462,7 +462,7 @@ router.post('/send-password-link', authenticateToken, requireRole('admin'), asyn
     res.json({
       ok: true,
       sent: result.sent,
-      emailConfigured: isMailgunConfigured(),
+      emailConfigured: isResendConfigured(),
       ...(process.env.NODE_ENV === 'development' && result.resetUrl && !result.sent ? { devResetUrl: result.resetUrl } : {}),
     });
   } catch (error) {

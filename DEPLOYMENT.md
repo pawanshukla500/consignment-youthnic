@@ -63,7 +63,7 @@ gcloud services enable secretmanager.googleapis.com
 
 Do **not** use GCP Secret Manager for this app (extra cost). Keep values in **GitHub Actions Secrets**, and the deploy workflow writes them as normal Cloud Run environment variables.
 
-Required GitHub Secrets include: `JWT_SECRET`, `DATABASE_URL`, `MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, `FIREBASE_SERVICE_ACCOUNT_JSON`, R2 keys, etc. See `GITHUB_ACTIONS.md`.
+Required GitHub Secrets include: `JWT_SECRET`, `DATABASE_URL`, `RESEND_API_KEY`, `FIREBASE_SERVICE_ACCOUNT_JSON`, R2 keys, etc. See `GITHUB_ACTIONS.md`.
 
 Manual one-off (optional):
 
@@ -272,7 +272,7 @@ Connect your GitHub repo to Cloud Build for automatic deployments on push:
 | `R2_SECRET_ACCESS_KEY` | R2 S3 secret | Secret Manager |
 | `R2_BUCKET` | `consigmentapp` | Cloud Run env var |
 | `JWT_SECRET` | (strong random string) | Secret Manager |
-| `MAILERSEND_API_KEY` | (your API key) | Secret Manager |
+| `RESEND_API_KEY` | (your API key) | Cloud Run env var (GitHub Secret) |
 | `MAIL_FROM_EMAIL` | `consignment@youthnic.shop` | Cloud Run env var |
 | `APP_URL` | `https://consignment.youthnic.shop` | Cloud Run env var |
 | `ALLOWED_ORIGINS` | not needed (same-origin) | — |
@@ -290,7 +290,7 @@ Connect your GitHub repo to Cloud Build for automatic deployments on push:
 - [ ] Firebase Auth enabled (Storage not required for app media)
 - [ ] R2 bucket `consigmentapp` created; API token + CORS configured (Step 7)
 - [ ] JWT_SECRET stored in Secret Manager
-- [ ] MAILERSEND_API_KEY / Mailgun secrets stored in Secret Manager
+- [ ] RESEND_API_KEY stored as a GitHub Actions secret
 - [ ] Cloud Run service account has IAM roles (Step 3)
 - [ ] Domain `consignment.youthnic.shop` DNS configured
 - [ ] Firebase Authorized Domains includes `consignment.youthnic.shop`

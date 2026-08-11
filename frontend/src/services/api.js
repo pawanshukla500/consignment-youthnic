@@ -202,7 +202,7 @@ export const settingsAPI = {
   getLiveLogs: () => api.get('/settings/live-logs')
 };
 
-// Email API (Mailgun — all from consignment@youthnic.shop)
+// Email API (Resend — all from consignment@youthnic.shop)
 export const emailAPI = {
   send:               (data) => api.post('/email/send', data),
   sendWelcome:        (data) => api.post('/email/welcome', data),
