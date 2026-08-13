@@ -246,4 +246,5 @@ async function saveBoxWithPostgresTransaction({
 
 module.exports = {
   saveBoxWithPostgresTransaction,
+  upsertDocument,
 };

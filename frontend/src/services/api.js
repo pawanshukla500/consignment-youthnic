@@ -85,6 +85,7 @@ export const consignmentsAPI = {
   },
   getInwardUploads: (id) => api.get(`/consignments/${id}/inward/uploads`),
   editBoxQuantity: (id, boxNo, data) => api.post(`/consignments/${id}/boxes/${encodeURIComponent(boxNo)}/edit-quantity`, data),
+  renameBox: (id, boxNo, data) => api.post(`/consignments/${id}/boxes/${encodeURIComponent(boxNo)}/rename`, data),
 };
 
 export const workflowAPI = {

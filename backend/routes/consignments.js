@@ -52,6 +52,7 @@ const {
   summarizeBoxHistory,
   enrichSkusWithAdjustments,
   applyBoxQuantityEdit,
+  renameBoxNo,
   recomputePackedFromBoxes,
 } = require('../utils/packingAdjustments');
 
@@ -1146,6 +1147,43 @@ router.post('/:id/boxes/:boxNo/edit-quantity', authenticateToken, requirePermiss
       ...result,
       history: summarizeBoxHistory(result.box, adjustments),
     });
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+// Correct a mis-scanned box number (e.g. a SKU barcode landed in the box-no
+// field instead of a plain digit like "4"). Items, weight, video, and history
+// all move to the corrected number — reuses the editBoxQuantities permission
+// since this is the same "authorized correction to packed data" trust tier.
+router.post('/:id/boxes/:boxNo/rename', authenticateToken, requirePermission('editBoxQuantities', 'rename box numbers'), async (req, res) => {
+  try {
+    const { id, boxNo } = req.params;
+    const { new_box_no: newBoxNo, reason, remarks } = req.body || {};
+
+    const result = await renameBoxNo({
+      consignmentId: id,
+      oldBoxNo: boxNo,
+      newBoxNo,
+      reason,
+      remarks,
+      user: req.user,
+    });
+
+    // Invalidate packing draft/session so a resumed session doesn't reopen the old box number
+    try {
+      const { clearDraft } = require('../utils/packingDraft');
+      const packingRouter = require('./packing');
+      await clearDraft(id);
+      if (typeof packingRouter.clearPackingSession === 'function') {
+        packingRouter.clearPackingSession(id);
+      }
+    } catch (invalidateErr) {
+      console.warn('[rename-box] session invalidate failed:', invalidateErr.message);
+    }
+
+    // renameBoxNo() already writes the box_renumbered audit log entry.
+    res.json(result);
   } catch (error) {
     sendError(res, error);
   }

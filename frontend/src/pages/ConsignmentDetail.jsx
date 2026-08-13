@@ -3,7 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router';
 import {
   ArrowLeft, Package, Box, Video, FileText, Upload, AlertCircle,
   Trash2, Download, Loader2, FileSpreadsheet, CheckCircle2,
-  Copy, ExternalLink, Tag, ChevronDown, ChevronUp, Database, Scale, AlertTriangle, History
+  Copy, ExternalLink, Tag, ChevronDown, ChevronUp, Database, Scale, AlertTriangle, History, Pencil
 } from 'lucide-react';
 import ConfirmModal from '../components/ConfirmModal';
 import { printShipmentBoxLabel, printAllShipmentBoxLabels } from '../utils/shipmentLabel';
@@ -28,6 +28,7 @@ const PACKING_LIVE_TYPES = new Set([
   'packing_drafts',
   'quantity_removal',
   'box_quantity_edit',
+  'box_renumbered',
   'inward_import',
   'skus',
   'boxes',
@@ -414,6 +415,8 @@ const ConsignmentDetail = () => {
   const inwardFileRef = useRef(null);
   const [boxEdit, setBoxEdit] = useState(null); // { boxNo, skuId, qty, reason, remarks }
   const [boxEditSaving, setBoxEditSaving] = useState(false);
+  const [boxRename, setBoxRename] = useState(null); // { boxNo, newBoxNo, reason, remarks }
+  const [boxRenameSaving, setBoxRenameSaving] = useState(false);
   const liveRefreshRef = useRef(null);
 
   const openTrackingEdit = () => {
@@ -618,6 +621,34 @@ const ConsignmentDetail = () => {
       addToast(error.response?.data?.error || 'Quantity edit failed', 'error');
     } finally {
       setBoxEditSaving(false);
+    }
+  };
+
+  const saveBoxRename = async () => {
+    if (!boxRename?.boxNo) return;
+    const newBoxNo = String(boxRename.newBoxNo || '').trim();
+    if (!/^\d+$/.test(newBoxNo)) {
+      addToast('New box number must contain digits only (e.g. 4)', 'error');
+      return;
+    }
+    setBoxRenameSaving(true);
+    try {
+      const { data } = await consignmentsAPI.renameBox(id, boxRename.boxNo, {
+        new_box_no: newBoxNo,
+        reason: boxRename.reason,
+        remarks: boxRename.remarks || '',
+      });
+      const parts = [`Box ${data.oldBoxNo} renamed to Box ${data.newBoxNo}`];
+      if (data.videosUpdated) parts.push(`${data.videosUpdated} video${data.videosUpdated === 1 ? '' : 's'}`);
+      if (data.scanEventsUpdated) parts.push(`${data.scanEventsUpdated} scan${data.scanEventsUpdated === 1 ? '' : 's'}`);
+      if (data.adjustmentsUpdated) parts.push(`${data.adjustmentsUpdated} history entr${data.adjustmentsUpdated === 1 ? 'y' : 'ies'}`);
+      addToast(parts.join(' · '), 'success', 5000);
+      setBoxRename(null);
+      await fetchConsignment({ silent: true });
+    } catch (error) {
+      addToast(error.response?.data?.error || 'Box rename failed', 'error');
+    } finally {
+      setBoxRenameSaving(false);
     }
   };
 
@@ -1595,7 +1626,21 @@ const ConsignmentDetail = () => {
                           .sort((a, b) => String(a.boxNo).localeCompare(String(b.boxNo), undefined, { numeric: true }))
                           .map((box) => (
                             <tr key={box.id} className="hover:bg-slate-100/50">
-                              <td className="py-2 px-3 font-semibold text-slate-700">Box #{box.boxNo}</td>
+                              <td className="py-2 px-3 font-semibold text-slate-700">
+                                <span className="inline-flex items-center gap-1.5">
+                                  Box #{box.boxNo}
+                                  {canEditBoxQuantities && (
+                                    <button
+                                      type="button"
+                                      title="Correct a mis-scanned box number"
+                                      onClick={() => setBoxRename({ boxNo: box.boxNo, newBoxNo: '', reason: '', remarks: '' })}
+                                      className="text-slate-400 hover:text-primary-600 transition-colors"
+                                    >
+                                      <Pencil className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </span>
+                              </td>
                               <td className="py-2 px-3 text-right font-bold text-slate-900">
                                 {box.weight ? `${box.weight.toFixed(2)} ${box.weightUnit || 'KG'}` : '-'}
                               </td>
@@ -2256,6 +2301,64 @@ const ConsignmentDetail = () => {
               >
                 {boxEditSaving && <Loader2 className="w-3 h-3 animate-spin" />}
                 Save change
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Box Modal — corrects a mis-scanned box number (e.g. a SKU barcode
+          landed in the box-no field instead of a digit). Items, weight, video,
+          and history all move with it. */}
+      {boxRename && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 p-4" onClick={() => !boxRenameSaving && setBoxRename(null)}>
+          <div className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-md p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-bold text-slate-900">Rename Box Number</h3>
+            <p className="text-xs text-slate-500">
+              Box #{boxRename.boxNo} — its items, weight, video and history all move to the corrected number.
+            </p>
+            <label className="block text-xs">
+              <span className="font-semibold text-slate-500 uppercase">Correct box number</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={boxRename.newBoxNo}
+                onChange={(e) => setBoxRename({ ...boxRename, newBoxNo: e.target.value.replace(/\D+/g, '') })}
+                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono"
+                placeholder="e.g. 4"
+                autoFocus
+              />
+            </label>
+            <label className="block text-xs">
+              <span className="font-semibold text-slate-500 uppercase">Reason</span>
+              <input
+                type="text"
+                value={boxRename.reason}
+                onChange={(e) => setBoxRename({ ...boxRename, reason: e.target.value })}
+                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                placeholder="Required — e.g. Packer scanned a barcode into the box-no field"
+              />
+            </label>
+            <label className="block text-xs">
+              <span className="font-semibold text-slate-500 uppercase">Remarks</span>
+              <textarea
+                value={boxRename.remarks}
+                onChange={(e) => setBoxRename({ ...boxRename, remarks: e.target.value })}
+                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none"
+                rows={2}
+              />
+            </label>
+            <div className="flex justify-end gap-2 pt-1">
+              <button type="button" disabled={boxRenameSaving} onClick={() => setBoxRename(null)} className="px-3 py-1.5 text-xs border rounded-lg">Cancel</button>
+              <button
+                type="button"
+                disabled={boxRenameSaving || !boxRename.newBoxNo || !String(boxRename.reason || '').trim()}
+                onClick={saveBoxRename}
+                className="px-3 py-1.5 text-xs bg-primary-600 text-white rounded-lg disabled:opacity-50 inline-flex items-center gap-1"
+              >
+                {boxRenameSaving && <Loader2 className="w-3 h-3 animate-spin" />}
+                Rename box
               </button>
             </div>
           </div>
