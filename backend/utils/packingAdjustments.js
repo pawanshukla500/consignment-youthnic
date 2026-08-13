@@ -724,9 +724,15 @@ async function renameBoxNo({ consignmentId, oldBoxNo, newBoxNo, reason, remarks,
   }
 
   const from = String(oldBoxNo ?? '').trim();
-  const to = String(newBoxNo ?? '').trim();
+  const to = String(newBoxNo ?? '').trim().replace(/^0+(?=\d)/, '');
   if (!/^\d+$/.test(to)) {
     const error = new Error('Box number must contain digits only (e.g. 4)');
+    error.statusCode = 400;
+    error.code = 'INVALID_BOX_NO';
+    throw error;
+  }
+  if (to === '0') {
+    const error = new Error('Box number must be 1 or higher');
     error.statusCode = 400;
     error.code = 'INVALID_BOX_NO';
     throw error;
