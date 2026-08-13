@@ -7,6 +7,8 @@ const { generateId, now, addAuditLog, firestoreHelpers } = require('./helpers');
 const { rebuildSessionSkuTotalsFromBoxes } = require('./packingQuantities');
 const { getQuantityReductionUpdates } = require('./shipmentStatus');
 const { emitConsignmentChange } = require('./syncBus');
+const { getPool, pgEnabled } = require('../config/database');
+const { upsertDocument } = require('./packingPersistence');
 
 const COLLECTION = 'packing_adjustments';
 
@@ -701,6 +703,199 @@ function recomputePackedFromBoxes(skus = [], boxes = []) {
   return { skus: nextSkus, totalPackedQty };
 }
 
+/**
+ * Correct a mis-scanned box number — e.g. a SKU barcode got scanned into the
+ * "box no" field instead of a plain digit, so the box saved (items, weight,
+ * video) under a bogus number like "120045947" instead of "4".
+ *
+ * Renames the box's identity in one Postgres transaction: the box row itself,
+ * its entry in consignment.boxIds, and every video / scan_event /
+ * packing_adjustment that points at it. Nothing is left half-renamed — the
+ * whole thing commits or nothing changes. Boxes/Videos/Packing Report/Weight
+ * Ledger all read from the same GET /:id response, so a single successful
+ * rename is enough for the correction to show up everywhere.
+ */
+async function renameBoxNo({ consignmentId, oldBoxNo, newBoxNo, reason, remarks, user }) {
+  if (!pgEnabled()) {
+    const error = new Error('Postgres is required to rename a box.');
+    error.statusCode = 503;
+    error.code = 'DATASTORE_UNAVAILABLE';
+    throw error;
+  }
+
+  const from = String(oldBoxNo ?? '').trim();
+  const to = String(newBoxNo ?? '').trim();
+  if (!/^\d+$/.test(to)) {
+    const error = new Error('Box number must contain digits only (e.g. 4)');
+    error.statusCode = 400;
+    error.code = 'INVALID_BOX_NO';
+    throw error;
+  }
+  if (to === from) {
+    const error = new Error('New box number is the same as the current one');
+    error.statusCode = 400;
+    error.code = 'BOX_NO_UNCHANGED';
+    throw error;
+  }
+  if (!String(reason || '').trim()) {
+    const error = new Error('A reason is required to rename a box');
+    error.statusCode = 400;
+    error.code = 'RENAME_REASON_REQUIRED';
+    throw error;
+  }
+
+  const oldBoxId = `${consignmentId}_box_${from}`;
+  const newBoxId = `${consignmentId}_box_${to}`;
+  const timestamp = now();
+  const client = await getPool().connect();
+
+  let renamedBox;
+  let updatedConsignment;
+  let videosUpdated = 0;
+  let scanEventsUpdated = 0;
+  let adjustmentsUpdated = 0;
+
+  try {
+    await client.query('BEGIN');
+
+    const { rows: consignmentRows } = await client.query(
+      `SELECT data FROM documents WHERE collection = 'consignments' AND id = $1 FOR UPDATE`,
+      [consignmentId]
+    );
+    if (!consignmentRows.length) {
+      const error = new Error('Consignment not found');
+      error.statusCode = 404;
+      throw error;
+    }
+    const consignment = consignmentRows[0].data;
+
+    const { rows: oldBoxRows } = await client.query(
+      `SELECT data FROM documents WHERE collection = 'boxes' AND id = $1 FOR UPDATE`,
+      [oldBoxId]
+    );
+    if (!oldBoxRows.length) {
+      const error = new Error(`Box ${from} not found`);
+      error.statusCode = 404;
+      throw error;
+    }
+    const oldBox = oldBoxRows[0].data;
+
+    const { rows: collisionRows } = await client.query(
+      `SELECT id FROM documents
+       WHERE collection = 'boxes'
+         AND (id = $1 OR (data->>'consignmentId' = $2 AND data->>'boxNo' = $3))
+       FOR UPDATE`,
+      [newBoxId, consignmentId, to]
+    );
+    if (collisionRows.length) {
+      const error = new Error(`Box ${to} already exists on this consignment — rename to a free box number.`);
+      error.statusCode = 409;
+      error.code = 'BOX_NO_TAKEN';
+      throw error;
+    }
+
+    renamedBox = {
+      ...oldBox,
+      id: newBoxId,
+      boxNo: to,
+      renamedFrom: from,
+      renamedAt: timestamp,
+      renamedBy: user?.id || null,
+      updatedAt: timestamp,
+    };
+    await upsertDocument(client, 'boxes', newBoxId, renamedBox);
+    await client.query(`DELETE FROM documents WHERE collection = 'boxes' AND id = $1`, [oldBoxId]);
+
+    const existingBoxIds = Array.isArray(consignment.boxIds) ? consignment.boxIds : [];
+    const nextBoxIds = existingBoxIds.includes(oldBoxId)
+      ? existingBoxIds.map((bid) => (bid === oldBoxId ? newBoxId : bid))
+      : Array.from(new Set([...existingBoxIds, newBoxId]));
+    updatedConsignment = await upsertDocument(client, 'consignments', consignmentId, {
+      boxIds: Array.from(new Set(nextBoxIds)),
+      updatedAt: timestamp,
+    });
+
+    // Videos carry both boxId and boxNo — relink whichever matches.
+    const { rows: videoRows } = await client.query(
+      `SELECT id FROM documents
+       WHERE collection = 'videos' AND data->>'consignmentId' = $1
+         AND (data->>'boxId' = $2 OR data->>'boxNo' = $3)
+       FOR UPDATE`,
+      [consignmentId, oldBoxId, from]
+    );
+    for (const row of videoRows) {
+      await upsertDocument(client, 'videos', row.id, { boxId: newBoxId, boxNo: to, updatedAt: timestamp });
+    }
+    videosUpdated = videoRows.length;
+
+    // Scan events only carry boxNo (no boxId field on that document shape).
+    const { rows: scanRows } = await client.query(
+      `SELECT id FROM documents
+       WHERE collection = 'scan_events' AND data->>'consignmentId' = $1 AND data->>'boxNo' = $2
+       FOR UPDATE`,
+      [consignmentId, from]
+    );
+    for (const row of scanRows) {
+      await upsertDocument(client, 'scan_events', row.id, { boxNo: to, updatedAt: timestamp });
+    }
+    scanEventsUpdated = scanRows.length;
+
+    // Keep any prior quantity-edit / removal history attached to the corrected box.
+    const { rows: adjustmentRows } = await client.query(
+      `SELECT id FROM documents
+       WHERE collection = 'packing_adjustments' AND data->>'consignmentId' = $1
+         AND (data->>'boxId' = $2 OR data->>'boxNo' = $3)
+       FOR UPDATE`,
+      [consignmentId, oldBoxId, from]
+    );
+    for (const row of adjustmentRows) {
+      await upsertDocument(client, 'packing_adjustments', row.id, { boxId: newBoxId, boxNo: to, updatedAt: timestamp });
+    }
+    adjustmentsUpdated = adjustmentRows.length;
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (!error.statusCode) {
+      const wrapped = new Error('Durable datastore unavailable while trying to rename this box.');
+      wrapped.statusCode = 503;
+      wrapped.code = 'DATASTORE_UNAVAILABLE';
+      wrapped.cause = error;
+      throw wrapped;
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  await addAuditLog('box_renumbered', 'box', newBoxId, user?.id || null, {
+    consignmentId,
+    oldBoxNo: from,
+    newBoxNo: to,
+    reason: String(reason).trim(),
+    remarks: String(remarks || '').trim(),
+    videosUpdated,
+    scanEventsUpdated,
+    adjustmentsUpdated,
+  });
+
+  emitConsignmentChange({
+    id: consignmentId,
+    updatedAt: timestamp,
+    realtimeType: 'box_renumbered',
+  });
+
+  return {
+    box: renamedBox,
+    consignment: updatedConsignment,
+    oldBoxNo: from,
+    newBoxNo: to,
+    videosUpdated,
+    scanEventsUpdated,
+    adjustmentsUpdated,
+  };
+}
+
 async function loadAllBoxesForConsignment(consignment) {
   const byId = new Map();
   const boxIds = consignment?.boxIds || [];
@@ -725,6 +920,7 @@ module.exports = {
   attachRemovalVideo,
   finalizeRemoval,
   applyBoxQuantityEdit,
+  renameBoxNo,
   enrichSkusWithAdjustments,
   recomputePackedFromBoxes,
   loadAllBoxesForConsignment,

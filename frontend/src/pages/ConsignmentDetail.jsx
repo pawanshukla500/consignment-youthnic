@@ -3,7 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router';
 import {
   ArrowLeft, Package, Box, Video, FileText, Upload, AlertCircle,
   Trash2, Download, Loader2, FileSpreadsheet, CheckCircle2,
-  Copy, ExternalLink, Tag, ChevronDown, ChevronUp, Database, Scale, AlertTriangle, History
+  Copy, ExternalLink, Tag, ChevronDown, ChevronUp, Database, Scale, AlertTriangle, History, Pencil
 } from 'lucide-react';
 import ConfirmModal from '../components/ConfirmModal';
 import { printShipmentBoxLabel, printAllShipmentBoxLabels } from '../utils/shipmentLabel';
@@ -28,6 +28,7 @@ const PACKING_LIVE_TYPES = new Set([
   'packing_drafts',
   'quantity_removal',
   'box_quantity_edit',
+  'box_renumbered',
   'inward_import',
   'skus',
   'boxes',
@@ -391,13 +392,14 @@ const ConsignmentDetail = () => {
   const [loading, setLoading] = useState(true);
   const [packingReport, setPackingReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
+  const [reportView, setReportView] = useState('compact'); // 'compact' | 'grid' — compact avoids a column per box
   const [previewWeightImgUrl, setPreviewWeightImgUrl] = useState(null);
   const [previewWeightBoxNo, setPreviewWeightBoxNo] = useState(null);
   const [fetchingWeightImg, setFetchingWeightImg] = useState(false);
   // Tab is synced to the URL (?tab=) so it's deep-linkable, shareable & survives refresh
   const activeTab = searchParams.get('tab') || 'skus';
   const setActiveTab = (tab) => setSearchParams(prev => { const p = new URLSearchParams(prev); p.set('tab', tab); return p; }, { replace: true });
-  const [trackingOpen,  setTrackingOpen]  = useState(true);
+  const [trackingOpen,  setTrackingOpen]  = useState(false);
   const [editingTracking, setEditingTracking] = useState(false);
   const [deleteFile, setDeleteFile] = useState(null); // { id, type, name }
   const [savingTracking, setSavingTracking] = useState(false);
@@ -414,6 +416,8 @@ const ConsignmentDetail = () => {
   const inwardFileRef = useRef(null);
   const [boxEdit, setBoxEdit] = useState(null); // { boxNo, skuId, qty, reason, remarks }
   const [boxEditSaving, setBoxEditSaving] = useState(false);
+  const [boxRename, setBoxRename] = useState(null); // { boxNo, newBoxNo, reason, remarks }
+  const [boxRenameSaving, setBoxRenameSaving] = useState(false);
   const liveRefreshRef = useRef(null);
 
   const openTrackingEdit = () => {
@@ -434,6 +438,7 @@ const ConsignmentDetail = () => {
       qaFailExcessQty: consignment.qaFailExcessQty || 0,
     });
     setEditingTracking(true);
+    setTrackingOpen(true);
   };
 
   const saveTracking = async () => {
@@ -618,6 +623,34 @@ const ConsignmentDetail = () => {
       addToast(error.response?.data?.error || 'Quantity edit failed', 'error');
     } finally {
       setBoxEditSaving(false);
+    }
+  };
+
+  const saveBoxRename = async () => {
+    if (!boxRename?.boxNo) return;
+    const newBoxNo = String(boxRename.newBoxNo || '').trim();
+    if (!/^\d+$/.test(newBoxNo)) {
+      addToast('New box number must contain digits only (e.g. 4)', 'error');
+      return;
+    }
+    setBoxRenameSaving(true);
+    try {
+      const { data } = await consignmentsAPI.renameBox(id, boxRename.boxNo, {
+        new_box_no: newBoxNo,
+        reason: boxRename.reason,
+        remarks: boxRename.remarks || '',
+      });
+      const parts = [`Box ${data.oldBoxNo} renamed to Box ${data.newBoxNo}`];
+      if (data.videosUpdated) parts.push(`${data.videosUpdated} video${data.videosUpdated === 1 ? '' : 's'}`);
+      if (data.scanEventsUpdated) parts.push(`${data.scanEventsUpdated} scan${data.scanEventsUpdated === 1 ? '' : 's'}`);
+      if (data.adjustmentsUpdated) parts.push(`${data.adjustmentsUpdated} history entr${data.adjustmentsUpdated === 1 ? 'y' : 'ies'}`);
+      addToast(parts.join(' · '), 'success', 5000);
+      setBoxRename(null);
+      await fetchConsignment({ silent: true });
+    } catch (error) {
+      addToast(error.response?.data?.error || 'Box rename failed', 'error');
+    } finally {
+      setBoxRenameSaving(false);
     }
   };
 
@@ -1157,9 +1190,9 @@ const ConsignmentDetail = () => {
               {consignment.marketplace?.name && <p className="text-xs text-primary-600 font-semibold">{consignment.marketplace.name}</p>}
               {consignment.warehouse && <p className="text-xs text-slate-500 mt-0.5">WH: {consignment.warehouse}</p>}
             </div>
-            {consignment.pgEnabled ? (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                <Database className="w-3.5 h-3.5" /> Stored in primary live store
+            {consignment.pgEnabled === false ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-50 text-red-700 border border-red-200">
+                <Database className="w-3.5 h-3.5" /> Not on primary live store — contact admin
               </span>
             ) : null}
           </div>
@@ -1309,7 +1342,6 @@ const ConsignmentDetail = () => {
               { label: 'QA Fail/Excess', value: consignment.qaFailExcessQty },
               { label: 'No. of Boxes', value: (consignment.boxes?.length || consignment.boxIds?.length || 0) },
               { label: 'Total Consignment Weight', value: totalWeightVal > 0 ? `${totalWeightVal.toFixed(2)} ${weightUnit}` : '-' },
-              { label: 'Total Shipment Weight', value: totalWeightVal > 0 ? `${totalWeightVal.toFixed(2)} ${weightUnit}` : '-' },
               { label: 'Average Box Weight', value: boxCount > 0 ? `${avgBoxWeight} ${weightUnit}` : '-' },
             ].map((item, i) => (
               <div key={i} className="bg-slate-50 rounded-lg p-3">
@@ -1595,7 +1627,21 @@ const ConsignmentDetail = () => {
                           .sort((a, b) => String(a.boxNo).localeCompare(String(b.boxNo), undefined, { numeric: true }))
                           .map((box) => (
                             <tr key={box.id} className="hover:bg-slate-100/50">
-                              <td className="py-2 px-3 font-semibold text-slate-700">Box #{box.boxNo}</td>
+                              <td className="py-2 px-3 font-semibold text-slate-700">
+                                <span className="inline-flex items-center gap-1.5">
+                                  Box #{box.boxNo}
+                                  {canEditBoxQuantities && (
+                                    <button
+                                      type="button"
+                                      title="Correct a mis-scanned box number"
+                                      onClick={() => setBoxRename({ boxNo: box.boxNo, newBoxNo: '', reason: '', remarks: '' })}
+                                      className="text-slate-400 hover:text-primary-600 transition-colors"
+                                    >
+                                      <Pencil className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </span>
+                              </td>
                               <td className="py-2 px-3 text-right font-bold text-slate-900">
                                 {box.weight ? `${box.weight.toFixed(2)} ${box.weightUnit || 'KG'}` : '-'}
                               </td>
@@ -1773,7 +1819,25 @@ const ConsignmentDetail = () => {
             <div>
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-3">
                 <h3 className="text-lg font-semibold text-slate-900">Box-wise Packing Breakdown</h3>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex items-center rounded-lg border border-slate-200 overflow-hidden text-xs font-medium">
+                    <button
+                      type="button"
+                      onClick={() => setReportView('compact')}
+                      title="One row per SKU, box quantities shown as a compact list"
+                      className={`px-3 py-1.5 transition-colors ${reportView === 'compact' ? 'bg-primary-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                    >
+                      Compact
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setReportView('grid')}
+                      title={`Full matrix — one column per box (${pivotData.boxes.length})`}
+                      className={`px-3 py-1.5 transition-colors border-l border-slate-200 ${reportView === 'grid' ? 'bg-primary-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                    >
+                      Grid
+                    </button>
+                  </div>
                   <button onClick={() => exportCsv('packed')} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-700 transition-colors">
                     <FileSpreadsheet className="w-3.5 h-3.5" />Export Packed
                   </button>
@@ -1834,6 +1898,71 @@ const ConsignmentDetail = () => {
                 );
               })()}
 
+              {reportView === 'compact' && (
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-sm border-collapse">
+                    <thead>
+                      <tr className="bg-slate-100">
+                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">#</th>
+                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">Barcode SKU</th>
+                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">Marketplace SKU</th>
+                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-r border-slate-200 whitespace-nowrap">Internal SKU</th>
+                        <th className="text-center px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap bg-slate-50">Required</th>
+                        <th className="text-center px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap bg-slate-50">Packed</th>
+                        <th className="text-center px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-r border-slate-200 whitespace-nowrap bg-slate-50">Remaining</th>
+                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap bg-slate-50">Packed In</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {pivotData.rows.map((row, idx) => {
+                        const barcodeSku = row.marketplaceBarcode || row.barcode || '';
+                        const packedIn = Object.entries(row.boxQtys || {})
+                          .filter(([, qty]) => qty > 0)
+                          .sort((a, b) => String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true }));
+                        return (
+                          <tr key={row.skuId} className={`${row.remaining === 0 ? 'bg-emerald-50/40' : row.remaining < 0 ? 'bg-red-50/40' : 'bg-white'} hover:bg-slate-50/80`}>
+                            <td className="px-3 py-2.5 text-xs text-slate-400">{idx + 1}</td>
+                            <td className="px-3 py-2.5 font-mono text-xs text-slate-800 max-w-[200px] truncate" title={barcodeSku || '—'}>
+                              {barcodeSku || '—'}
+                              {row.marketplaceBarcodeType ? (
+                                <span className="ml-1 text-[9px] font-semibold uppercase text-slate-400">{row.marketplaceBarcodeType}</span>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-2.5 font-mono text-xs text-slate-700 max-w-[180px] truncate" title={row.marketplaceSku}>{row.marketplaceSku}</td>
+                            <td className="px-3 py-2.5 font-medium text-slate-900 text-xs border-r border-slate-100 max-w-[160px] truncate" title={row.internalSku}>{row.internalSku}</td>
+                            <td className="px-3 py-2.5 text-center font-semibold text-slate-700 text-xs bg-slate-50/40">{row.required}</td>
+                            <td className="px-3 py-2.5 text-center font-semibold text-emerald-700 text-xs bg-slate-50/40">{row.packedFromBoxes || 0}</td>
+                            <td className="px-3 py-2.5 text-center font-bold text-xs border-r border-slate-100 bg-slate-50/40">
+                              {row.remaining === 0 ? (
+                                <span className="inline-flex items-center gap-1 text-emerald-600"><CheckCircle2 className="w-3.5 h-3.5" />0</span>
+                              ) : row.remaining < 0 ? (
+                                <span className="inline-flex items-center gap-1 text-red-600"><AlertCircle className="w-3.5 h-3.5" />{row.remaining}</span>
+                              ) : (
+                                <span className="text-amber-600">{row.remaining}</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2.5">
+                              {packedIn.length > 0 ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {packedIn.map(([boxNo, qty]) => (
+                                    <span key={boxNo} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary-50 text-primary-800 text-[10px] font-mono font-semibold whitespace-nowrap">
+                                      #{boxNo}<span className="text-primary-400">·</span>{qty}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-slate-300 text-xs">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {reportView === 'grid' && (
               <div className="overflow-x-auto rounded-xl border border-slate-200">
                 <table className="w-full text-sm border-collapse">
                   <thead>
@@ -1927,6 +2056,7 @@ const ConsignmentDetail = () => {
                   </tbody>
                 </table>
               </div>
+              )}
             </div>
           )}
 
@@ -2256,6 +2386,64 @@ const ConsignmentDetail = () => {
               >
                 {boxEditSaving && <Loader2 className="w-3 h-3 animate-spin" />}
                 Save change
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Box Modal — corrects a mis-scanned box number (e.g. a SKU barcode
+          landed in the box-no field instead of a digit). Items, weight, video,
+          and history all move with it. */}
+      {boxRename && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/50 p-4" onClick={() => !boxRenameSaving && setBoxRename(null)}>
+          <div className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-md p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-bold text-slate-900">Rename Box Number</h3>
+            <p className="text-xs text-slate-500">
+              Box #{boxRename.boxNo} — its items, weight, video and history all move to the corrected number.
+            </p>
+            <label className="block text-xs">
+              <span className="font-semibold text-slate-500 uppercase">Correct box number</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={boxRename.newBoxNo}
+                onChange={(e) => setBoxRename({ ...boxRename, newBoxNo: e.target.value.replace(/\D+/g, '') })}
+                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono"
+                placeholder="e.g. 4"
+                autoFocus
+              />
+            </label>
+            <label className="block text-xs">
+              <span className="font-semibold text-slate-500 uppercase">Reason</span>
+              <input
+                type="text"
+                value={boxRename.reason}
+                onChange={(e) => setBoxRename({ ...boxRename, reason: e.target.value })}
+                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                placeholder="Required — e.g. Packer scanned a barcode into the box-no field"
+              />
+            </label>
+            <label className="block text-xs">
+              <span className="font-semibold text-slate-500 uppercase">Remarks</span>
+              <textarea
+                value={boxRename.remarks}
+                onChange={(e) => setBoxRename({ ...boxRename, remarks: e.target.value })}
+                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none"
+                rows={2}
+              />
+            </label>
+            <div className="flex justify-end gap-2 pt-1">
+              <button type="button" disabled={boxRenameSaving} onClick={() => setBoxRename(null)} className="px-3 py-1.5 text-xs border rounded-lg">Cancel</button>
+              <button
+                type="button"
+                disabled={boxRenameSaving || !boxRename.newBoxNo || !String(boxRename.reason || '').trim()}
+                onClick={saveBoxRename}
+                className="px-3 py-1.5 text-xs bg-primary-600 text-white rounded-lg disabled:opacity-50 inline-flex items-center gap-1"
+              >
+                {boxRenameSaving && <Loader2 className="w-3 h-3 animate-spin" />}
+                Rename box
               </button>
             </div>
           </div>
