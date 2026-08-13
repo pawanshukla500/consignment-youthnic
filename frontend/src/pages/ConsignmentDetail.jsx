@@ -392,13 +392,14 @@ const ConsignmentDetail = () => {
   const [loading, setLoading] = useState(true);
   const [packingReport, setPackingReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
+  const [reportView, setReportView] = useState('compact'); // 'compact' | 'grid' — compact avoids a column per box
   const [previewWeightImgUrl, setPreviewWeightImgUrl] = useState(null);
   const [previewWeightBoxNo, setPreviewWeightBoxNo] = useState(null);
   const [fetchingWeightImg, setFetchingWeightImg] = useState(false);
   // Tab is synced to the URL (?tab=) so it's deep-linkable, shareable & survives refresh
   const activeTab = searchParams.get('tab') || 'skus';
   const setActiveTab = (tab) => setSearchParams(prev => { const p = new URLSearchParams(prev); p.set('tab', tab); return p; }, { replace: true });
-  const [trackingOpen,  setTrackingOpen]  = useState(true);
+  const [trackingOpen,  setTrackingOpen]  = useState(false);
   const [editingTracking, setEditingTracking] = useState(false);
   const [deleteFile, setDeleteFile] = useState(null); // { id, type, name }
   const [savingTracking, setSavingTracking] = useState(false);
@@ -437,6 +438,7 @@ const ConsignmentDetail = () => {
       qaFailExcessQty: consignment.qaFailExcessQty || 0,
     });
     setEditingTracking(true);
+    setTrackingOpen(true);
   };
 
   const saveTracking = async () => {
@@ -1188,9 +1190,9 @@ const ConsignmentDetail = () => {
               {consignment.marketplace?.name && <p className="text-xs text-primary-600 font-semibold">{consignment.marketplace.name}</p>}
               {consignment.warehouse && <p className="text-xs text-slate-500 mt-0.5">WH: {consignment.warehouse}</p>}
             </div>
-            {consignment.pgEnabled ? (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                <Database className="w-3.5 h-3.5" /> Stored in primary live store
+            {consignment.pgEnabled === false ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-50 text-red-700 border border-red-200">
+                <Database className="w-3.5 h-3.5" /> Not on primary live store — contact admin
               </span>
             ) : null}
           </div>
@@ -1340,7 +1342,6 @@ const ConsignmentDetail = () => {
               { label: 'QA Fail/Excess', value: consignment.qaFailExcessQty },
               { label: 'No. of Boxes', value: (consignment.boxes?.length || consignment.boxIds?.length || 0) },
               { label: 'Total Consignment Weight', value: totalWeightVal > 0 ? `${totalWeightVal.toFixed(2)} ${weightUnit}` : '-' },
-              { label: 'Total Shipment Weight', value: totalWeightVal > 0 ? `${totalWeightVal.toFixed(2)} ${weightUnit}` : '-' },
               { label: 'Average Box Weight', value: boxCount > 0 ? `${avgBoxWeight} ${weightUnit}` : '-' },
             ].map((item, i) => (
               <div key={i} className="bg-slate-50 rounded-lg p-3">
@@ -1818,7 +1819,25 @@ const ConsignmentDetail = () => {
             <div>
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-3">
                 <h3 className="text-lg font-semibold text-slate-900">Box-wise Packing Breakdown</h3>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex items-center rounded-lg border border-slate-200 overflow-hidden text-xs font-medium">
+                    <button
+                      type="button"
+                      onClick={() => setReportView('compact')}
+                      title="One row per SKU, box quantities shown as a compact list"
+                      className={`px-3 py-1.5 transition-colors ${reportView === 'compact' ? 'bg-primary-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                    >
+                      Compact
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setReportView('grid')}
+                      title={`Full matrix — one column per box (${pivotData.boxes.length})`}
+                      className={`px-3 py-1.5 transition-colors border-l border-slate-200 ${reportView === 'grid' ? 'bg-primary-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                    >
+                      Grid
+                    </button>
+                  </div>
                   <button onClick={() => exportCsv('packed')} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-700 transition-colors">
                     <FileSpreadsheet className="w-3.5 h-3.5" />Export Packed
                   </button>
@@ -1879,6 +1898,71 @@ const ConsignmentDetail = () => {
                 );
               })()}
 
+              {reportView === 'compact' && (
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-sm border-collapse">
+                    <thead>
+                      <tr className="bg-slate-100">
+                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">#</th>
+                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">Barcode SKU</th>
+                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">Marketplace SKU</th>
+                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-r border-slate-200 whitespace-nowrap">Internal SKU</th>
+                        <th className="text-center px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap bg-slate-50">Required</th>
+                        <th className="text-center px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap bg-slate-50">Packed</th>
+                        <th className="text-center px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-r border-slate-200 whitespace-nowrap bg-slate-50">Remaining</th>
+                        <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-600 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap bg-slate-50">Packed In</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {pivotData.rows.map((row, idx) => {
+                        const barcodeSku = row.marketplaceBarcode || row.barcode || '';
+                        const packedIn = Object.entries(row.boxQtys || {})
+                          .filter(([, qty]) => qty > 0)
+                          .sort((a, b) => String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true }));
+                        return (
+                          <tr key={row.skuId} className={`${row.remaining === 0 ? 'bg-emerald-50/40' : row.remaining < 0 ? 'bg-red-50/40' : 'bg-white'} hover:bg-slate-50/80`}>
+                            <td className="px-3 py-2.5 text-xs text-slate-400">{idx + 1}</td>
+                            <td className="px-3 py-2.5 font-mono text-xs text-slate-800 max-w-[200px] truncate" title={barcodeSku || '—'}>
+                              {barcodeSku || '—'}
+                              {row.marketplaceBarcodeType ? (
+                                <span className="ml-1 text-[9px] font-semibold uppercase text-slate-400">{row.marketplaceBarcodeType}</span>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-2.5 font-mono text-xs text-slate-700 max-w-[180px] truncate" title={row.marketplaceSku}>{row.marketplaceSku}</td>
+                            <td className="px-3 py-2.5 font-medium text-slate-900 text-xs border-r border-slate-100 max-w-[160px] truncate" title={row.internalSku}>{row.internalSku}</td>
+                            <td className="px-3 py-2.5 text-center font-semibold text-slate-700 text-xs bg-slate-50/40">{row.required}</td>
+                            <td className="px-3 py-2.5 text-center font-semibold text-emerald-700 text-xs bg-slate-50/40">{row.packedFromBoxes || 0}</td>
+                            <td className="px-3 py-2.5 text-center font-bold text-xs border-r border-slate-100 bg-slate-50/40">
+                              {row.remaining === 0 ? (
+                                <span className="inline-flex items-center gap-1 text-emerald-600"><CheckCircle2 className="w-3.5 h-3.5" />0</span>
+                              ) : row.remaining < 0 ? (
+                                <span className="inline-flex items-center gap-1 text-red-600"><AlertCircle className="w-3.5 h-3.5" />{row.remaining}</span>
+                              ) : (
+                                <span className="text-amber-600">{row.remaining}</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2.5">
+                              {packedIn.length > 0 ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {packedIn.map(([boxNo, qty]) => (
+                                    <span key={boxNo} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary-50 text-primary-800 text-[10px] font-mono font-semibold whitespace-nowrap">
+                                      #{boxNo}<span className="text-primary-400">·</span>{qty}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-slate-300 text-xs">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {reportView === 'grid' && (
               <div className="overflow-x-auto rounded-xl border border-slate-200">
                 <table className="w-full text-sm border-collapse">
                   <thead>
@@ -1972,6 +2056,7 @@ const ConsignmentDetail = () => {
                   </tbody>
                 </table>
               </div>
+              )}
             </div>
           )}
 
