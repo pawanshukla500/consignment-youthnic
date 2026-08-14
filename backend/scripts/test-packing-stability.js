@@ -89,6 +89,26 @@ assert.ok(packingStationSrc.includes('getActiveOutstandingVideos') || packingSta
 assert.ok(packingStationSrc.includes('canStartRecordingSafely') || packingStationSrc.includes('backpressure'), 'recording must enforce storage backpressure');
 assert.ok(fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'deploy.yml'), 'utf8').includes('pull_request'), 'quality gates must run on PRs');
 
+// Reopening an already-packed box to add more qty must ADD a video, never replace one.
+assert.ok(packingStationSrc.includes('isReopen: reopen'), 'startRecording must tag reopen recordings');
+assert.ok(packingStationSrc.includes("_setBox(v, { reopen: true })"), "'Continue Packing' must mark the recording as a reopen");
+assert.ok(workerSrc.includes('preserveExisting'), 'worker must tell the server this is an additional-qty video');
+assert.ok(
+  videoQueueSrc.includes('metadata?.isReopen') && videoQueueSrc.includes('!metadata?.isReopen'),
+  'local queue must skip superseding prior videos for reopen recordings'
+);
+assert.ok(
+  /if \(entry\?\.metadata\?\.isReopen\) continue/.test(videoQueueSrc),
+  'duplicate-video pruning must never treat a reopen video as a duplicate of another box video'
+);
+assert.ok(uploadsSrc.includes('preserveExisting') && uploadsSrc.includes('keepExistingVideo'), 'metadata API must accept preserveExisting');
+assert.ok(uploadsSrc.includes('countActiveBoxVideos') && uploadsSrc.includes('buildBoxVideoLabel'), 'server must number additional videos as parts (BOX{n}_{part})');
+assert.ok(
+  (uploadsSrc.match(/if \(!keepExistingVideo\)/g) || []).length >= 1
+    && (uploadsSrc.match(/&& !keepExistingVideo\)/g) || []).length >= 1,
+  'both eviction call sites must be gated on !keepExistingVideo'
+);
+
 const { rebuildSessionSkuTotalsFromBoxes } = require('../utils/packingQuantities');
 
 // Simulate persist-failure rollback semantics

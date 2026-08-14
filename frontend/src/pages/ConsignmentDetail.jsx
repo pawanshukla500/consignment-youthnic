@@ -272,8 +272,16 @@ function VideoFileCard({ video, boxNo, onDelete, addToast, canDelete }) {
             <CheckCircle2 className="w-4 h-4" />
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-slate-900 truncate">
+            <p className="text-sm font-semibold text-slate-900 truncate flex items-center gap-1.5">
               {boxNo ? `Box #${boxNo}` : 'Video'} · available
+              {Number(video.part) > 1 && (
+                <span
+                  className="text-[9px] font-bold uppercase tracking-wide text-primary-700 bg-primary-50 border border-primary-100 px-1.5 py-0.5 rounded shrink-0"
+                  title="Recorded after this box was reopened to add more qty — the earlier video is kept, not replaced"
+                >
+                  {video.boxLabel || `Part ${video.part}`}
+                </span>
+              )}
             </p>
             <p className="text-[11px] text-slate-500 truncate" title={displayName}>{displayName}</p>
           </div>
@@ -1076,19 +1084,24 @@ const ConsignmentDetail = () => {
   const packingAdjustments = consignment.packingAdjustments || [];
   // OMSGuru checklist fields remain available on the workflow panel; SKU tab focuses on inward + removals.
 
-  const videoByBox = (() => {
+  // A box can carry more than one video once the operator reopens it to add more qty —
+  // the earlier video(s) are kept (not replaced), so group into arrays, not a single pick.
+  const videosByBox = (() => {
     const grouped = {};
     (consignment.videos || []).forEach((video) => {
       const box = String(video.boxNo || 'Unassigned');
-      if (!grouped[box]) grouped[box] = video;
-      else if (new Date(video.uploadedAt) > new Date(grouped[box].uploadedAt)) grouped[box] = video;
+      if (!grouped[box]) grouped[box] = [];
+      grouped[box].push(video);
+    });
+    Object.values(grouped).forEach((list) => {
+      list.sort((a, b) => (Number(a.part) || 1) - (Number(b.part) || 1) || new Date(a.uploadedAt) - new Date(b.uploadedAt));
     });
     return grouped;
   })();
 
   const videoBoxNumbers = [...new Set([
     ...(consignment.boxes || []).map((b) => String(b.boxNo)),
-    ...Object.keys(videoByBox),
+    ...Object.keys(videosByBox),
   ])].sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
 
   const visibleVideoBoxes = selectedVideoBox === 'all'
@@ -2067,10 +2080,10 @@ const ConsignmentDetail = () => {
                 <div className="flex items-center gap-2 flex-wrap justify-end">
                   {consignment.videos?.length > 0 && (
                     <button onClick={() => {
-                      const headers = ['Box No', 'File Name', 'Video URL', 'Size (KB)', 'Uploaded At'];
+                      const headers = ['Box No', 'Part', 'File Name', 'Video URL', 'Size (KB)', 'Uploaded At'];
                       const csvRows = [headers.join(',')];
                       consignment.videos.forEach(v => {
-                        csvRows.push([v.boxNo || 'Unassigned', `"${v.originalName}"`, buildUploadStreamUrl(v.id, 'video') || '', Math.round((v.size || 0) / 1024), new Date(v.uploadedAt).toLocaleString()].join(','));
+                        csvRows.push([v.boxNo || 'Unassigned', v.boxLabel || (v.boxNo ? `BOX${v.boxNo}` : ''), `"${v.originalName}"`, buildUploadStreamUrl(v.id, 'video') || '', Math.round((v.size || 0) / 1024), new Date(v.uploadedAt).toLocaleString()].join(','));
                       });
                       const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
                       const url = URL.createObjectURL(blob);
@@ -2130,7 +2143,7 @@ const ConsignmentDetail = () => {
                     All Boxes ({videoBoxNumbers.length})
                   </button>
                   {videoBoxNumbers.map((boxNo) => {
-                    const hasVideo = !!videoByBox[boxNo];
+                    const boxVideos = videosByBox[boxNo] || [];
                     return (
                       <button
                         key={boxNo}
@@ -2139,12 +2152,12 @@ const ConsignmentDetail = () => {
                         className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                           selectedVideoBox === boxNo
                             ? 'bg-primary-600 text-white border-primary-600'
-                            : hasVideo
+                            : boxVideos.length > 0
                               ? 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                               : 'bg-slate-50 text-slate-400 border-slate-100'
                         }`}
                       >
-                        Box #{boxNo}{hasVideo ? '' : ' (no video)'}
+                        Box #{boxNo}{boxVideos.length > 1 ? ` (${boxVideos.length} videos)` : boxVideos.length === 0 ? ' (no video)' : ''}
                       </button>
                     );
                   })}
@@ -2154,27 +2167,32 @@ const ConsignmentDetail = () => {
               {visibleVideoBoxes.length > 0 ? (
                 <div className="space-y-6">
                   {visibleVideoBoxes.map((boxNo) => {
-                    const video = videoByBox[boxNo];
+                    const boxVideos = videosByBox[boxNo] || [];
                     return (
                       <div key={boxNo} className="rounded-xl border border-slate-200 bg-slate-50/40 p-4">
                         <div className="flex items-center gap-2 mb-3">
                           <Box className="w-4 h-4 text-primary-600" />
                           <h4 className="text-sm font-bold text-slate-900">Box #{boxNo}</h4>
-                          {video ? (
-                            <span className="text-xs text-emerald-600 font-medium">Video available</span>
+                          {boxVideos.length > 0 ? (
+                            <span className="text-xs text-emerald-600 font-medium">
+                              {boxVideos.length > 1 ? `${boxVideos.length} videos available` : 'Video available'}
+                            </span>
                           ) : (
                             <span className="text-xs text-slate-400">No video uploaded yet</span>
                           )}
                         </div>
-                        {video ? (
+                        {boxVideos.length > 0 ? (
                           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            <VideoFileCard
-                              video={video}
-                              boxNo={boxNo}
-                              addToast={addToast}
-                              canDelete={canDeleteVideos}
-                              onDelete={() => setDeleteFile({ id: video.id, type: 'video', name: video.originalName })}
-                            />
+                            {boxVideos.map((video) => (
+                              <VideoFileCard
+                                key={video.id}
+                                video={video}
+                                boxNo={boxNo}
+                                addToast={addToast}
+                                canDelete={canDeleteVideos}
+                                onDelete={() => setDeleteFile({ id: video.id, type: 'video', name: video.originalName })}
+                              />
+                            ))}
                           </div>
                         ) : (
                           <p className="text-sm text-slate-500">Select this box in the upload dropdown above to attach a packing video.</p>

@@ -317,8 +317,11 @@ export async function saveVideoToQueue(blob, metadata) {
     return idbRequest(stores[STORE_NAME].add(entry))
   })
 
-  // Mark prior same-box evidence superseded (retain blobs until this replacement is verified)
-  if (metadata?.consignmentId != null && metadata?.boxNo != null) {
+  // Mark prior same-box evidence superseded (retain blobs until this replacement is verified).
+  // Skip entirely when this recording is ADDITIONAL evidence for an already-packed box
+  // (operator reopened the box to add more qty) — that video must never supersede/replace
+  // the box's existing video(s); both are kept as separate parts (BOX{n}, BOX{n}_2, ...).
+  if (metadata?.consignmentId != null && metadata?.boxNo != null && !metadata?.isReopen) {
     await supersedeVideosForBox(metadata.consignmentId, metadata.boxNo, queueId)
   }
 
@@ -512,6 +515,9 @@ export async function pruneDuplicateBoxVideos() {
   const outstanding = await getActiveOutstandingVideos()
   const newestByBox = new Map()
   for (const entry of outstanding) {
+    // Additional-qty recordings are never duplicates of the box's earlier video(s) —
+    // leave every one of them outstanding so all parts upload independently.
+    if (entry?.metadata?.isReopen) continue
     const key = boxKey(entry)
     const prev = newestByBox.get(key)
     if (!prev || (entry.createdAt || 0) > (prev.createdAt || 0)) {

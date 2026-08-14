@@ -235,6 +235,26 @@ async function ensureSingleVideoPerBox(consignmentId, boxNo, skipId = null) {
   }
 }
 
+// Count active packing videos already on a box (excludes removal-evidence videos and,
+// optionally, one video id) — used to number additional-qty videos as part 2, 3, ...
+// when a previously-packed box is reopened instead of evicting the earlier video(s).
+async function countActiveBoxVideos(consignmentId, boxNo, excludeId = null) {
+  if (!consignmentId || !boxNo) return 0;
+  const existingVideos = await firestoreHelpers.queryCollection('videos', 'consignmentId', '==', consignmentId);
+  const matchBoxNo = String(boxNo);
+  return existingVideos.filter(
+    (v) => String(v.boxNo) === matchBoxNo
+      && v.id !== excludeId
+      && v.active !== false
+      && v.type !== 'removal_video'
+      && v.purpose !== 'quantity_removal'
+  ).length;
+}
+
+function buildBoxVideoLabel(boxNo, part) {
+  return part > 1 ? `BOX${boxNo}_${part}` : `BOX${boxNo}`;
+}
+
 async function findExistingVideoMetadata(consignmentId, boxNo, storagePath, clientUploadId) {
   if (!consignmentId || !boxNo) return null;
   const existingVideos = await firestoreHelpers.queryCollection('videos', 'consignmentId', '==', consignmentId);
@@ -514,12 +534,16 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
       uploadQueueId,
       adjustmentId,
       purpose,
+      preserveExisting,
     } = req.body;
 
     const url = storageUrl || firebaseUrl;
     const path = storagePath || firebasePath;
     const fileType = type || 'document';
     const isRemovalVideo = fileType === 'removal_video' || purpose === 'quantity_removal';
+    // Box was already packed and the operator reopened it to add more qty — keep the
+    // earlier video(s) instead of evicting them; this upload becomes an additional part.
+    const keepExistingVideo = Boolean(preserveExisting) && fileType === 'video' && !isRemovalVideo;
 
     if (!consignmentId || !url) {
       return res.status(400).json({ error: 'consignmentId and storage URL are required.' });
@@ -597,7 +621,7 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
           active: true,
         };
         await firestoreHelpers.setDocument('videos', existing.id, refreshed);
-        if (fileType === 'video' && !isRemovalVideo) {
+        if (fileType === 'video' && !isRemovalVideo && !keepExistingVideo) {
           try {
             await ensureSingleVideoPerBox(consignmentId, boxNo, existing.id);
           } catch (replaceError) {
@@ -620,6 +644,12 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
       }
     }
 
+    // Additional-qty videos are numbered by how many active videos the box already has —
+    // part 1 is the original pack, part 2+ are reopens. Only matters when boxNo is set.
+    const videoPart = (fileType === 'video' && !isRemovalVideo && boxNo)
+      ? (await countActiveBoxVideos(consignmentId, boxNo)) + 1
+      : 1;
+
     const fileId = generateId();
     const fileRecord = buildFileRecord({
       id: fileId,
@@ -632,9 +662,11 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
       storageProvider: 'r2',
       mimeType,
       size,
-      description: description || (isRemovalVideo
-        ? `Box ${boxNo} quantity removal video`
-        : (fileType === 'video' ? `Box ${boxNo} packing video` : '')),
+      description: isRemovalVideo
+        ? (description || `Box ${boxNo} quantity removal video`)
+        : (fileType === 'video'
+          ? (videoPart > 1 ? `Box ${boxNo} packing video (part ${videoPart})` : `Box ${boxNo} packing video`)
+          : (description || '')),
       clientUploadId: clientUploadId || uploadQueueId || '',
       uploadQueueId: uploadQueueId || clientUploadId || '',
       uploadedBy: req.user.id,
@@ -646,6 +678,8 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
       fileRecord.active = true;
     } else if (fileType === 'video') {
       fileRecord.active = true;
+      fileRecord.part = videoPart;
+      fileRecord.boxLabel = buildBoxVideoLabel(boxNo, videoPart);
     } else if (purpose) {
       fileRecord.purpose = String(purpose).trim().toLowerCase();
     }
@@ -678,7 +712,9 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
 
     if (fileType === 'video' && !isRemovalVideo && boxNo) {
       try {
-        await ensureSingleVideoPerBox(consignmentId, boxNo, fileId);
+        if (!keepExistingVideo) {
+          await ensureSingleVideoPerBox(consignmentId, boxNo, fileId);
+        }
         const boxId = `${consignmentId}_box_${boxNo}`;
         await firestoreHelpers.setDocument('boxes', boxId, {
           videoStatus: 'metadata_saved',
