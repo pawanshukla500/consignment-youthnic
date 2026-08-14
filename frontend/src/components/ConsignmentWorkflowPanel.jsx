@@ -9,10 +9,144 @@ import {
   WORKFLOW_BUCKET_CLASS,
   getWorkflowBucket,
   userCanConfirmStageClient,
+  DISPUTE_RESOLUTION_TYPES,
 } from '../utils/workflowPriority'
-import { CheckCircle2, Loader2, UserPlus, AlertTriangle, Clock } from 'lucide-react'
+import { CheckCircle2, Loader2, UserPlus, AlertTriangle, Clock, Ticket, ShieldCheck } from 'lucide-react'
 
 const AUTO_STAGES = new Set(['ready_for_invoice', 'ready_for_dispatch'])
+
+/** One dispute row inside the Inward Dispute card — qty breakdown, ticket entry, resolve action. */
+function DisputeRow({ dispute, canAct, ticketDraft, onTicketDraftChange, onSaveTicket, savingTicket, onOpenResolve }) {
+  const d = dispute
+  const isOpen = d.status === 'open'
+  const varianceLabel = d.varianceType === 'excess' ? 'Excess' : 'Short'
+  return (
+    <div className={`rounded-lg border p-3 text-xs ${isOpen ? 'border-red-200 bg-white' : 'border-emerald-200 bg-emerald-50/50'}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2">
+          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${isOpen ? 'bg-red-100 text-red-800' : 'bg-emerald-100 text-emerald-800'}`}>
+            {isOpen ? 'Open' : 'Resolved'}
+          </span>
+          <span className="font-semibold text-slate-800">
+            {varianceLabel} {d.disputedQty} unit{d.disputedQty === 1 ? '' : 's'}
+          </span>
+          <span className="text-slate-500">
+            (shipped {d.shippedQty} · inward {d.inwardQty})
+          </span>
+        </div>
+        <span className="text-slate-400">
+          Raised {d.raisedAt ? new Date(d.raisedAt).toLocaleDateString() : '—'}
+          {d.raisedByName ? ` · ${d.raisedByName}` : ''}
+        </span>
+      </div>
+      {d.reason && <div className="text-slate-600 mb-1"><strong className="text-slate-700">Reason:</strong> {d.reason}</div>}
+      {d.disputeDetails && <div className="text-slate-600 mb-2"><strong className="text-slate-700">Details:</strong> {d.disputeDetails}</div>}
+
+      {isOpen ? (
+        <div className="flex flex-wrap items-end gap-2 mt-2 pt-2 border-t border-red-100">
+          <div className="flex-1 min-w-[160px]">
+            <label className="block text-[10px] font-semibold uppercase text-slate-500 mb-1">
+              Marketplace Ticket / Case ID {d.ticketId ? '(update)' : '*'}
+            </label>
+            <input
+              type="text"
+              value={ticketDraft ?? d.ticketId ?? ''}
+              onChange={(e) => onTicketDraftChange(e.target.value)}
+              placeholder="e.g. AMZN-CASE-12345"
+              className="inp text-xs w-full"
+              disabled={!canAct}
+            />
+          </div>
+          {canAct && (
+            <button
+              type="button"
+              onClick={onSaveTicket}
+              disabled={savingTicket}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-slate-900 text-white text-[11px] font-semibold disabled:opacity-50"
+            >
+              {savingTicket ? <Loader2 className="w-3 h-3 animate-spin" /> : <Ticket className="w-3 h-3" />}
+              {d.ticketId ? 'Update' : 'Save ticket'}
+            </button>
+          )}
+          {canAct && (
+            <button
+              type="button"
+              onClick={onOpenResolve}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-emerald-600 text-white text-[11px] font-semibold hover:bg-emerald-700"
+            >
+              <ShieldCheck className="w-3 h-3" />
+              Resolve dispute
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="mt-2 pt-2 border-t border-emerald-100 space-y-0.5">
+          {d.ticketId && <div className="text-slate-600"><strong className="text-slate-700">Ticket:</strong> {d.ticketId}</div>}
+          <div className="text-emerald-800">
+            <strong>Resolution:</strong> {DISPUTE_RESOLUTION_TYPES[d.resolution?.type] || d.resolution?.type || '—'}
+          </div>
+          <div className="text-slate-600"><strong className="text-slate-700">Remark:</strong> {d.resolution?.remark || '—'}</div>
+          <div className="text-slate-400">
+            {d.resolution?.resolvedByName || 'Team'} · {d.resolution?.resolvedAt ? new Date(d.resolution.resolvedAt).toLocaleString() : ''}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Resolution type + mandatory remark — required to close any inward dispute. */
+function ResolveDisputeModal({ resolutionType, remark, onResolutionTypeChange, onRemarkChange, onCancel, onConfirm, busy }) {
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-5">
+        <h3 className="text-sm font-bold text-slate-900 mb-1">Resolve inward dispute</h3>
+        <p className="text-xs text-slate-500 mb-4">
+          A resolution type and remark are required. This consignment moves to Archive automatically once every dispute on it is resolved.
+        </p>
+        <label className="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Resolution type *</label>
+        <select
+          value={resolutionType}
+          onChange={(e) => onResolutionTypeChange(e.target.value)}
+          className="inp text-xs w-full mb-3"
+        >
+          <option value="">Select resolution…</option>
+          {Object.entries(DISPUTE_RESOLUTION_TYPES).map(([key, label]) => (
+            <option key={key} value={key}>{label}</option>
+          ))}
+        </select>
+        <label className="block text-[10px] font-semibold uppercase text-slate-500 mb-1">
+          Remark {resolutionType === 'other' ? '(required — explain "Other")' : '*'}
+        </label>
+        <textarea
+          value={remark}
+          onChange={(e) => onRemarkChange(e.target.value)}
+          className="inp text-xs w-full min-h-[80px] mb-4"
+          placeholder="Explain how this was resolved…"
+        />
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs font-medium bg-white hover:bg-slate-50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy || !resolutionType || !remark.trim()}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold disabled:opacity-50"
+          >
+            {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+            Resolve
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function emptyForms(consignment) {
   const planned = Number(consignment?.totalRequiredQty) || 0
@@ -60,10 +194,17 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
   const [assigning, setAssigning] = useState(false)
   const [forms, setForms] = useState(() => emptyForms(consignment))
   const [resyncingTaskflow, setResyncingTaskflow] = useState(false)
+  const [ticketDrafts, setTicketDrafts] = useState({})
+  const [savingTicketId, setSavingTicketId] = useState(null)
+  const [resolveModal, setResolveModal] = useState({ open: false, disputeId: null, resolutionType: '', remark: '' })
+  const [resolvingDispute, setResolvingDispute] = useState(false)
 
   const isElevated = user?.role === 'admin' || user?.role === 'organization_head'
   const canAssign = isElevated || user?.permissions?.consignments === true
   const isArchived = consignment?.isArchived || consignment?.operationalStatus === 'archived'
+  const canActOnDispute = userCanConfirmStageClient(user, 'inward_completed', consignment)
+  const inwardDisputes = consignment?.inwardDisputes || []
+  const openDisputes = inwardDisputes.filter((d) => d.status === 'open')
 
   useEffect(() => {
     setSelectedUserId(consignment?.groundTeamUserId || '')
@@ -139,6 +280,53 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
       addToast(e.response?.data?.error || 'TaskFlow resync failed', 'error')
     } finally {
       setResyncingTaskflow(false)
+    }
+  }
+
+  const handleSaveTicket = async (disputeId) => {
+    const ticketId = (ticketDrafts[disputeId] ?? '').trim()
+    if (!ticketId) {
+      addToast('Enter a Ticket / Case ID', 'warning')
+      return
+    }
+    setSavingTicketId(disputeId)
+    try {
+      const res = await workflowAPI.recordDisputeTicket(consignment.id, disputeId, { ticketId })
+      onUpdated?.(res.data.consignment)
+      setTicketDrafts((prev) => ({ ...prev, [disputeId]: undefined }))
+      addToast('Ticket / Case ID saved', 'success')
+    } catch (e) {
+      addToast(e.response?.data?.error || 'Could not save ticket ID', 'error')
+    } finally {
+      setSavingTicketId(null)
+    }
+  }
+
+  const openResolveModal = (disputeId) => {
+    setResolveModal({ open: true, disputeId, resolutionType: '', remark: '' })
+  }
+
+  const handleResolveDispute = async () => {
+    const { disputeId, resolutionType, remark } = resolveModal
+    if (!resolutionType || !remark.trim()) {
+      addToast('Resolution type and remark are both required', 'warning')
+      return
+    }
+    setResolvingDispute(true)
+    try {
+      const res = await workflowAPI.resolveDispute(consignment.id, disputeId, { resolutionType, remark: remark.trim() })
+      onUpdated?.(res.data.consignment)
+      setResolveModal({ open: false, disputeId: null, resolutionType: '', remark: '' })
+      addToast(
+        res.data.archived
+          ? 'Dispute resolved — consignment moved to Archive'
+          : 'Dispute resolved — other dispute(s) still open',
+        'success'
+      )
+    } catch (e) {
+      addToast(e.response?.data?.error || 'Could not resolve dispute', 'error')
+    } finally {
+      setResolvingDispute(false)
     }
   }
 
@@ -396,6 +584,8 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
     if (stage === 'inward_completed') {
       const f = forms.inward_completed
       const dispatched = Number(consignment?.dispatchDetails?.dispatchedQty || consignment?.totalPackedQty) || 0
+      const inwardQtyNum = f.inwardQty !== '' ? Number(f.inwardQty) : null
+      const variance = inwardQtyNum != null && dispatched > 0 ? inwardQtyNum - dispatched : 0
       return (
         <div className="w-full mt-2 grid sm:grid-cols-2 gap-2">
           <div className="text-[11px] text-slate-600 sm:col-span-2">
@@ -420,8 +610,15 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
               className="inp text-xs w-full mt-1"
             />
           </label>
+          {variance !== 0 && (
+            <div className="sm:col-span-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+              <strong>{variance < 0 ? `Short by ${Math.abs(variance)}` : `Excess by ${variance}`}.</strong>{' '}
+              Confirming with this qty will open a tracked inward dispute instead of archiving — the consignment stays
+              open until a marketplace ticket is raised and the dispute is resolved with a resolution type + remark.
+            </div>
+          )}
           <label className="block text-[10px] font-semibold uppercase text-slate-500 sm:col-span-2">
-            Variance / dispute reason (if qty differs)
+            Variance / dispute reason {variance !== 0 ? '(required — qty differs)' : '(if qty differs)'}
             <textarea
               value={f.inwardVarianceReason}
               onChange={(e) => updateForm('inward_completed', { inwardVarianceReason: e.target.value })}
@@ -429,7 +626,7 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
             />
           </label>
           <label className="block text-[10px] font-semibold uppercase text-slate-500 sm:col-span-2">
-            Dispute / issue details
+            Dispute / issue details (optional extra context)
             <textarea
               value={f.disputeDetails}
               onChange={(e) => updateForm('inward_completed', { disputeDetails: e.target.value })}
@@ -444,12 +641,13 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
   }
 
   return (
+    <>
     <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 lg:p-5 mb-6">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div>
           <h2 className="text-sm font-bold text-slate-900">Operational workflow</h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Stages advance by department. Packing completed auto-assigns Invoice Creation; invoice completed unlocks dispatch; inward verification archives the consignment.
+            Stages advance by department. Packing completed auto-assigns Invoice Creation; invoice completed unlocks dispatch; inward verification archives the consignment — unless inward qty doesn't match, which opens a dispute and holds the consignment out of Archive until it's resolved.
           </p>
         </div>
         <div className="flex flex-wrap gap-1.5">
@@ -471,6 +669,11 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
               <Clock className="w-3 h-3" /> TAT overdue
             </span>
           )}
+          {openDisputes.length > 0 && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-800">
+              <AlertTriangle className="w-3 h-3" /> {openDisputes.length > 1 ? `${openDisputes.length} disputes open` : 'Dispute open'}
+            </span>
+          )}
           {isArchived && (
             <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-200 text-slate-700">
               Archived
@@ -478,6 +681,44 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
           )}
         </div>
       </div>
+
+      {inwardDisputes.length > 0 && (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50/40 overflow-hidden">
+          <div className="px-4 py-3 border-b border-red-100 bg-red-50 flex flex-wrap items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0" />
+            <h3 className="text-sm font-bold text-red-900">Inward Dispute{inwardDisputes.length > 1 ? 's' : ''}</h3>
+            {openDisputes.length > 0 ? (
+              <span className="text-[10px] font-semibold uppercase tracking-wide bg-red-600 text-white px-2 py-0.5 rounded-full">
+                {openDisputes.length} open
+              </span>
+            ) : (
+              <span className="text-[10px] font-semibold uppercase tracking-wide bg-emerald-600 text-white px-2 py-0.5 rounded-full">
+                All resolved
+              </span>
+            )}
+          </div>
+          {openDisputes.length > 0 && (
+            <p className="px-4 pt-3 text-[11px] text-red-800">
+              This consignment cannot move to Archive / Records until every dispute below is resolved with a resolution type and remark.
+              {!canActOnDispute ? ' Only the Inward Tracking Team / management can raise a ticket or resolve it.' : ''}
+            </p>
+          )}
+          <div className="p-4 space-y-3">
+            {inwardDisputes.map((d) => (
+              <DisputeRow
+                key={d.id}
+                dispute={d}
+                canAct={canActOnDispute}
+                ticketDraft={ticketDrafts[d.id]}
+                onTicketDraftChange={(value) => setTicketDrafts((prev) => ({ ...prev, [d.id]: value }))}
+                onSaveTicket={() => handleSaveTicket(d.id)}
+                savingTicket={savingTicketId === d.id}
+                onOpenResolve={() => openResolveModal(d.id)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {isElevated && (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-2">
@@ -617,5 +858,17 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
         })}
       </ol>
     </div>
+    {resolveModal.open && (
+      <ResolveDisputeModal
+        resolutionType={resolveModal.resolutionType}
+        remark={resolveModal.remark}
+        onResolutionTypeChange={(value) => setResolveModal((prev) => ({ ...prev, resolutionType: value }))}
+        onRemarkChange={(value) => setResolveModal((prev) => ({ ...prev, remark: value }))}
+        onCancel={() => setResolveModal({ open: false, disputeId: null, resolutionType: '', remark: '' })}
+        onConfirm={handleResolveDispute}
+        busy={resolvingDispute}
+      />
+    )}
+    </>
   )
 }

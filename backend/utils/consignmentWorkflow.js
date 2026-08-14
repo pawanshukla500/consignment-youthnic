@@ -14,6 +14,7 @@ const {
   normalizeDepartment,
   departmentLabel,
 } = require('./departments');
+const { hasOpenDispute, getOpenDisputes, buildOpenDispute } = require('./inwardDisputes');
 
 const STAGE_ORDER = [
   'packing_completed',
@@ -50,8 +51,9 @@ const LIST_BUCKETS = {
   ready_for_dispatch: 4,
   shipped: 5,
   inward_pending: 6,
-  inwarded: 7,
-  archived: 8,
+  disputed: 7,
+  inwarded: 8,
+  archived: 9,
 };
 
 function emptyStageConfirmations() {
@@ -92,6 +94,9 @@ function isStageConfirmed(consignment, stage) {
 function getCurrentWorkflowStage(consignment) {
   if (consignment?.operationalStatus === 'archived' || consignment?.isArchived) {
     return 'archived';
+  }
+  if (hasOpenDispute(consignment)) {
+    return 'disputed';
   }
   for (const stage of STAGE_ORDER) {
     if (!isStageConfirmed(consignment, stage)) return stage;
@@ -358,6 +363,7 @@ function getListPriorityBucket(consignment) {
   const inwardDone = isStageConfirmed(consignment, 'inward_completed')
     || Boolean(consignment.dateOfInward);
 
+  if (hasOpenDispute(consignment)) return 'disputed';
   if (inwardDone || ship === 'Missed') return 'inwarded';
   if (dispatched) return 'inward_pending';
   if (readyDispatch && invoiceDone) return 'ready_for_dispatch';
@@ -538,6 +544,7 @@ function applyStageConfirmation(consignment, stage, user, note = null, payload =
     updates.unitsShipped = details.dispatchedQty;
   }
 
+  let disputeOpened = null;
   if (stage === 'inward_completed') {
     updates.dateOfInward = details.inwardDate;
     updates.unitsInwarded = details.receivedQty;
@@ -550,13 +557,27 @@ function applyStageConfirmation(consignment, stage, user, note = null, payload =
     };
     // Inward closes logistics — do not leave Ship column on "In Transit".
     updates.shipmentStatus = 'Inwarded';
-    // Auto-archive when inward matches (or variance accepted)
-    updates.operationalStatus = 'archived';
-    updates.isArchived = true;
-    updates.archivedAt = confirmedAt;
-    updates.archivedReason = details.inwardStatus === 'matched'
-      ? 'Inward quantity verified — moved to archive'
-      : 'Inward completed with recorded variance — moved to archive';
+
+    if (details.inwardStatus === 'matched') {
+      // Auto-archive when inward matches exactly — nothing to dispute.
+      updates.operationalStatus = 'archived';
+      updates.isArchived = true;
+      updates.archivedAt = confirmedAt;
+      updates.archivedReason = 'Inward quantity verified — moved to archive';
+    } else {
+      // Short / excess inward: open a tracked dispute instead of archiving.
+      // The consignment stays open (Disputed / Inward Issue Pending) until every
+      // dispute on it is resolved with a resolution type + remark.
+      disputeOpened = buildOpenDispute({
+        shippedQty: details.dispatchedQty,
+        inwardQty: details.receivedQty,
+        reason: details.varianceReason,
+        disputeDetails: details.disputeDetails,
+        user,
+      });
+      updates.inwardDisputes = [...(consignment.inwardDisputes || []), disputeOpened];
+      updates.operationalStatus = 'disputed';
+    }
   }
 
   const assignDept = NEXT_ASSIGNMENT_DEPARTMENT[stage];
@@ -582,6 +603,7 @@ function applyStageConfirmation(consignment, stage, user, note = null, payload =
     updates,
     autoStages,
     assignDepartment: assignDept || null,
+    disputeOpened,
   };
 }
 
@@ -610,6 +632,12 @@ function getPendingActionLabel(consignment) {
   if (stage === 'invoice_created') return 'Enter invoice number, date & amount';
   if (stage === 'dispatched') return 'Enter docket details & mark dispatched';
   if (stage === 'inward_completed') return 'Record inward quantities';
+  if (stage === 'disputed') {
+    const open = getOpenDisputes(consignment);
+    const missingTicket = open.filter((d) => !d.ticketId).length;
+    if (missingTicket > 0) return 'Raise marketplace ticket for inward dispute';
+    return 'Resolve inward dispute';
+  }
 
   return STAGE_LABELS[stage] || null;
 }
@@ -677,6 +705,8 @@ function enrichWorkflowFields(consignment, options = {}) {
     || Boolean(stageConfirmations.packing_completed?.confirmedAt)
     || consignment.status === 'completed'
   );
+  const openInwardDisputes = getOpenDisputes(consignment);
+  const hasOpenInwardDispute = openInwardDisputes.length > 0;
   const base = {
     ...consignment,
     shipmentStatus,
@@ -684,7 +714,9 @@ function enrichWorkflowFields(consignment, options = {}) {
     currentWorkflowStage,
     currentWorkflowStageLabel: currentWorkflowStage === 'archived'
       ? 'Archived'
-      : (STAGE_LABELS[currentWorkflowStage] || 'Complete'),
+      : currentWorkflowStage === 'disputed'
+        ? 'Disputed / Inward Issue Pending'
+        : (STAGE_LABELS[currentWorkflowStage] || 'Complete'),
     pendingAction: getPendingActionLabel(withStages),
     overdueStages,
     isTatOverdue: overdueStages.length > 0,
@@ -695,6 +727,8 @@ function enrichWorkflowFields(consignment, options = {}) {
     packingTotals: packing,
     packingShortQty,
     hasPackingShort,
+    hasOpenInwardDispute,
+    openInwardDisputeCount: openInwardDisputes.length,
     assignedDepartment: consignment.assignedDepartment || null,
     assignedDepartmentLabel: consignment.assignedDepartmentLabel
       || departmentLabel(consignment.assignedDepartment)
@@ -814,6 +848,15 @@ function buildWeeklyReportSummary(consignments = []) {
 function canArchiveConsignment(consignment) {
   if (consignment?.operationalStatus === 'archived' || consignment?.isArchived) {
     return { ok: false, error: 'Already archived.', code: 'ALREADY_ARCHIVED' };
+  }
+  const openDisputes = getOpenDisputes(consignment);
+  if (openDisputes.length > 0) {
+    return {
+      ok: false,
+      error: `Cannot archive — ${openDisputes.length} inward dispute(s) still open. Resolve every dispute (resolution type + remark) before archiving.`,
+      code: 'DISPUTE_OPEN',
+      openDisputeCount: openDisputes.length,
+    };
   }
   if (isStageConfirmed(consignment, 'inward_completed')) {
     return { ok: true };

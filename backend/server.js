@@ -436,14 +436,19 @@ app.listen(PORT, async () => {
 
   // Workflow: TAT reminders hourly + Org Head email (Tue & Fri 08:00 UTC)
   try {
-    const { processTatRemindersAndEscalations, sendWeeklyOrgHeadReport } = require('./routes/workflow');
+    const {
+      processTatRemindersAndEscalations,
+      processInwardDisputeReminders,
+      sendWeeklyOrgHeadReport,
+    } = require('./routes/workflow');
     const { isResendConfigured } = require('./utils/resend');
     const HOUR = 60 * 60 * 1000;
+    const DISPUTE_SWEEP_INTERVAL = 6 * HOUR; // fine enough resolution for a 3-day reminder cadence
 
     if (!isResendConfigured()) {
       console.warn('[Workflow] Resend not configured — automatic workflow emails are DISABLED until RESEND_API_KEY is set');
     } else {
-      console.log('[Workflow] Resend ready — assignment, TAT, escalation, and Org Head emails will send automatically');
+      console.log('[Workflow] Resend ready — assignment, TAT, escalation, dispute, and Org Head emails will send automatically');
     }
 
     // First TAT sweep shortly after boot (don't wait a full hour)
@@ -461,6 +466,23 @@ app.listen(PORT, async () => {
         .catch((err) => console.warn('[Workflow] TAT check failed:', err.message));
     }, HOUR);
 
+    // Inward disputes: every-3-days follow-up (consolidated per recipient). First
+    // pass shortly after boot so a dispute opened just before a restart isn't
+    // stuck waiting a full sweep interval.
+    setTimeout(() => {
+      processInwardDisputeReminders()
+        .then((r) => console.log('[Workflow] Startup dispute reminder check', r))
+        .catch((err) => console.warn('[Workflow] Startup dispute reminder check failed:', err.message));
+    }, 60 * 1000);
+
+    setInterval(() => {
+      processInwardDisputeReminders()
+        .then((r) => {
+          if (r.sent || r.failures) console.log('[Workflow] Dispute reminder check', r);
+        })
+        .catch((err) => console.warn('[Workflow] Dispute reminder check failed:', err.message));
+    }, DISPUTE_SWEEP_INTERVAL);
+
     setInterval(() => {
       const d = new Date();
       // Tuesday (2) and Friday (5) at 08:00–08:59 UTC
@@ -471,7 +493,7 @@ app.listen(PORT, async () => {
           .catch((err) => console.warn('[Workflow] Org Head report failed:', err.message));
       }
     }, HOUR);
-    console.log('[Workflow] TAT reminder + Org Head email (Tue/Fri) schedulers started');
+    console.log('[Workflow] TAT reminder + inward-dispute reminder + Org Head email (Tue/Fri) schedulers started');
   } catch (err) {
     console.warn('[Workflow] Could not start schedulers:', err.message);
   }

@@ -67,6 +67,7 @@ export const WORKFLOW_BUCKET_ORDER = [
   'ready_for_dispatch',
   'shipped',
   'inward_pending',
+  'disputed',
   'inwarded',
   'archived',
 ]
@@ -78,6 +79,7 @@ export const WORKFLOW_BUCKET_LABELS = {
   ready_for_dispatch: 'Ready for dispatch',
   shipped: 'Shipped',
   inward_pending: 'Inward pending',
+  disputed: 'Disputed / Inward Issue Pending',
   inwarded: 'Inwarded / done',
   archived: 'Archived',
 }
@@ -90,6 +92,7 @@ export const WORKFLOW_BUCKET_SHORT = {
   ready_for_dispatch: 'Ready dispatch',
   shipped: 'Shipped',
   inward_pending: 'Inward',
+  disputed: 'Disputed',
   inwarded: 'Inwarded',
   archived: 'Archived',
 }
@@ -101,6 +104,7 @@ export const WORKFLOW_BUCKET_FILTER_VARIANT = {
   ready_for_dispatch: 'success',
   shipped: 'default',
   inward_pending: 'warning',
+  disputed: 'danger',
   inwarded: 'default',
   archived: 'default',
 }
@@ -112,12 +116,29 @@ export const WORKFLOW_BUCKET_CLASS = {
   ready_for_dispatch: 'bg-emerald-100 text-emerald-800 border-emerald-200',
   shipped: 'bg-indigo-100 text-indigo-800 border-indigo-200',
   inward_pending: 'bg-violet-100 text-violet-800 border-violet-200',
+  disputed: 'bg-red-100 text-red-800 border-red-200',
   inwarded: 'bg-slate-100 text-slate-600 border-slate-200',
   archived: 'bg-slate-200 text-slate-700 border-slate-300',
 }
 
+/** Mirrors backend/utils/inwardDisputes.js DISPUTE_RESOLUTION_TYPES. */
+export const DISPUTE_RESOLUTION_TYPES = {
+  our_mistake: 'Our Mistake / Scanning Error',
+  reimbursement_received: 'Reimbursement Received',
+  marketplace_resolved: 'Marketplace Issue Resolved',
+  external_issue: 'External / Outside Issue',
+  inventory_adjusted: 'Inventory Found / Adjusted',
+  other: 'Other',
+}
+
+export function hasOpenInwardDisputeClient(c) {
+  return Boolean(c?.hasOpenInwardDispute)
+    || (Array.isArray(c?.inwardDisputes) && c.inwardDisputes.some((d) => d?.status === 'open'))
+}
+
 export function getWorkflowBucket(c) {
   if (c?.operationalStatus === 'archived' || c?.isArchived) return 'archived'
+  if (hasOpenInwardDisputeClient(c)) return 'disputed'
   if (c?.listPriorityBucket) return c.listPriorityBucket
   const ship = c?.shipmentStatus || 'Planned'
   const pack = c?.status || 'pending'

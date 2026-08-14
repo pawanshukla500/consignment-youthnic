@@ -100,6 +100,8 @@ export const workflowAPI = {
   sendWeeklyReport: (data) => api.post('/workflow/org-head/send-weekly-report', data),
   taskflowStatus: () => api.get('/workflow/taskflow/status'),
   taskflowResync: (id) => api.post(`/workflow/${id}/taskflow-resync`),
+  recordDisputeTicket: (id, disputeId, data) => api.post(`/workflow/${id}/inward-disputes/${encodeURIComponent(disputeId)}/ticket`, data),
+  resolveDispute: (id, disputeId, data) => api.post(`/workflow/${id}/inward-disputes/${encodeURIComponent(disputeId)}/resolve`, data),
 };
 
 // Uploads API

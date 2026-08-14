@@ -18,6 +18,7 @@ const {
   patchStageAssignee,
 } = require('./taskflowClient');
 const { getUserDepartments } = require('./departments');
+const { getAllDisputes, getOpenDisputes } = require('./inwardDisputes');
 
 /** Packing workflow stage → TaskFlow stage position to complete (1-based). */
 const EVENT_TO_TARGET_POSITION = {
@@ -202,6 +203,25 @@ function buildWorkflowDescription(consignment) {
     lines.push(`5) ${bits.join(' · ')}.`);
   } else {
     lines.push('5) Inward done — pending.');
+  }
+
+  const openDisputes = getOpenDisputes(consignment);
+  if (openDisputes.length) {
+    lines.push('');
+    lines.push(`⚠ INWARD DISPUTE OPEN (${openDisputes.length}) — will NOT archive until resolved:`);
+    for (const d of openDisputes) {
+      const bits = [
+        `${d.varianceType === 'excess' ? 'Excess' : 'Short'} ${d.disputedQty} (shipped ${d.shippedQty}, inward ${d.inwardQty})`,
+        d.ticketId ? `ticket ${d.ticketId}` : 'ticket NOT raised yet',
+      ];
+      lines.push(`- ${bits.join(' · ')}`);
+    }
+  } else {
+    const resolved = getAllDisputes(consignment).filter((d) => d.status === 'resolved');
+    if (resolved.length) {
+      lines.push('');
+      lines.push(`Inward dispute(s) resolved (${resolved.length}): ${resolved.map((d) => d.resolution?.type || 'resolved').join(', ')}.`);
+    }
   }
 
   if (consignment?.groundTeamName || consignment?.groundTeamEmail) {
@@ -779,6 +799,38 @@ async function resyncConsignmentToTaskflow(consignment) {
   };
 }
 
+/**
+ * Dispute opened/resolved: refresh the linked TaskFlow task's description
+ * (buildWorkflowDescription now includes the dispute block above) and
+ * best-effort bump/revert its priority so it stands out to the inward team.
+ */
+async function syncDisputeEvent(consignment, { event } = {}) {
+  if (!isTaskflowConfigured()) return { skipped: true, reason: 'not_configured' };
+  if (!consignment?.id) return { skipped: true, reason: 'missing_id' };
+  try {
+    const result = await resyncConsignmentToTaskflow(consignment);
+    const workflowId = result?.createdResult?.workflowId
+      || result?.stagesResult?.workflowId
+      || consignment?.taskflow?.workflowId
+      || null;
+    if (workflowId) {
+      await updateWorkflow(workflowId, { priority: event === 'opened' ? 'urgent' : 'medium' }).catch(() => {});
+    }
+    return { ok: true, workflowId };
+  } catch (error) {
+    console.warn('[TaskFlowBridge] dispute sync failed:', consignment.id, error.message);
+    return { ok: false, error: error.message };
+  }
+}
+
+/** Fire-and-forget — never blocks the confirm-stage / ticket / resolve response. */
+function notifyTaskflowDisputeEvent(consignment, options = {}) {
+  if (!isTaskflowEnabled()) return;
+  setImmediate(() => {
+    syncDisputeEvent(consignment, options).catch(() => {});
+  });
+}
+
 function getTaskflowStatus() {
   const cfg = getConfig();
   return {
@@ -821,6 +873,7 @@ module.exports = {
   syncConsignmentIdChange,
   refreshAssigneesForConsignment,
   resyncConsignmentToTaskflow,
+  notifyTaskflowDisputeEvent,
   getTaskflowStatus,
   isTaskflowEnabled,
   isTaskflowConfigured,

@@ -11,6 +11,10 @@ const { sendViaResend, isResendConfigured } = require('../utils/resend');
 const {
   buildWorkflowEmail,
   buildWeeklyReportEmail,
+  buildDisputeOpenedEmail,
+  buildDisputeReminderEmail,
+  buildConsolidatedDisputeReminderEmail,
+  buildDisputeResolvedEmail,
   escapeHtml,
 } = require('../utils/emailTemplates');
 const {
@@ -37,13 +41,20 @@ const {
 const {
   notifyTaskflowStages,
   notifyTaskflowAssigneesRefresh,
+  notifyTaskflowDisputeEvent,
   resyncConsignmentToTaskflow,
   getTaskflowStatus,
 } = require('../utils/taskflowBridge');
+const {
+  DISPUTE_RESOLUTION_TYPES,
+  recordDisputeTicket,
+  resolveDispute,
+} = require('../utils/inwardDisputes');
 
 /** Prevent duplicate Org Head emails within the same UTC calendar day */
 let lastWeeklyReportKey = null;
 const TAT_REMINDER_COOLDOWN_MS = 20 * 60 * 60 * 1000; // ~once per day while overdue
+const DISPUTE_REMINDER_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000; // every 3 days while a dispute stays open
 
 async function getUserEmail(userId) {
   if (!userId) return null;
@@ -281,9 +292,14 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
     await firestoreHelpers.setDocument('consignments', consignment.id, result.updates);
     let merged = { ...consignment, ...result.updates };
 
-    // Auto-assign next department owners (invoice / dispatch / inward)
+    // Auto-assign next department owners (invoice / dispatch / inward).
+    // An inward dispute has no NEXT_ASSIGNMENT_DEPARTMENT entry (inward is the last
+    // stage) so hand it to the Inward Tracking Team explicitly — they become the
+    // "concerned person" for the dispute-opened email and the 3-day reminders.
     let autoAssign = null;
-    const nextDept = result.assignDepartment || NEXT_ASSIGNMENT_DEPARTMENT[stage];
+    const nextDept = result.assignDepartment
+      || NEXT_ASSIGNMENT_DEPARTMENT[stage]
+      || (result.disputeOpened ? 'inward' : null);
     if (nextDept && !merged.isArchived && merged.operationalStatus !== 'archived') {
       autoAssign = await autoAssignDepartment(consignment.id, merged, nextDept, req.user);
       if (autoAssign.ok) {
@@ -299,43 +315,63 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
       autoStages: result.autoStages || [],
       assignedDepartment: nextDept || null,
     });
+    if (result.disputeOpened) {
+      await addAuditLog('inward_dispute_opened', 'consignment', consignment.id, req.user.id, {
+        disputeId: result.disputeOpened.id,
+        shippedQty: result.disputeOpened.shippedQty,
+        inwardQty: result.disputeOpened.inwardQty,
+        disputedQty: result.disputeOpened.disputedQty,
+        varianceType: result.disputeOpened.varianceType,
+      });
+    }
     emitConsignmentChange(next);
 
-    const taskflowStages = [stage, ...(result.autoStages || [])];
-    notifyTaskflowStages(next, taskflowStages, {
-      note: note || `Confirmed in Packing: ${STAGE_LABELS[stage] || stage}`,
-    });
+    if (result.disputeOpened) {
+      // Full resync (covers the stage note too) + priority bump for the dispute.
+      notifyTaskflowDisputeEvent(next, { event: 'opened' });
+    } else {
+      const taskflowStages = [stage, ...(result.autoStages || [])];
+      notifyTaskflowStages(next, taskflowStages, {
+        note: note || `Confirmed in Packing: ${STAGE_LABELS[stage] || stage}`,
+      });
+    }
 
     const actionOwner = autoAssign?.ok ? departmentLabel(nextDept) : null;
-    const mail = buildWorkflowEmail({
-      title: actionOwner ? `Action required — ${next.pendingAction}` : 'Workflow stage completed',
-      headline: actionOwner
-        ? `${actionOwner}: ${next.pendingAction}`
-        : `${STAGE_LABELS[stage] || stage} confirmed`,
-      intro: `Confirmed by ${escapeHtml(req.user.name || req.user.email || 'team member')}. Consignment workflow has been updated automatically.`,
-      consignment: next,
-      stageLabel: STAGE_LABELS[stage] || stage,
-      badge: actionOwner ? 'Action required' : 'Stage complete',
-      accent: '#047857',
-      extraHtml: [
-        next.pendingAction
-          ? `<p style="margin:0 0 16px;font-size:13px;color:#b45309;line-height:1.6"><strong>Next required action:</strong> ${escapeHtml(next.pendingAction)}</p>`
-          : '',
-        next.assignedDepartmentLabel
-          ? `<p style="margin:0 0 16px;font-size:13px;color:#475569;line-height:1.6"><strong>Assigned department:</strong> ${escapeHtml(next.assignedDepartmentLabel)}</p>`
-          : '',
-      ].join(''),
-    });
+    const mail = result.disputeOpened
+      ? buildDisputeOpenedEmail(next, result.disputeOpened)
+      : buildWorkflowEmail({
+        title: actionOwner ? `Action required — ${next.pendingAction}` : 'Workflow stage completed',
+        headline: actionOwner
+          ? `${actionOwner}: ${next.pendingAction}`
+          : `${STAGE_LABELS[stage] || stage} confirmed`,
+        intro: `Confirmed by ${escapeHtml(req.user.name || req.user.email || 'team member')}. Consignment workflow has been updated automatically.`,
+        consignment: next,
+        stageLabel: STAGE_LABELS[stage] || stage,
+        badge: actionOwner ? 'Action required' : 'Stage complete',
+        accent: '#047857',
+        extraHtml: [
+          next.pendingAction
+            ? `<p style="margin:0 0 16px;font-size:13px;color:#b45309;line-height:1.6"><strong>Next required action:</strong> ${escapeHtml(next.pendingAction)}</p>`
+            : '',
+          next.assignedDepartmentLabel
+            ? `<p style="margin:0 0 16px;font-size:13px;color:#475569;line-height:1.6"><strong>Assigned department:</strong> ${escapeHtml(next.assignedDepartmentLabel)}</p>`
+            : '',
+        ].join(''),
+      });
 
     const managers = await listManagementEmails();
     const recipients = buildStageEmailAudience({ autoAssign, consignment: next, managers });
-    const emailResults = await notifyMany(recipients, { ...mail, tags: ['workflow', 'stage-confirm'] });
+    const emailResults = await notifyMany(recipients, {
+      ...mail,
+      tags: result.disputeOpened ? ['workflow', 'dispute-opened'] : ['workflow', 'stage-confirm'],
+    });
 
     res.json({
       consignment: next,
       stage,
       autoStages: result.autoStages || [],
       assignedDepartment: nextDept || null,
+      disputeOpened: result.disputeOpened || null,
       autoAssign: autoAssign
         ? { ok: autoAssign.ok, reason: autoAssign.reason || null, userId: autoAssign.assignee?.id || null }
         : null,
@@ -350,6 +386,118 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
     console.error('[confirm-stage]', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+/** Inward disputes are owned by the Inward Tracking Team / management, same as the stage itself. */
+function canActOnDispute(user, consignment) {
+  return user?.role === 'admin' || userCanConfirmStage(user, 'inward_completed', consignment);
+}
+
+/** Record / update the marketplace Ticket / Case ID against an open inward dispute. */
+router.post('/:id/inward-disputes/:disputeId/ticket', authenticateToken, async (req, res) => {
+  try {
+    const consignment = await firestoreHelpers.getDocument('consignments', req.params.id);
+    if (!consignment) return res.status(404).json({ error: 'Consignment not found.' });
+    if (!canActOnDispute(req.user, consignment)) {
+      return res.status(403).json({
+        error: 'Your department is not authorized to manage inward disputes.',
+        code: 'DEPARTMENT_FORBIDDEN',
+      });
+    }
+
+    const result = recordDisputeTicket(consignment, req.params.disputeId, {
+      ticketId: req.body?.ticketId,
+      user: req.user,
+    });
+    if (!result.ok) {
+      return res.status(409).json({ error: result.error, code: result.code });
+    }
+
+    const updates = { inwardDisputes: result.disputes, updatedAt: now() };
+    await firestoreHelpers.setDocument('consignments', consignment.id, updates);
+    const next = enrichWorkflowFields({ ...consignment, ...updates });
+
+    await addAuditLog('inward_dispute_ticket_recorded', 'consignment', consignment.id, req.user.id, {
+      disputeId: result.dispute.id,
+      ticketId: result.dispute.ticketId,
+    });
+    emitConsignmentChange(next);
+    notifyTaskflowDisputeEvent(next, { event: 'opened' });
+
+    res.json({ consignment: next, dispute: result.dispute });
+  } catch (error) {
+    console.error('[inward-disputes/ticket]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Close an inward dispute — requires a resolution type + remark explaining how it
+ * was resolved. When this was the last open dispute on the consignment, it moves
+ * to Archive / Records automatically (mirrors the clean-inward auto-archive path).
+ */
+router.post('/:id/inward-disputes/:disputeId/resolve', authenticateToken, async (req, res) => {
+  try {
+    const consignment = await firestoreHelpers.getDocument('consignments', req.params.id);
+    if (!consignment) return res.status(404).json({ error: 'Consignment not found.' });
+    if (!canActOnDispute(req.user, consignment)) {
+      return res.status(403).json({
+        error: 'Your department is not authorized to manage inward disputes.',
+        code: 'DEPARTMENT_FORBIDDEN',
+      });
+    }
+
+    const result = resolveDispute(consignment, req.params.disputeId, {
+      resolutionType: req.body?.resolutionType,
+      remark: req.body?.remark,
+      user: req.user,
+    });
+    if (!result.ok) {
+      return res.status(409).json({ error: result.error, code: result.code, validTypes: result.validTypes || undefined });
+    }
+
+    const resolvedAt = now();
+    const updates = { inwardDisputes: result.disputes, updatedAt: resolvedAt };
+    if (result.allResolved) {
+      updates.operationalStatus = 'archived';
+      updates.isArchived = true;
+      updates.archivedAt = resolvedAt;
+      updates.archivedReason = 'All inward disputes resolved — moved to archive';
+      updates.archivedByUserId = req.user.id;
+      updates.archivedByName = req.user.name || req.user.email;
+    }
+    await firestoreHelpers.setDocument('consignments', consignment.id, updates);
+    const next = enrichWorkflowFields({ ...consignment, ...updates });
+
+    await addAuditLog('inward_dispute_resolved', 'consignment', consignment.id, req.user.id, {
+      disputeId: result.dispute.id,
+      resolutionType: result.dispute.resolution?.type,
+      remark: result.dispute.resolution?.remark,
+      archived: result.allResolved,
+    });
+    if (result.allResolved) {
+      await addAuditLog('archive', 'consignment', consignment.id, req.user.id, {
+        reason: updates.archivedReason,
+      });
+    }
+    emitConsignmentChange(next);
+    notifyTaskflowDisputeEvent(next, { event: 'resolved' });
+
+    const managers = await listManagementEmails();
+    const recipients = buildStageEmailAudience({ autoAssign: null, consignment: next, managers });
+    const mail = buildDisputeResolvedEmail(next, result.dispute, { allResolved: result.allResolved });
+    await notifyMany(recipients, { ...mail, tags: ['workflow', 'dispute-resolved'] });
+
+    res.json({ consignment: next, dispute: result.dispute, archived: result.allResolved });
+  } catch (error) {
+    console.error('[inward-disputes/resolve]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** Resolution type catalog for the resolve-dispute UI. */
+router.get('/inward-disputes/resolution-types', authenticateToken, (_req, res) => {
+  res.json({ types: DISPUTE_RESOLUTION_TYPES });
 });
 
 /** Management visibility feed */
@@ -528,9 +676,99 @@ async function processTatRemindersAndEscalations() {
   return { reminded, escalated, emailFailures };
 }
 
+/**
+ * Every open inward dispute needs a follow-up email roughly every 3 days —
+ * to the assignee (Inward Tracking Team, auto-assigned when the dispute
+ * opened) and to management, same audience as the dispute-opened email.
+ * If a recipient has more than one open dispute, they get ONE consolidated
+ * email instead of one per dispute. The "due" clock is the OLDEST dispute in
+ * a recipient's cluster: once it crosses 3 days, everything currently open
+ * for that recipient goes out together and all of it resets in sync — this
+ * intentionally avoids emails fragmenting into an ever-growing daily trickle.
+ */
+async function processInwardDisputeReminders() {
+  if (!isResendConfigured()) {
+    console.warn('[Workflow] Dispute reminder sweep skipped — Resend not configured');
+    return { sent: 0, failures: 0, skipped: true, reason: 'Resend not configured' };
+  }
+
+  const all = await firestoreHelpers.getCollection('consignments');
+  const managers = await listManagementEmails();
+  const nowMs = Date.now();
+
+  // recipient email (lowercased) -> { items: [{ consignment, dispute }] }
+  const byRecipient = new Map();
+
+  for (const raw of all) {
+    const openDisputes = (raw.inwardDisputes || []).filter((d) => d?.status === 'open');
+    if (!openDisputes.length) continue;
+    const c = enrichWorkflowFields(raw);
+
+    const recipients = new Map();
+    if (c.groundTeamEmail) recipients.set(String(c.groundTeamEmail).toLowerCase(), true);
+    for (const m of managers) recipients.set(String(m.email).toLowerCase(), true);
+
+    for (const email of recipients.keys()) {
+      if (!byRecipient.has(email)) byRecipient.set(email, { items: [] });
+      for (const dispute of openDisputes) {
+        byRecipient.get(email).items.push({ consignment: c, dispute });
+      }
+    }
+  }
+
+  let sent = 0;
+  let failures = 0;
+  const touchedByConsignment = new Map(); // consignmentId -> Set(disputeId)
+
+  for (const [email, { items }] of byRecipient.entries()) {
+    const oldestBaseMs = Math.min(...items.map(({ dispute }) => {
+      const lastSent = dispute.lastReminderSentAt ? new Date(dispute.lastReminderSentAt).getTime() : 0;
+      const opened = dispute.raisedAt ? new Date(dispute.raisedAt).getTime() : nowMs;
+      return lastSent || opened;
+    }));
+    if (nowMs - oldestBaseMs < DISPUTE_REMINDER_INTERVAL_MS) continue;
+
+    const mail = items.length > 1
+      ? buildConsolidatedDisputeReminderEmail(items)
+      : buildDisputeReminderEmail(items[0].consignment, items[0].dispute);
+    const result = await notifyUser({ ...mail, to: email, tags: ['workflow', 'dispute-reminder'] });
+    if (result.ok) {
+      sent += 1;
+      for (const { consignment: c, dispute: d } of items) {
+        if (!touchedByConsignment.has(c.id)) touchedByConsignment.set(c.id, new Set());
+        touchedByConsignment.get(c.id).add(d.id);
+      }
+    } else {
+      failures += 1;
+    }
+  }
+
+  for (const [consignmentId, disputeIds] of touchedByConsignment.entries()) {
+    const doc = await firestoreHelpers.getDocument('consignments', consignmentId);
+    if (!doc) continue;
+    const nextDisputes = (doc.inwardDisputes || []).map((d) => (
+      disputeIds.has(d.id)
+        ? { ...d, lastReminderSentAt: now(), reminderCount: (Number(d.reminderCount) || 0) + 1 }
+        : d
+    ));
+    await firestoreHelpers.setDocument('consignments', consignmentId, { inwardDisputes: nextDisputes, updatedAt: now() });
+  }
+
+  return { sent, failures, recipientsDue: byRecipient.size };
+}
+
 router.post('/run-tat-check', authenticateToken, requireRole('admin', 'organization_head'), async (req, res) => {
   try {
     const result = await processTatRemindersAndEscalations();
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/run-dispute-reminder-check', authenticateToken, requireRole('admin', 'organization_head'), async (req, res) => {
+  try {
+    const result = await processInwardDisputeReminders();
     res.json({ ok: true, ...result });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -613,6 +851,7 @@ module.exports = {
   buildStageEmailAudience,
   sendWeeklyOrgHeadReport,
   processTatRemindersAndEscalations,
+  processInwardDisputeReminders,
   canAdvanceLogistics,
   enrichWorkflowFields,
   sortConsignmentsByWorkflowPriority,
