@@ -90,6 +90,9 @@ assert.ok(packingStationSrc.includes('canStartRecordingSafely') || packingStatio
 assert.ok(fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'deploy.yml'), 'utf8').includes('pull_request'), 'quality gates must run on PRs');
 
 // Reopening an already-packed box to add more qty must ADD a video, never replace one.
+// Full behavioral coverage (fake-indexeddb) lives in
+// frontend/src/utils/__tests__/phase05VideoReliability.test.js — these are source
+// checks only, since this script has no browser/IndexedDB environment.
 assert.ok(packingStationSrc.includes('isReopen: reopen'), 'startRecording must tag reopen recordings');
 assert.ok(packingStationSrc.includes("_setBox(v, { reopen: true })"), "'Continue Packing' must mark the recording as a reopen");
 assert.ok(workerSrc.includes('preserveExisting'), 'worker must tell the server this is an additional-qty video');
@@ -101,12 +104,34 @@ assert.ok(
   /if \(entry\?\.metadata\?\.isReopen\) continue/.test(videoQueueSrc),
   'duplicate-video pruning must never treat a reopen video as a duplicate of another box video'
 );
+assert.ok(
+  videoQueueSrc.includes("&& !v.metadata?.isReopen"),
+  'supersedeVideosForBox itself must exclude reopen entries from the victim set, not just from being picked as keeper'
+);
 assert.ok(uploadsSrc.includes('preserveExisting') && uploadsSrc.includes('keepExistingVideo'), 'metadata API must accept preserveExisting');
-assert.ok(uploadsSrc.includes('countActiveBoxVideos') && uploadsSrc.includes('buildBoxVideoLabel'), 'server must number additional videos as parts (BOX{n}_{part})');
+assert.ok(uploadsSrc.includes('allocatePreservedVideoPart') && uploadsSrc.includes('buildBoxVideoLabel'), 'server must number additional videos as parts (BOX{n}_{part})');
 assert.ok(
   (uploadsSrc.match(/if \(!keepExistingVideo\)/g) || []).length >= 1
     && (uploadsSrc.match(/&& !keepExistingVideo\)/g) || []).length >= 1,
   'both eviction call sites must be gated on !keepExistingVideo'
+);
+assert.ok(
+  uploadsSrc.includes("SELECT 1 FROM documents WHERE collection = 'boxes' AND id = $1 FOR UPDATE"),
+  'preserved-video part allocation must lock the box row so concurrent reopen uploads cannot select the same part'
+);
+
+// Box-number rename collision check must compare canonically (legacy "01" vs "1"),
+// not as exact strings, so a rename can never silently create two boxes that are
+// really the same number. See backend/scripts/migrate-canonicalize-box-numbers.js
+// for the one-time data fix for any legacy non-canonical box numbers already saved.
+const packingAdjustmentsSrc = fs.readFileSync(path.join(__dirname, '..', 'utils', 'packingAdjustments.js'), 'utf8');
+assert.ok(
+  packingAdjustmentsSrc.includes("ltrim(data->>'boxNo', '0')"),
+  'box rename collision query must compare canonical (leading-zero-stripped) box numbers'
+);
+assert.ok(
+  fs.existsSync(path.join(__dirname, 'migrate-canonicalize-box-numbers.js')),
+  'must ship a migration to canonicalize legacy leading-zero box numbers'
 );
 
 const { rebuildSessionSkuTotalsFromBoxes } = require('../utils/packingQuantities');

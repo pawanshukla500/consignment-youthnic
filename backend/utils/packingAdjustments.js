@@ -786,10 +786,19 @@ async function renameBoxNo({ consignmentId, oldBoxNo, newBoxNo, reason, remarks,
     }
     const oldBox = oldBoxRows[0].data;
 
+    // Compare canonically, not as exact strings — a legacy box saved as "01" (from
+    // before box-number input was normalized) must still collide with a rename to "1".
+    // ltrim(...,'0') on an all-zero string yields '' — treat that case as '0'.
     const { rows: collisionRows } = await client.query(
       `SELECT id FROM documents
        WHERE collection = 'boxes'
-         AND (id = $1 OR (data->>'consignmentId' = $2 AND data->>'boxNo' = $3))
+         AND (
+           id = $1
+           OR (
+             data->>'consignmentId' = $2
+             AND (CASE WHEN ltrim(data->>'boxNo', '0') = '' THEN '0' ELSE ltrim(data->>'boxNo', '0') END) = $3
+           )
+         )
        FOR UPDATE`,
       [newBoxId, consignmentId, to]
     );

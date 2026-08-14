@@ -260,7 +260,12 @@ export async function saveMultipartProgress(id, multipart, uploadPhase = null) {
 export async function supersedeVideosForBox(consignmentId, boxNo, keepId = null) {
   if (!consignmentId || boxNo == null || boxNo === '') return []
   const outstanding = await getOutstandingVideos(consignmentId)
-  const sameBox = outstanding.filter((v) => String(v.metadata?.boxNo) === String(boxNo))
+  // Additional-qty (reopen) recordings are never candidates for supersession — not as
+  // the keeper (callers already avoid that) and not as a victim either, regardless of
+  // who triggered this call. Both the original and every reopen part must survive.
+  const sameBox = outstanding.filter(
+    (v) => String(v.metadata?.boxNo) === String(boxNo) && !v.metadata?.isReopen
+  )
   const { superseded } = planSupersedeForBox(sameBox, keepId)
   if (!superseded.length) return []
 
