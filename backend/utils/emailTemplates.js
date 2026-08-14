@@ -4,6 +4,7 @@
  */
 const path = require('path');
 const fs = require('fs');
+const { DISPUTE_RESOLUTION_TYPES } = require('./inwardDisputes');
 
 const APP_NAME = 'Consignment App';
 const BRAND = 'Consignment App';
@@ -385,6 +386,155 @@ Consignments: ${getAppUrl()}/consignments`;
   };
 }
 
+function disputeAgeDays(dispute) {
+  if (!dispute?.raisedAt) return 0;
+  const ms = Date.now() - new Date(dispute.raisedAt).getTime();
+  return Math.max(0, Math.floor(ms / (24 * 60 * 60 * 1000)));
+}
+
+/** Shipped / inward / disputed qty breakdown + ticket status for one dispute. */
+function disputeSummaryTable(dispute = {}) {
+  const varianceLabel = dispute.varianceType === 'excess' ? 'Excess received' : 'Short received';
+  const varianceColor = dispute.varianceType === 'excess' ? '#b45309' : '#b91c1c';
+  return `
+    <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;margin:0 0 16px">
+      <tr><td style="padding:14px 16px">
+        <p style="margin:0 0 10px;font-size:11px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:${varianceColor}">${escapeHtml(varianceLabel)} · Inward dispute</p>
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+          ${detailRow('Shipped qty', escapeHtml(String(dispute.shippedQty ?? '—')))}
+          ${detailRow('Inward (marketplace confirmed) qty', escapeHtml(String(dispute.inwardQty ?? '—')))}
+          ${detailRow('Disputed qty', `<span style="color:${varianceColor}">${escapeHtml(String(dispute.disputedQty ?? '—'))}</span>`)}
+          ${dispute.reason ? detailRow('Variance reason', escapeHtml(dispute.reason)) : ''}
+          ${dispute.disputeDetails ? detailRow('Dispute details', escapeHtml(dispute.disputeDetails)) : ''}
+          ${detailRow(
+            'Marketplace Ticket / Case ID',
+            dispute.ticketId
+              ? escapeHtml(dispute.ticketId)
+              : '<span style="color:#b91c1c">Not raised yet</span>'
+          )}
+          ${detailRow('Dispute open for', `${disputeAgeDays(dispute)} day(s)`)}
+        </table>
+      </td></tr>
+    </table>`;
+}
+
+/** Sent immediately when inward tracking is confirmed with a short/excess qty. */
+function buildDisputeOpenedEmail(consignment, dispute) {
+  return buildWorkflowEmail({
+    title: 'Inward dispute opened',
+    headline: 'Inward discrepancy — dispute opened',
+    intro: 'Inward tracking was confirmed with a quantity mismatch. This consignment stays open and will NOT move to Archive / Records until the dispute is resolved.',
+    consignment,
+    stageLabel: dispute?.ticketId
+      ? 'Resolve the dispute with a resolution type and remark'
+      : 'Raise a marketplace ticket and record the Ticket / Case ID',
+    badge: 'Dispute opened',
+    accent: '#b91c1c',
+    extraHtml: disputeSummaryTable(dispute),
+  });
+}
+
+/** 3-day follow-up when exactly one open dispute is due for this recipient. */
+function buildDisputeReminderEmail(consignment, dispute) {
+  const count = (Number(dispute?.reminderCount) || 0) + 1;
+  return buildWorkflowEmail({
+    title: 'Inward dispute reminder',
+    headline: 'Inward dispute still open',
+    intro: `Reminder #${count} — this inward dispute has not been resolved yet. The consignment cannot be archived until it is closed with a resolution type and remark.`,
+    consignment,
+    stageLabel: dispute?.ticketId
+      ? 'Resolve the dispute with a resolution type and remark'
+      : 'Raise a marketplace ticket and record the Ticket / Case ID',
+    badge: 'Dispute reminder',
+    accent: '#b45309',
+    extraHtml: disputeSummaryTable(dispute),
+  });
+}
+
+/** Consolidated 3-day follow-up when a recipient has more than one open dispute. */
+function buildConsolidatedDisputeReminderEmail(items = []) {
+  const subject = `${items.length} inward disputes open — action needed · ${BRAND}`;
+  const rows = items.map(({ consignment: c, dispute: d }) => {
+    const link = `${getAppUrl()}/consignments/${encodeURIComponent(c?.id || '')}`;
+    const varianceLabel = d.varianceType === 'excess' ? 'Excess' : 'Short';
+    return `
+      <tr>
+        <td style="padding:10px 8px;border-bottom:1px solid #f1f5f9;font-size:12px">
+          <a href="${escapeHtml(link)}" style="color:#4f46e5;font-weight:700;text-decoration:none">${escapeHtml(c?.internalShipmentNo || c?.id || '—')}</a>
+        </td>
+        <td style="padding:10px 8px;border-bottom:1px solid #f1f5f9;font-size:12px;color:#b91c1c;font-weight:700">${escapeHtml(varianceLabel)} ${escapeHtml(String(d.disputedQty ?? '—'))}</td>
+        <td style="padding:10px 8px;border-bottom:1px solid #f1f5f9;font-size:12px">${d.ticketId ? escapeHtml(d.ticketId) : '<span style="color:#b91c1c">No ticket yet</span>'}</td>
+        <td style="padding:10px 8px;border-bottom:1px solid #f1f5f9;font-size:12px;color:#64748b">${disputeAgeDays(d)}d open</td>
+      </tr>`;
+  }).join('');
+
+  const bodyHtml = `
+    <span style="display:inline-block;background:#fef3c7;color:#92400e;font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;margin-bottom:12px">Dispute reminder</span>
+    <p style="margin:0 0 8px;font-size:22px;font-weight:700;color:#0f172a">${items.length} inward disputes still open</p>
+    <p style="margin:0 0 20px;font-size:14px;color:#64748b;line-height:1.65">
+      None of these consignments can move to Archive / Records until every dispute on them is resolved with a resolution type and remark.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:8px">
+      <tr style="background:#f8fafc">
+        <th align="left" style="padding:8px;font-size:11px;color:#64748b;text-transform:uppercase">Consignment</th>
+        <th align="left" style="padding:8px;font-size:11px;color:#64748b;text-transform:uppercase">Variance</th>
+        <th align="left" style="padding:8px;font-size:11px;color:#64748b;text-transform:uppercase">Ticket / Case ID</th>
+        <th align="left" style="padding:8px;font-size:11px;color:#64748b;text-transform:uppercase">Age</th>
+      </tr>
+      ${rows}
+    </table>
+    ${ctaButton(`${getAppUrl()}/consignments?workflow=disputed`, 'Open disputed consignments')}
+  `;
+
+  const text = [
+    `${items.length} inward disputes still open`,
+    ...items.map(({ consignment: c, dispute: d }) =>
+      `- ${c?.internalShipmentNo || c?.id}: ${d.varianceType} ${d.disputedQty} · ticket ${d.ticketId || 'not raised'} · ${disputeAgeDays(d)}d open`),
+    `${getAppUrl()}/consignments?workflow=disputed`,
+  ].join('\n');
+
+  return {
+    subject,
+    html: emailShell({
+      title: subject,
+      preheader: `${items.length} inward disputes need a marketplace ticket / resolution`,
+      bodyHtml,
+      accent: '#b45309',
+    }),
+    text,
+  };
+}
+
+/** Sent when a dispute is closed — confirms resolution type/remark and archive state. */
+function buildDisputeResolvedEmail(consignment, dispute, { allResolved = false } = {}) {
+  const resolution = dispute?.resolution || {};
+  const typeLabel = DISPUTE_RESOLUTION_TYPES[resolution.type] || resolution.type || '—';
+  return buildWorkflowEmail({
+    title: 'Inward dispute resolved',
+    headline: 'Inward dispute closed',
+    intro: allResolved
+      ? 'This dispute is resolved and every dispute on this consignment is now closed — it has moved to Archive / Records.'
+      : 'This dispute is resolved. Other dispute(s) on this consignment are still open, so it has not moved to Archive yet.',
+    consignment,
+    stageLabel: allResolved ? 'Archived' : 'Other dispute(s) still open',
+    badge: 'Dispute resolved',
+    accent: '#047857',
+    extraHtml: `
+      ${disputeSummaryTable(dispute)}
+      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;margin:0 0 16px">
+        <tr><td style="padding:14px 16px">
+          <p style="margin:0 0 10px;font-size:11px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:#047857">Resolution</p>
+          <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+            ${detailRow('Resolution type', escapeHtml(typeLabel))}
+            ${detailRow('Remark', escapeHtml(resolution.remark || '—'))}
+            ${detailRow('Resolved by', escapeHtml(resolution.resolvedByName || '—'))}
+            ${detailRow('Resolved at', fmtDate(resolution.resolvedAt))}
+          </table>
+        </td></tr>
+      </table>`,
+  });
+}
+
 module.exports = {
   APP_NAME,
   BRAND,
@@ -398,4 +548,8 @@ module.exports = {
   buildAppPasswordResetUrl,
   buildWorkflowEmail,
   buildWeeklyReportEmail,
+  buildDisputeOpenedEmail,
+  buildDisputeReminderEmail,
+  buildConsolidatedDisputeReminderEmail,
+  buildDisputeResolvedEmail,
 };

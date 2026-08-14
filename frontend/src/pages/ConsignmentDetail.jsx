@@ -1173,6 +1173,11 @@ const ConsignmentDetail = () => {
               <span className={`px-3 py-1 rounded-full text-xs font-medium ${consignment.shipmentStatus==='Planned'?'bg-slate-100 text-slate-700':consignment.shipmentStatus==='Under Packing'?'bg-orange-100 text-orange-800':consignment.shipmentStatus==='Ready'?'bg-emerald-100 text-emerald-800':consignment.shipmentStatus==='In Transit'||consignment.shipmentStatus==='Forwarded'?'bg-blue-100 text-blue-800':consignment.shipmentStatus==='Inwarded'?'bg-slate-200 text-slate-800':consignment.shipmentStatus==='Missed'?'bg-red-100 text-red-800':'bg-slate-100 text-slate-700'}`}>
                 {consignment.shipmentStatus || 'Planned'}
               </span>
+              {(consignment.inwardDisputes || []).some((d) => d.status === 'open') && (
+                <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-800">
+                  <AlertTriangle className="w-3.5 h-3.5" /> Disputed / Inward Issue Pending
+                </span>
+              )}
               <CriticalityBadge priority={shipmentPriority} size="lg" />
             </div>
             <div className="flex items-center gap-4 text-sm flex-wrap">
