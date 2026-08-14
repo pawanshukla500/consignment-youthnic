@@ -718,7 +718,7 @@ export default function PackingStation() {
     draw();
   };
 
-  const startRecording = async (explicitCid, explicitBox) => {
+  const startRecording = async (explicitCid, explicitBox, { reopen = false } = {}) => {
     if (!streamRef.current) { toast('Start camera first', 'warning'); return; }
     if (mediaRecorderRef.current?.state === 'recording') return;
 
@@ -789,7 +789,11 @@ export default function PackingStation() {
         width,
         height,
         fps,
+        // Reopening an already-packed box to add more qty: this recording is ADDITIONAL
+        // evidence, not a redo — never supersede/replace the box's existing video(s).
+        isReopen: reopen,
       };
+      if (reopen) toast(`Recording additional video for Box ${box} — the earlier video is kept, not replaced`, 'info', 4500);
       recordingSessionIdRef.current = await startRecordingSession(metadata);
       void uploadsAPI.updateVideoStatus({
         consignmentId: cid,
@@ -1229,7 +1233,7 @@ export default function PackingStation() {
               </button>
               <button
                 type="button"
-                onClick={() => { setShowMo(false); _setBox(v); }}
+                onClick={() => { setShowMo(false); _setBox(v, { reopen: true }); }}
                 className="px-3 py-1.5 bg-primary-600 text-white rounded-lg text-[11px] font-semibold hover:bg-primary-700"
               >
                 Continue Packing
@@ -1244,7 +1248,7 @@ export default function PackingStation() {
     _setBox(v);
   };
 
-  const _setBox = (v) => {
+  const _setBox = (v, { reopen = false } = {}) => {
     if (!streamRef.current) {
       toast('Camera must be active before packing. Click "Start Camera" or reload consignment.', 'error', 5000);
       setMoConfig({
@@ -1267,7 +1271,7 @@ export default function PackingStation() {
     setZoneState(3);
     inBoxRef.current.value = '';
     const activeCid = cidRef.current || stateRef.current.cid;
-    if (activeCid) startRecording(activeCid, v);
+    if (activeCid) startRecording(activeCid, v, { reopen });
   };
 
   const syncScanFromServer = (barcode, data, boxNo) => {

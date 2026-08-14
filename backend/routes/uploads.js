@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const { generateId, now, addAuditLog, firestoreHelpers } = require('../utils/helpers');
+const { getPool } = require('../config/database');
 const {
   getStoragePath,
   resolveStoragePath,
@@ -232,6 +233,50 @@ async function ensureSingleVideoPerBox(consignmentId, boxNo, skipId = null) {
     } catch (error) {
       console.warn('[Upload] Storage cleanup after video replace failed:', error.message);
     }
+  }
+}
+
+function buildBoxVideoLabel(boxNo, part) {
+  return part > 1 ? `BOX${boxNo}_${part}` : `BOX${boxNo}`;
+}
+
+// Additional-qty videos are numbered by how many active videos the box already has —
+// part 1 is the original pack, part 2+ are reopens (excludes removal-evidence videos).
+// A plain count-then-setDocument is a read-then-write race: two reopen uploads
+// finalizing for the same box at the same time could both read the same count and
+// save the same part/boxLabel. Reopening only ever happens on a box that already
+// exists server-side, so lock that box row for the duration of the count-and-insert —
+// a second concurrent transaction blocks on FOR UPDATE until the first commits, then
+// sees its insert and computes the next part correctly. Mirrors the row-lock pattern
+// renameBoxNo already uses for the same class of problem.
+async function allocatePreservedVideoPart({ consignmentId, boxNo, buildRecord }) {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `SELECT 1 FROM documents WHERE collection = 'boxes' AND id = $1 FOR UPDATE`,
+      [`${consignmentId}_box_${boxNo}`]
+    );
+    const { rows } = await client.query(
+      `SELECT count(*)::int AS n FROM documents
+       WHERE collection = 'videos'
+         AND data->>'consignmentId' = $1
+         AND data->>'boxNo' = $2
+         AND (data->>'active') IS DISTINCT FROM 'false'
+         AND (data->>'type') IS DISTINCT FROM 'removal_video'
+         AND (data->>'purpose') IS DISTINCT FROM 'quantity_removal'`,
+      [consignmentId, String(boxNo)]
+    );
+    const part = (rows[0]?.n || 0) + 1;
+    const fileRecord = buildRecord(part);
+    await firestoreHelpers.setDocument('videos', fileRecord.id, fileRecord, { client });
+    await client.query('COMMIT');
+    return fileRecord;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
 }
 
@@ -514,12 +559,16 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
       uploadQueueId,
       adjustmentId,
       purpose,
+      preserveExisting,
     } = req.body;
 
     const url = storageUrl || firebaseUrl;
     const path = storagePath || firebasePath;
     const fileType = type || 'document';
     const isRemovalVideo = fileType === 'removal_video' || purpose === 'quantity_removal';
+    // Box was already packed and the operator reopened it to add more qty — keep the
+    // earlier video(s) instead of evicting them; this upload becomes an additional part.
+    const keepExistingVideo = Boolean(preserveExisting) && fileType === 'video' && !isRemovalVideo;
 
     if (!consignmentId || !url) {
       return res.status(400).json({ error: 'consignmentId and storage URL are required.' });
@@ -597,7 +646,7 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
           active: true,
         };
         await firestoreHelpers.setDocument('videos', existing.id, refreshed);
-        if (fileType === 'video' && !isRemovalVideo) {
+        if (fileType === 'video' && !isRemovalVideo && !keepExistingVideo) {
           try {
             await ensureSingleVideoPerBox(consignmentId, boxNo, existing.id);
           } catch (replaceError) {
@@ -621,42 +670,59 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
     }
 
     const fileId = generateId();
-    const fileRecord = buildFileRecord({
-      id: fileId,
-      consignmentId,
-      boxNo,
-      type: isRemovalVideo ? 'removal_video' : (type || 'document'),
-      originalName,
-      storageUrl: resolvedUrl,
-      storagePath: resolvedPath,
-      storageProvider: 'r2',
-      mimeType,
-      size,
-      description: description || (isRemovalVideo
-        ? `Box ${boxNo} quantity removal video`
-        : (fileType === 'video' ? `Box ${boxNo} packing video` : '')),
-      clientUploadId: clientUploadId || uploadQueueId || '',
-      uploadQueueId: uploadQueueId || clientUploadId || '',
-      uploadedBy: req.user.id,
-      uploadedByName: req.user.name || req.user.email
-    });
-    if (isRemovalVideo) {
-      fileRecord.purpose = 'quantity_removal';
-      fileRecord.adjustmentId = adjustmentId;
-      fileRecord.active = true;
-    } else if (fileType === 'video') {
-      fileRecord.active = true;
-    } else if (purpose) {
-      fileRecord.purpose = String(purpose).trim().toLowerCase();
-    }
-    if (fileType === 'video' || isRemovalVideo) {
-      fileRecord.storageVerified = Boolean(verification);
-      fileRecord.storageVerifiedAt = verification ? now() : null;
-    }
-
     const collectionName = (fileType === 'video' || isRemovalVideo) ? 'videos' : 'documents';
-    // Use fileType (not raw type) so videoIds vs documentIds stay consistent
-    await firestoreHelpers.setDocument(collectionName, fileId, fileRecord);
+    const buildRecord = (part) => {
+      const record = buildFileRecord({
+        id: fileId,
+        consignmentId,
+        boxNo,
+        type: isRemovalVideo ? 'removal_video' : (type || 'document'),
+        originalName,
+        storageUrl: resolvedUrl,
+        storagePath: resolvedPath,
+        storageProvider: 'r2',
+        mimeType,
+        size,
+        description: isRemovalVideo
+          ? (description || `Box ${boxNo} quantity removal video`)
+          : (fileType === 'video'
+            ? (part > 1 ? `Box ${boxNo} packing video (part ${part})` : `Box ${boxNo} packing video`)
+            : (description || '')),
+        clientUploadId: clientUploadId || uploadQueueId || '',
+        uploadQueueId: uploadQueueId || clientUploadId || '',
+        uploadedBy: req.user.id,
+        uploadedByName: req.user.name || req.user.email
+      });
+      if (isRemovalVideo) {
+        record.purpose = 'quantity_removal';
+        record.adjustmentId = adjustmentId;
+        record.active = true;
+      } else if (fileType === 'video') {
+        record.active = true;
+        record.part = part;
+        record.boxLabel = buildBoxVideoLabel(boxNo, part);
+      } else if (purpose) {
+        record.purpose = String(purpose).trim().toLowerCase();
+      }
+      if (fileType === 'video' || isRemovalVideo) {
+        record.storageVerified = Boolean(verification);
+        record.storageVerifiedAt = verification ? now() : null;
+      }
+      return record;
+    };
+
+    // Additional-qty videos are numbered by how many active videos the box already has —
+    // part 1 is the original pack, part 2+ are reopens. Reopens must allocate the part
+    // atomically (see allocatePreservedVideoPart) so two concurrent uploads for the same
+    // box can never be saved under the same part/boxLabel.
+    let fileRecord;
+    if (keepExistingVideo && boxNo) {
+      fileRecord = await allocatePreservedVideoPart({ consignmentId, boxNo, buildRecord });
+    } else {
+      fileRecord = buildRecord(1);
+      // Use fileType (not raw type) so videoIds vs documentIds stay consistent
+      await firestoreHelpers.setDocument(collectionName, fileId, fileRecord);
+    }
 
     if (consignment) {
       const idField = (fileType === 'video' || isRemovalVideo) ? 'videoIds' : 'documentIds';
@@ -678,7 +744,9 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
 
     if (fileType === 'video' && !isRemovalVideo && boxNo) {
       try {
-        await ensureSingleVideoPerBox(consignmentId, boxNo, fileId);
+        if (!keepExistingVideo) {
+          await ensureSingleVideoPerBox(consignmentId, boxNo, fileId);
+        }
         const boxId = `${consignmentId}_box_${boxNo}`;
         await firestoreHelpers.setDocument('boxes', boxId, {
           videoStatus: 'metadata_saved',

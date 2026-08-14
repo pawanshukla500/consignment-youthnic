@@ -108,6 +108,36 @@ describe('issue1: never auto-delete unverified evidence', () => {
     expect(all.some((v) => v.status === VIDEO_STATUS.SUPERSEDED)).toBe(true)
   })
 
+  it('pruneDuplicateBoxVideos never supersedes a reopen video against the original', async () => {
+    // One normal (first-time pack) recording and one isReopen (box reopened to add
+    // more qty) recording for the same box, both still outstanding at the same time.
+    const original = new Blob([new Uint8Array(1500)], { type: 'video/webm' })
+    const additional = new Blob([new Uint8Array(2500)], { type: 'video/webm' })
+    const db = await __openDBForTests()
+    await withIdbTransaction(db, __STORE_NAME, 'readwrite', async (stores) => {
+      await idbRequest(stores[__STORE_NAME].add({
+        blob: original,
+        metadata: { consignmentId: 'c1', boxNo: '4', fileName: 'box4.webm' },
+        status: VIDEO_STATUS.QUEUED,
+        createdAt: 1,
+        retries: 0,
+      }))
+      await idbRequest(stores[__STORE_NAME].add({
+        blob: additional,
+        metadata: { consignmentId: 'c1', boxNo: '4', fileName: 'box4_2.webm', isReopen: true },
+        status: VIDEO_STATUS.QUEUED,
+        createdAt: 2,
+        retries: 0,
+      }))
+    })
+
+    await pruneDuplicateBoxVideos()
+
+    const all = await getOutstandingVideos('c1')
+    expect(all).toHaveLength(2)
+    expect(all.every((v) => v.status !== VIDEO_STATUS.SUPERSEDED)).toBe(true)
+  })
+
   it('verified replacement cleans superseded; unverified refuse delete', async () => {
     const blob1 = new Blob([new Uint8Array(1800)], { type: 'video/webm' })
     const blob2 = new Blob([new Uint8Array(2800)], { type: 'video/webm' })

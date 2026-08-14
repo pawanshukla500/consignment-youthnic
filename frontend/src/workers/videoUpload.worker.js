@@ -648,6 +648,9 @@ async function uploadOneVideo(entry) {
           description: metadata.description || `Box ${metadata.boxNo} packing video`,
           clientUploadId,
           uploadQueueId: String(entry.id),
+          // Box reopened to add more qty — server must keep the earlier video(s) for this
+          // box instead of evicting them, and label this one as an additional part.
+          preserveExisting: metadata?.isReopen === true,
         }),
       })
 
