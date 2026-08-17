@@ -627,8 +627,14 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
       const targetDate = new Date(date).toDateString();
       records = records.filter(r => new Date(r.timestamp).toDateString() === targetDate);
     } else if (startDate && endDate) {
-      const start = new Date(startDate);
-      const end = new Date(endDate);
+      // rangeStart/rangeEnd, not the raw startDate/endDate — those are the
+      // normalized (swapped-if-reversed) values from resolveProductivityDateRanges.
+      // Filtering on the raw pair here would silently return zero records
+      // whenever the caller submitted startDate after endDate, even though
+      // the Postgres path above (and the daily-trend/leaderboard queries)
+      // already correctly use the normalized range.
+      const start = new Date(rangeStart);
+      const end = new Date(rangeEnd);
       records = records.filter(r => {
         const d = new Date(r.timestamp);
         return d >= start && d <= end;
