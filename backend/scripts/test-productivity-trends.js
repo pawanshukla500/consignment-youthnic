@@ -218,7 +218,8 @@ function testResolveProductivityDateRanges() {
     const { trendStartIso, trendEndIso } = resolveProductivityDateRanges({ startDate, endDate });
     assert.strictEqual(trendEndIso, endDate, 'trend end still honors the explicit endDate');
     const spanDays = Math.round((new Date(trendEndIso) - new Date(trendStartIso)) / DAY_MS);
-    assert.ok(spanDays <= 92, `an oversized explicit range must be clamped to the cap, got ${spanDays} days`);
+    // 91 days apart = 92 inclusive daily buckets, matching MAX_TREND_SPAN_DAYS.
+    assert.strictEqual(spanDays, 91, `a 92-bucket cap must clamp to 91 days apart, got ${spanDays} days`);
     assert.notStrictEqual(trendStartIso, startDate, 'the original 20-year-wide startDate must not pass through unclamped');
   }
 

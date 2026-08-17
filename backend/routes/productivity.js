@@ -104,7 +104,10 @@ function resolveProductivityDateRanges({ date, startDate, endDate }) {
   const trendEndIso = explicitTrendEnd || new Date().toISOString();
   let trendStartIso = explicitTrendStart || new Date(new Date(trendEndIso).getTime() - (TREND_WINDOW_DAYS - 1) * 24 * 60 * 60 * 1000).toISOString();
 
-  const maxSpanMs = MAX_TREND_SPAN_DAYS * 24 * 60 * 60 * 1000;
+  // -1: this is an inclusive day-span (e.g. TREND_WINDOW_DAYS uses the same
+  // convention above), so an N-day-apart clamp yields N+1 buckets — matching
+  // MAX_TREND_SPAN_DAYS to bucket count means clamping to one day less.
+  const maxSpanMs = (MAX_TREND_SPAN_DAYS - 1) * 24 * 60 * 60 * 1000;
   const trendEndMs = new Date(trendEndIso).getTime();
   if (trendEndMs - new Date(trendStartIso).getTime() > maxSpanMs) {
     trendStartIso = new Date(trendEndMs - maxSpanMs).toISOString();
