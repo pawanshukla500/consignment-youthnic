@@ -86,6 +86,7 @@ export default function TrendChart({
         aria-label={`${valueLabel} trend`}
         ref={containerRef}
         viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
         width="100%"
         height={height}
         onMouseMove={handleMove}

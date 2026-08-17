@@ -129,6 +129,11 @@ function testComputeTopPackers() {
   const reversed = computeTopPackers([...mixedNameRecords].reverse(), {}, startMs, endMs, 10);
   assert.strictEqual(forward.length, 1, `u4's two records must collapse into a single row: ${JSON.stringify(forward)}`);
   assert.strictEqual(forward[0].boxes, 2, 'boxes must still sum across both differently-named records');
+  // Assert the actual expected value, not just forward===reversed — a
+  // deterministic but wrong rule (e.g. lexical minimum) would also satisfy
+  // order-independence alone. 'Priya Singh' > 'Priya S.' lexicographically
+  // ('i' > '.'), matching the documented MAX(...) tie-break.
+  assert.strictEqual(forward[0].userName, 'Priya Singh', 'fallback must match the documented lexical-maximum tie-break');
   assert.strictEqual(forward[0].userName, reversed[0].userName, 'resolved name must not depend on record iteration order');
 
   console.log('computeTopPackers tests passed.');
@@ -159,12 +164,13 @@ function testResolveProductivityDateRanges() {
     assert.notStrictEqual(trendStartIso, '1970-01-01T00:00:00.000Z', 'trend window must never inherit the epoch default');
   }
 
-  // Only startDate supplied — trend end is "now", trend start is the
-  // explicit startDate (unchanged behavior, not part of the bug).
+  // Only startDate supplied, within the span cap — trend end is "now",
+  // trend start is the explicit startDate verbatim (unclamped, since it's
+  // inside the 92-day cap).
   {
-    const startDate = '2026-01-01T00:00:00.000Z';
+    const startDate = new Date(Date.now() - 30 * DAY_MS).toISOString();
     const { rangeEnd, trendStartIso, trendEndIso } = resolveProductivityDateRanges({ startDate });
-    assert.strictEqual(trendStartIso, startDate, 'trend start must be the explicit startDate');
+    assert.strictEqual(trendStartIso, startDate, 'trend start must be the explicit startDate when within the span cap');
     assert.ok(rangeEnd, 'totals rangeEnd still defaults to now');
     assert.strictEqual(trendEndIso, rangeEnd, 'trend end mirrors the totals "now" default when only startDate is given');
   }
@@ -178,11 +184,42 @@ function testResolveProductivityDateRanges() {
     assert.strictEqual(trendEndIso, endDate);
   }
 
-  // Single `date` filter — trend window is that one day, not 14 days.
+  // Single `date` filter — trend window is that exact UTC day, not 14 days,
+  // and not truncated by a local-time end-of-day computation (regression:
+  // setHours instead of setUTCHours would render only 00:00-07:00 UTC of
+  // the requested day in e.g. America/Los_Angeles).
   {
     const { trendStartIso, trendEndIso } = resolveProductivityDateRanges({ date: '2026-05-10' });
-    const spanHours = (new Date(trendEndIso) - new Date(trendStartIso)) / (60 * 60 * 1000);
-    assert.ok(spanHours < 24, `single-day filter must produce a same-day trend window, got ${spanHours}h`);
+    assert.strictEqual(trendStartIso, '2026-05-10T00:00:00.000Z', `trend start must be exact UTC midnight, got ${trendStartIso}`);
+    assert.strictEqual(trendEndIso, '2026-05-10T23:59:59.999Z', `trend end must cover the full UTC day, got ${trendEndIso}`);
+  }
+
+  // Same check under a non-UTC TZ env — this is exactly the scenario the
+  // setHours/setUTCHours bug only reproduces under.
+  {
+    const originalTz = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    try {
+      const { trendStartIso, trendEndIso } = resolveProductivityDateRanges({ date: '2026-05-10' });
+      assert.strictEqual(trendStartIso, '2026-05-10T00:00:00.000Z', `TZ=America/Los_Angeles: trend start must still be UTC midnight, got ${trendStartIso}`);
+      assert.strictEqual(trendEndIso, '2026-05-10T23:59:59.999Z', `TZ=America/Los_Angeles: trend end must still cover the full UTC day, got ${trendEndIso}`);
+    } finally {
+      if (originalTz === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTz;
+    }
+  }
+
+  // Explicit range wider than the cap must be clamped, not passed through
+  // verbatim (Greptile finding: an uncapped explicit span still forces
+  // per-day generate_series/loop work proportional to the span).
+  {
+    const startDate = '2000-01-01T00:00:00.000Z';
+    const endDate = '2020-01-01T00:00:00.000Z';
+    const { trendStartIso, trendEndIso } = resolveProductivityDateRanges({ startDate, endDate });
+    assert.strictEqual(trendEndIso, endDate, 'trend end still honors the explicit endDate');
+    const spanDays = Math.round((new Date(trendEndIso) - new Date(trendStartIso)) / DAY_MS);
+    assert.ok(spanDays <= 92, `an oversized explicit range must be clamped to the cap, got ${spanDays} days`);
+    assert.notStrictEqual(trendStartIso, startDate, 'the original 20-year-wide startDate must not pass through unclamped');
   }
 
   console.log('resolveProductivityDateRanges tests passed.');

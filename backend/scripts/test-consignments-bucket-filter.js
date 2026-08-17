@@ -68,6 +68,15 @@ installMock(path.join(__dirname, '..', 'utils', 'permissions.js'), {
   requirePermission: () => (req, res, next) => next(),
   requireAnyPermission: () => (req, res, next) => next(),
 });
+// Force the document-fallback path regardless of what's in this shell's env —
+// otherwise a real SUPABASE_DB_URL/DATABASE_URL present in CI would route
+// "unfiltered" requests through pgHelpers.queryConsignmentsPaginated instead
+// of consignmentsStore, and this test would silently stop covering what it
+// says it covers.
+installMock(path.join(__dirname, '..', 'config', 'database.js'), {
+  pgEnabled: () => false,
+  getPool: () => null,
+});
 
 const router = require('../routes/consignments');
 

@@ -71,6 +71,15 @@ function computeDailyTrend(boxRecords, startMs, endMs) {
  *    Only an explicit `date`, or an explicit startDate/endDate the caller
  *    actually supplied, may widen the trend window.
  */
+// Hard ceiling on the trend/leaderboard window, applied even to an explicit
+// caller-supplied startDate/endDate — those are trusted to widen the window
+// (unlike the synthetic epoch/now defaults above), but an unbounded explicit
+// span (e.g. a multi-decade range) still forces one row per day out of
+// generate_series (Postgres) or the document-fallback loop. 92 days covers
+// every preset this page ships (a calendar month at most) with headroom for
+// a deliberate custom quarter-long range, while keeping the worst case cheap.
+const MAX_TREND_SPAN_DAYS = 92;
+
 function resolveProductivityDateRanges({ date, startDate, endDate }) {
   let rangeStart = startDate;
   let rangeEnd = endDate;
@@ -78,7 +87,11 @@ function resolveProductivityDateRanges({ date, startDate, endDate }) {
     const target = new Date(date);
     rangeStart = target.toISOString();
     const endOfDay = new Date(target);
-    endOfDay.setHours(23, 59, 59, 999);
+    // setUTCHours, not setHours — the local-time variant renders an
+    // incomplete window in any non-UTC server timezone (e.g. only
+    // 00:00-07:00 UTC of the requested day in America/Los_Angeles),
+    // silently dropping most of that day's activity from the report.
+    endOfDay.setUTCHours(23, 59, 59, 999);
     rangeEnd = endOfDay.toISOString();
   } else if (startDate && !endDate) {
     rangeEnd = new Date().toISOString();
@@ -89,7 +102,13 @@ function resolveProductivityDateRanges({ date, startDate, endDate }) {
   const explicitTrendEnd = date ? rangeEnd : (endDate || null);
   const explicitTrendStart = date ? rangeStart : (startDate || null);
   const trendEndIso = explicitTrendEnd || new Date().toISOString();
-  const trendStartIso = explicitTrendStart || new Date(new Date(trendEndIso).getTime() - (TREND_WINDOW_DAYS - 1) * 24 * 60 * 60 * 1000).toISOString();
+  let trendStartIso = explicitTrendStart || new Date(new Date(trendEndIso).getTime() - (TREND_WINDOW_DAYS - 1) * 24 * 60 * 60 * 1000).toISOString();
+
+  const maxSpanMs = MAX_TREND_SPAN_DAYS * 24 * 60 * 60 * 1000;
+  const trendEndMs = new Date(trendEndIso).getTime();
+  if (trendEndMs - new Date(trendStartIso).getTime() > maxSpanMs) {
+    trendStartIso = new Date(trendEndMs - maxSpanMs).toISOString();
+  }
 
   return { rangeStart, rangeEnd, trendStartIso, trendEndIso };
 }
