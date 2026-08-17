@@ -339,7 +339,9 @@ const pgHelpers = {
     return { items: rows.map((r) => r.data), total };
   },
 
-  async queryProductivityStats({ startDate, endDate, offset = 0, limit = 50 } = {}) {
+  async queryProductivityStats({
+    startDate, endDate, offset = 0, limit = 50, trendStart, trendEnd, topPackersLimit = 10,
+  } = {}) {
     const ts = productivityTimestampExpr();
     const params = [];
     let n = 1;
@@ -408,17 +410,88 @@ const pgHelpers = {
       Math.max(1, Math.trunc(Number(limit)) || 50),
     ];
 
+    // Daily trend + top-packers leaderboard are always bounded (the caller
+    // defaults these to a 14-day window when no explicit range is given) —
+    // unlike the range/total figures above, an unbounded group-by here would
+    // mean scanning + returning one row per user/day since the dawn of the
+    // collection.
+    const boundedStart = trendStart || new Date(Date.now() - 13 * 24 * 60 * 60 * 1000).toISOString();
+    const boundedEnd = trendEnd || new Date().toISOString();
+
+    const trendSql = `
+      SELECT
+        to_char(day, 'YYYY-MM-DD') AS date,
+        to_char(day, 'FMDD Mon') AS label,
+        COALESCE(counts.boxes, 0)::int AS boxes,
+        COALESCE(counts.items, 0)::int AS items
+      FROM generate_series(
+        date_trunc('day', $1::timestamptz),
+        date_trunc('day', $2::timestamptz),
+        INTERVAL '1 day'
+      ) AS day
+      LEFT JOIN (
+        SELECT
+          date_trunc('day', ${ts}) AS d,
+          COUNT(*)::int AS boxes,
+          COALESCE(SUM((data->>'itemsCount')::int), 0)::int AS items
+        FROM documents
+        WHERE collection = 'productivity'
+          AND data->>'eventType' = 'box_saved'
+          AND ${ts} >= $1::timestamptz AND ${ts} <= $2::timestamptz
+        GROUP BY 1
+      ) counts ON counts.d = day
+      ORDER BY day
+    `;
+
+    const topPackersSql = `
+      SELECT
+        d.data->>'userId' AS user_id,
+        COALESCE(NULLIF(d.data->>'userName', ''), u.data->>'name', u.data->>'email', 'Unknown') AS user_name,
+        COUNT(*)::int AS boxes,
+        COALESCE(SUM((d.data->>'itemsCount')::int), 0)::int AS items
+      FROM documents d
+      LEFT JOIN documents u ON u.collection = 'users' AND u.id = d.data->>'userId'
+      WHERE d.collection = 'productivity'
+        AND d.data->>'eventType' = 'box_saved'
+        AND NULLIF(d.data->>'userId', '') IS NOT NULL
+        AND ${ts.replace(/data->>/g, 'd.data->>')} >= $1::timestamptz AND ${ts.replace(/data->>/g, 'd.data->>')} <= $2::timestamptz
+      GROUP BY 1, 2
+      ORDER BY boxes DESC
+      LIMIT $3::int
+    `;
+
+    const trendParams = [boundedStart, boundedEnd];
+    const topPackersParams = [
+      boundedStart,
+      boundedEnd,
+      Math.min(Math.max(Math.trunc(Number(topPackersLimit)) || 10, 1), 50),
+    ];
+
     const pool = getPool();
-    const [statsResult, countResult, activityResult] = await Promise.all([
+    const [statsResult, countResult, activityResult, trendResult, topPackersResult] = await Promise.all([
       pool.query(statsSql, params),
       pool.query(countSql, params),
       pool.query(activitySql, activityParams),
+      pool.query(trendSql, trendParams),
+      pool.query(topPackersSql, topPackersParams),
     ]);
 
     return {
       statsRow: statsResult.rows[0] || {},
       totalActivity: countResult.rows[0]?.total || 0,
       recentActivity: activityResult.rows.map((row) => row.data),
+      dailyTrend: trendResult.rows.map((row) => ({
+        date: row.date,
+        label: String(row.label).trim(),
+        boxes: row.boxes,
+        items: row.items,
+      })),
+      topPackers: topPackersResult.rows.map((row) => ({
+        userId: row.user_id,
+        userName: row.user_name,
+        boxes: row.boxes,
+        items: row.items,
+      })),
     };
   },
 

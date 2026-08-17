@@ -26,7 +26,9 @@
     "test:inventory-planning": "node scripts/test-inventory-planning.js",
     "test:storage-verify": "node scripts/test-storage-verify.js",
     "test:inward-disputes": "node scripts/test-inward-disputes.js",
-    "test:security": "npm run test:sanitize-user && npm run test:env-validation && npm run test:permissions && npm run test:cors && npm run test:auth-active && npm run test:login-path && npm run test:reliability && npm run test:packing-stability && npm run test:shipment-status && npm run test:packing-increment && npm run test:packing-quantity && npm run test:inventory-planning && npm run test:workflow-pending && npm run test:workflow-automation && npm run test:inventory-email-policy && npm run test:storage-verify && npm run test:inward-disputes",
+    "test:dashboard-analytics": "node scripts/test-dashboard-analytics.js",
+    "test:productivity-trends": "node scripts/test-productivity-trends.js",
+    "test:security": "npm run test:sanitize-user && npm run test:env-validation && npm run test:permissions && npm run test:cors && npm run test:auth-active && npm run test:login-path && npm run test:reliability && npm run test:packing-stability && npm run test:shipment-status && npm run test:packing-increment && npm run test:packing-quantity && npm run test:inventory-planning && npm run test:workflow-pending && npm run test:workflow-automation && npm run test:inventory-email-policy && npm run test:storage-verify && npm run test:inward-disputes && npm run test:dashboard-analytics && npm run test:productivity-trends",
     "lint": "node -e \"console.log('backend lint: no ESLint config (scripts validated via npm test)')\""
   },
   "dependencies": {

@@ -3,7 +3,7 @@ import { Link } from 'react-router';
 import {
   BarChart3, Boxes, Package, Clock, TrendingUp, Activity,
   User, Calendar, Download, RefreshCw, CheckCircle2, AlertCircle,
-  FileSpreadsheet, ChevronRight, Layers, ClipboardList, Factory
+  FileSpreadsheet, ChevronRight, Layers, ClipboardList, Factory, Award
 } from 'lucide-react';
 import { productivityAPI, consignmentsAPI } from '../services/api';
 import { useConsignmentSync, mergeConsignmentChanges } from '../context/ConsignmentSyncContext';
@@ -11,6 +11,8 @@ import { format, subDays, startOfWeek, endOfWeek, startOfMonth, endOfMonth } fro
 import { getShipmentPriority, formatDispatchDate } from '../utils/priority';
 import ProductivityReportsTab from '../components/ProductivityReportsTab';
 import { ProductivitySkeleton } from '../components/Skeleton';
+import { TrendChart, BarList, SegmentedBar } from '../components/charts';
+import { STATUS_HEX, formatCompactNumber } from '../utils/chartColors';
 
 const PRODUCTIVITY_CACHE_KEY = 'productivity_page_cache';
 const PRODUCTIVITY_CACHE_MS = 45_000;
@@ -31,12 +33,6 @@ const KPI_STYLES = {
   emerald: { bg: 'bg-emerald-100', text: 'text-emerald-600' },
   orange: { bg: 'bg-orange-100', text: 'text-orange-600' },
   red: { bg: 'bg-red-100', text: 'text-red-600' },
-};
-
-const STATUS_BAR_STYLES = {
-  completed: { text: 'text-emerald-600', bar: 'bg-emerald-500' },
-  in_progress: { text: 'text-blue-600', bar: 'bg-blue-500' },
-  pending: { text: 'text-amber-600', bar: 'bg-amber-500' },
 };
 
 const actionColor = (action) => ({
@@ -172,6 +168,25 @@ const Productivity = () => {
   const conRows = useMemo(() => Object.entries(byConsignment)
     .sort((a, b) => b[1].boxes - a[1].boxes)
     .slice(0, 15), [byConsignment]);
+
+  const packingActivityItems = useMemo(() => conRows.map(([cid, data]) => ({
+    key: cid,
+    label: cid,
+    value: data.boxes,
+    sublabel: `${data.items} items`,
+  })), [conRows]);
+
+  const topPackerItems = useMemo(() => (stats?.topPackers || []).map((p) => ({
+    key: p.userId,
+    label: p.userName || p.userId,
+    value: p.boxes,
+    sublabel: `${p.items} items`,
+  })), [stats]);
+
+  const dailyTrendData = useMemo(() => (stats?.dailyTrend || []).map((d) => ({
+    label: d.label,
+    value: d.boxes,
+  })), [stats]);
 
   const statusSnapshot = useMemo(() => {
     const total = planning?.summary?.totalConsignments || consignments.length;
@@ -364,6 +379,16 @@ const Productivity = () => {
             <p className="text-xs text-slate-500 mt-0.5">{label}</p>
           </div>
         )})}
+      </div>
+
+      {/* Daily Trend */}
+      <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6 mb-6">
+        <div className="flex items-center gap-2 mb-1">
+          <TrendingUp className="w-5 h-5 text-primary-600" />
+          <h2 className="text-base font-semibold text-slate-900">Boxes Packed Trend — {activePreset}</h2>
+        </div>
+        <p className="text-xs text-slate-400 mb-1">Daily box-save volume across the selected date range</p>
+        <TrendChart data={dailyTrendData} color="#E11D48" valueLabel="boxes" height={200} />
       </div>
 
       {/* ═══ PRODUCTION PLANNING ═══ */}
@@ -594,96 +619,66 @@ const Productivity = () => {
       {/* Consignment Status Overview */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
         {/* Per-shipment packing in selected period */}
-        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+        <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5">
+          <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-              <BarChart3 className="w-4 h-4 text-primary-600" /> Packing Activity — {activePreset}
+              <BarChart3 className="w-4 h-4 text-primary-600" /> Packing Activity
             </h2>
-            <span className="text-xs text-slate-400">{conRows.length} consignments</span>
+            <span className="text-xs text-slate-400">{activePreset}</span>
           </div>
-          <div className="overflow-x-auto">
-            {conRows.length > 0 ? (
-              <table className="w-full text-xs">
-                <thead className="bg-slate-50">
-                  <tr>
-                    <th className="text-left px-4 py-2 text-slate-500 font-semibold uppercase">Consignment</th>
-                    <th className="text-center px-3 py-2 text-slate-500 font-semibold uppercase">Boxes Saved</th>
-                    <th className="text-center px-3 py-2 text-slate-500 font-semibold uppercase">Items Packed</th>
-                    <th className="text-left px-3 py-2 text-slate-500 font-semibold uppercase">Bar</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {conRows.map(([cid, data]) => {
-                    const maxItems = Math.max(...conRows.map(([, d]) => d.items), 1);
-                    return (
-                      <tr key={cid} className="hover:bg-slate-50">
-                        <td className="px-4 py-2 font-mono font-medium text-slate-700">{cid}</td>
-                        <td className="px-3 py-2 text-center font-bold text-primary-600">{data.boxes}</td>
-                        <td className="px-3 py-2 text-center font-bold text-emerald-600">{data.items}</td>
-                        <td className="px-3 py-2 w-32">
-                          <div className="w-full bg-slate-100 rounded-full h-1.5">
-                            <div className="bg-primary-500 h-1.5 rounded-full"
-                              style={{ width: `${Math.round(data.items / maxItems * 100)}%` }} />
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            ) : (
-              <div className="py-10 text-center text-slate-400 text-sm">No packing activity in this period</div>
-            )}
+          <BarList
+            items={packingActivityItems}
+            color="#E11D48"
+            maxItems={8}
+            emptyLabel="No packing activity in this period"
+          />
+        </div>
+
+        {/* Top packers leaderboard */}
+        <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+              <Award className="w-4 h-4 text-primary-600" /> Top Packers
+            </h2>
+            <span className="text-xs text-slate-400">{activePreset}</span>
           </div>
+          <BarList
+            items={topPackerItems}
+            color="#3b82f6"
+            maxItems={8}
+            emptyLabel="No packer activity in this period"
+          />
         </div>
 
         {/* Consignment status breakdown */}
-        <div className="bg-white rounded-xl shadow-sm border border-slate-100">
-          <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+        <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5">
+          <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold text-slate-900">Status Snapshot</h2>
             <span className="text-xs text-slate-400">{statusSnapshot.total} total</span>
           </div>
-          <div className="p-4 space-y-3">
-            {[
-              { label: 'Completed',   key: 'completed' },
-              { label: 'In Progress', key: 'in_progress' },
-              { label: 'Pending',     key: 'pending' },
-            ].map(({ label, key }) => {
-              const count = key === 'completed'
-                ? statusSnapshot.completed
-                : key === 'in_progress'
-                  ? statusSnapshot.inProgress
-                  : statusSnapshot.pending;
-              const pct   = statusSnapshot.total > 0 ? Math.round(count / statusSnapshot.total * 100) : 0;
-              const styles = STATUS_BAR_STYLES[key] || STATUS_BAR_STYLES.pending;
-              return (
-                <div key={key}>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="font-medium text-slate-700">{label}</span>
-                    <span className={`font-bold ${styles.text}`}>{count} ({pct}%)</span>
-                  </div>
-                  <div className="w-full bg-slate-100 rounded-full h-2">
-                    <div className={`${styles.bar} h-2 rounded-full transition-all`}
-                      style={{ width: `${pct}%` }} />
-                  </div>
-                </div>
-              );
-            })}
-            <div className="pt-3 border-t border-slate-100 text-xs text-slate-500 space-y-1">
-              <div className="flex justify-between">
-                <span>Total Required</span>
-                <span className="font-semibold text-slate-700">
-                  {(planning?.summary?.totalRequiredQty
-                    ?? consignments.reduce((s, c) => s + (c.totalRequiredQty || 0), 0)).toLocaleString()} units
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Total Packed</span>
-                <span className="font-semibold text-emerald-700">
-                  {(planning?.summary?.totalPackedQty
-                    ?? consignments.reduce((s, c) => s + (c.totalPackedQty || 0), 0)).toLocaleString()} units
-                </span>
-              </div>
+          <SegmentedBar
+            segments={[
+              { key: 'completed', label: 'Completed', value: statusSnapshot.completed, color: STATUS_HEX.completed },
+              { key: 'in_progress', label: 'In Progress', value: statusSnapshot.inProgress, color: STATUS_HEX.inProgress },
+              { key: 'pending', label: 'Pending', value: statusSnapshot.pending, color: STATUS_HEX.pending },
+            ]}
+            valueFormatter={(v) => String(v)}
+            height={16}
+          />
+          <div className="mt-4 pt-3 border-t border-slate-100 text-xs text-slate-500 space-y-1">
+            <div className="flex justify-between">
+              <span>Total Required</span>
+              <span className="font-semibold text-slate-700">
+                {formatCompactNumber(planning?.summary?.totalRequiredQty
+                  ?? consignments.reduce((s, c) => s + (c.totalRequiredQty || 0), 0))} units
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span>Total Packed</span>
+              <span className="font-semibold text-emerald-700">
+                {formatCompactNumber(planning?.summary?.totalPackedQty
+                  ?? consignments.reduce((s, c) => s + (c.totalPackedQty || 0), 0))} units
+              </span>
             </div>
           </div>
         </div>
