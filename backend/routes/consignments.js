@@ -19,6 +19,7 @@ const {
   buildTatDeadlines,
   canArchiveConsignment,
   isStageConfirmed,
+  LIST_BUCKETS,
 } = require('../utils/consignmentWorkflow');
 const { saveBoxWithPostgresTransaction } = require('../utils/packingPersistence');
 const { getMarketplaceBarcode, normalizeSkuInput } = require('../utils/skuIdentity');
@@ -664,6 +665,7 @@ router.get('/', authenticateToken, requirePermission('consignments', 'view consi
       includeArchived,
       archivedOnly,
       shortPackOnly,
+      workflowBucket,
     } = req.query;
     const pageSize = limit ? Math.min(parseInt(limit) || 50, 200) : 50;
     const pageNum = Math.max(1, parseInt(page) || 1);
@@ -676,11 +678,20 @@ router.get('/', authenticateToken, requirePermission('consignments', 'view consi
       || String(includeArchived || '').toLowerCase() === 'true'
       || includeArchived === '1';
     const wantShortPackOnly = String(shortPackOnly || '').toLowerCase() === 'true' || shortPackOnly === '1';
+    // A workflow bucket (new/active/disputed/…) is a derived field computed
+    // only after enrichWorkflowFields runs — it can't be pushed into the SQL
+    // WHERE clause without duplicating that business logic. So when one is
+    // requested we skip the DB-paginated path entirely and fall into the
+    // same "fetch everything, filter/sort/paginate in JS" flow already used
+    // for the document-store fallback below — that flow enriches BEFORE it
+    // computes total/slices the page, so the bucket filter lands before
+    // pagination instead of after it.
+    const bucketFilter = Object.prototype.hasOwnProperty.call(LIST_BUCKETS, workflowBucket) ? workflowBucket : null;
 
     let consignments;
     let total;
 
-    if (pgEnabled()) {
+    if (pgEnabled() && !bucketFilter) {
       try {
         const result = await pgHelpers.queryConsignmentsPaginated({
           statuses,
@@ -741,6 +752,13 @@ router.get('/', authenticateToken, requirePermission('consignments', 'view consi
 
     const marketplaceMap = await buildMarketplaceMap(firestoreHelpers);
     consignments = consignments.map((c) => enrichWorkflowFields(enrichConsignment(c, marketplaceMap), { lean: true }));
+
+    if (bucketFilter) {
+      // total is guaranteed null here (see the pgEnabled() && !bucketFilter
+      // guard above), so the block below still computes total and slices
+      // the page from this bucket-filtered set, not the unfiltered one.
+      consignments = consignments.filter((c) => c.listPriorityBucket === bucketFilter);
+    }
 
     if (total == null) {
       if (sort === 'dispatch' || sort === 'appointment' || sort === 'workflow' || !sort) {

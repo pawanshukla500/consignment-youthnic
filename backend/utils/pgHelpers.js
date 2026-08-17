@@ -443,10 +443,24 @@ const pgHelpers = {
       ORDER BY day
     `;
 
+    // Grouped by userId ALONE — grouping by (userId, user_name) would split
+    // one packer into multiple leaderboard rows whenever their box_saved
+    // records resolve to more than one distinct name (e.g. some records
+    // carry a stale embedded userName from before a display-name change
+    // while others fall through to the live users row). The live users-table
+    // name is preferred (constant per userId across every joined row, so
+    // MAX(...) is just an aggregate-syntax formality, not a real tie-break);
+    // MAX(...) over the embedded userName is the deterministic fallback for
+    // a user with no live record, order-independent unlike "first row wins".
     const topPackersSql = `
       SELECT
         d.data->>'userId' AS user_id,
-        COALESCE(NULLIF(d.data->>'userName', ''), u.data->>'name', u.data->>'email', 'Unknown') AS user_name,
+        COALESCE(
+          MAX(u.data->>'name'),
+          MAX(NULLIF(d.data->>'userName', '')),
+          MAX(u.data->>'email'),
+          'Unknown'
+        ) AS user_name,
         COUNT(*)::int AS boxes,
         COALESCE(SUM((d.data->>'itemsCount')::int), 0)::int AS items
       FROM documents d
@@ -455,7 +469,7 @@ const pgHelpers = {
         AND d.data->>'eventType' = 'box_saved'
         AND NULLIF(d.data->>'userId', '') IS NOT NULL
         AND ${ts.replace(/data->>/g, 'd.data->>')} >= $1::timestamptz AND ${ts.replace(/data->>/g, 'd.data->>')} <= $2::timestamptz
-      GROUP BY 1, 2
+      GROUP BY d.data->>'userId'
       ORDER BY boxes DESC
       LIMIT $3::int
     `;

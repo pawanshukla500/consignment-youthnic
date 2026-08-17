@@ -1,4 +1,4 @@
-import { formatCompactNumber } from '../../utils/chartColors';
+import { formatCompactNumber } from '../../utils/chartColors'
 
 /**
  * Horizontal ranked bar list — magnitude comparison, low→high or high→low.
@@ -16,20 +16,20 @@ export default function BarList({
   emptyLabel = 'No data yet',
   onItemClick,
 }) {
-  const visible = items.slice(0, maxItems);
-  const max = Math.max(...visible.map((i) => Number(i.value) || 0), 1);
+  const visible = items.slice(0, maxItems)
+  const max = Math.max(...visible.map((i) => Number(i.value) || 0), 1)
 
   if (!visible.length) {
-    return <p className="text-sm text-slate-400 text-center py-8">{emptyLabel}</p>;
+    return <p className="text-sm text-slate-400 text-center py-8">{emptyLabel}</p>
   }
 
   return (
     <div className="space-y-2.5">
       {visible.map((item, i) => {
-        const value = Number(item.value) || 0;
-        const pct = Math.max(2, (value / max) * 100);
-        const barColor = item.color || color;
-        const Wrapper = onItemClick ? 'button' : 'div';
+        const value = Number(item.value) || 0
+        const pct = Math.max(2, (value / max) * 100)
+        const barColor = item.color || color
+        const Wrapper = onItemClick ? 'button' : 'div'
         return (
           <Wrapper
             key={item.key ?? item.label ?? i}
@@ -51,8 +51,8 @@ export default function BarList({
               />
             </div>
           </Wrapper>
-        );
+        )
       })}
     </div>
-  );
+  )
 }

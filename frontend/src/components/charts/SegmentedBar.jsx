@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { formatCompactNumber } from '../../utils/chartColors';
+import { useState } from 'react'
+import { formatCompactNumber } from '../../utils/chartColors'
 
 /**
  * Part-to-whole as a single horizontal stacked bar, not a pie/donut —
@@ -16,20 +16,20 @@ export default function SegmentedBar({
   emptyLabel = 'No data yet',
   height = 16,
 }) {
-  const [hoverKey, setHoverKey] = useState(null);
-  const total = segments.reduce((sum, s) => sum + (Number(s.value) || 0), 0);
-  const visible = segments.filter((s) => (Number(s.value) || 0) > 0);
+  const [hoverKey, setHoverKey] = useState(null)
+  const total = segments.reduce((sum, s) => sum + (Number(s.value) || 0), 0)
+  const visible = segments.filter((s) => (Number(s.value) || 0) > 0)
 
   if (!total || !visible.length) {
-    return <p className="text-sm text-slate-400 text-center py-6">{emptyLabel}</p>;
+    return <p className="text-sm text-slate-400 text-center py-6">{emptyLabel}</p>
   }
 
   return (
     <div>
       <div className="flex w-full rounded-full overflow-hidden" style={{ height, gap: '2px', backgroundColor: '#fff' }}>
         {visible.map((s) => {
-          const pct = ((Number(s.value) || 0) / total) * 100;
-          const isHovered = hoverKey === s.key;
+          const pct = ((Number(s.value) || 0) / total) * 100
+          const isHovered = hoverKey === s.key
           return (
             <div
               key={s.key}
@@ -44,12 +44,12 @@ export default function SegmentedBar({
               onMouseLeave={() => setHoverKey(null)}
               title={`${s.label}: ${valueFormatter(s.value)} (${pct.toFixed(0)}%)`}
             />
-          );
+          )
         })}
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-3">
         {visible.map((s) => {
-          const pct = ((Number(s.value) || 0) / total) * 100;
+          const pct = ((Number(s.value) || 0) / total) * 100
           return (
             <button
               key={s.key}
@@ -63,9 +63,9 @@ export default function SegmentedBar({
               <span className="font-bold text-slate-900 tabular-nums">{valueFormatter(s.value)}</span>
               <span className="text-slate-400 tabular-nums">({pct.toFixed(0)}%)</span>
             </button>
-          );
+          )
         })}
       </div>
     </div>
-  );
+  )
 }

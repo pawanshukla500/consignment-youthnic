@@ -19,7 +19,7 @@ export const STATUS_HEX = {
   pending: '#f59e0b',
   disputed: '#ef4444',
   neutral: '#94a3b8',
-};
+}
 
 /** Mirrors WORKFLOW_BUCKET_CLASS's badge hues, one hex per bucket. */
 export const WORKFLOW_BUCKET_HEX = {
@@ -32,7 +32,7 @@ export const WORKFLOW_BUCKET_HEX = {
   disputed: '#ef4444',
   inwarded: '#94a3b8',
   archived: '#64748b',
-};
+}
 
 /** Validated categorical order — assign by first-seen rank, never reassign. */
 export const CATEGORICAL = [
@@ -44,9 +44,9 @@ export const CATEGORICAL = [
   '#008300', // green
   '#4a3aa7', // violet
   '#e34948', // red
-];
+]
 
-export const SEQUENTIAL_BLUE = '#2a78d6';
+export const SEQUENTIAL_BLUE = '#2a78d6'
 
 export const CHART_INK = {
   primary: '#0f172a',
@@ -54,29 +54,29 @@ export const CHART_INK = {
   muted: '#94a3b8',
   grid: '#e2e8f0',
   baseline: '#cbd5e1',
-};
+}
 
 export function categoricalColor(index) {
-  return CATEGORICAL[index % CATEGORICAL.length];
+  return CATEGORICAL[index % CATEGORICAL.length]
 }
 
 /** Compact number formatting for axis ticks / stat values: 1284 -> "1.3K". */
 export function formatCompactNumber(value) {
-  const n = Number(value) || 0;
-  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
-  if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, '')}K`;
-  return String(Math.round(n));
+  const n = Number(value) || 0
+  if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
+  if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, '')}K`
+  return String(Math.round(n))
 }
 
 /** Round a max value up to a "clean" tick ceiling (0/1000/2000-style steps). */
 export function niceCeiling(max) {
-  const n = Math.max(1, Number(max) || 0);
-  const magnitude = 10 ** Math.floor(Math.log10(n));
-  const normalized = n / magnitude;
-  let step;
-  if (normalized <= 1) step = 1;
-  else if (normalized <= 2) step = 2;
-  else if (normalized <= 5) step = 5;
-  else step = 10;
-  return step * magnitude;
+  const n = Math.max(1, Number(max) || 0)
+  const magnitude = 10 ** Math.floor(Math.log10(n))
+  const normalized = n / magnitude
+  let step
+  if (normalized <= 1) step = 1
+  else if (normalized <= 2) step = 2
+  else if (normalized <= 5) step = 5
+  else step = 10
+  return step * magnitude
 }

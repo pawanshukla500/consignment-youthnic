@@ -139,6 +139,12 @@ export default function Consignments() {
           archivedOnly: workflowFilter === 'archived' ? 'true' : undefined,
           includeArchived: workflowFilter === 'archived' || debouncedSearch ? 'true' : undefined,
           shortPackOnly: shortPackOnly ? 'true' : undefined,
+          // 'archived' already has a dedicated, DB-paginated path via
+          // archivedOnly/includeArchived above — only route the other
+          // buckets through the server-side bucket filter so filtering
+          // (and the "total" it reports) applies before pagination, not
+          // just to whatever page happened to load first.
+          workflowBucket: (workflowFilter && workflowFilter !== 'archived') ? workflowFilter : undefined,
         }),
         marketplacesAPI.getAll(),
         docketCompaniesAPI.getAll()
@@ -862,7 +868,7 @@ export default function Consignments() {
                 <p className="text-xs text-slate-700">
                   Showing <span className="font-semibold">{Math.min(total, (page - 1) * pageSize + 1)}</span> to{' '}
                   <span className="font-semibold">{Math.min(total, page * pageSize)}</span> of{' '}
-                  <span className="font-semibold">{workflowFilter ? sortedConsignments.length : total}</span> consignments
+                  <span className="font-semibold">{total}</span> consignments
                   {workflowFilter ? ` · ${WORKFLOW_BUCKET_LABELS[workflowFilter] || workflowFilter}` : ''}
                 </p>
               </div>

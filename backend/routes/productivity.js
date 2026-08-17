@@ -58,7 +58,51 @@ function computeDailyTrend(boxRecords, startMs, endMs) {
   return days;
 }
 
-/** Document-fallback equivalent of pgHelpers.queryProductivityStats' topPackers query. */
+/**
+ * Resolves the /productivity stats query's date filters into two things:
+ *  - rangeStart/rangeEnd: the "totals" window, widened to synthetic
+ *    all-time defaults on one-sided input (epoch start / now end) so the
+ *    summary query can answer an open-ended range cheaply.
+ *  - trendStartIso/trendEndIso: the daily-trend + top-packers window, which
+ *    must stay bounded (default: trailing TREND_WINDOW_DAYS days) — it must
+ *    NEVER inherit the synthetic epoch/now defaults above, since feeding an
+ *    invented epoch start into a bounded per-day query would force a
+ *    decades-long generate_series (Postgres) or loop (document fallback).
+ *    Only an explicit `date`, or an explicit startDate/endDate the caller
+ *    actually supplied, may widen the trend window.
+ */
+function resolveProductivityDateRanges({ date, startDate, endDate }) {
+  let rangeStart = startDate;
+  let rangeEnd = endDate;
+  if (date) {
+    const target = new Date(date);
+    rangeStart = target.toISOString();
+    const endOfDay = new Date(target);
+    endOfDay.setHours(23, 59, 59, 999);
+    rangeEnd = endOfDay.toISOString();
+  } else if (startDate && !endDate) {
+    rangeEnd = new Date().toISOString();
+  } else if (!startDate && endDate) {
+    rangeStart = '1970-01-01T00:00:00.000Z';
+  }
+
+  const explicitTrendEnd = date ? rangeEnd : (endDate || null);
+  const explicitTrendStart = date ? rangeStart : (startDate || null);
+  const trendEndIso = explicitTrendEnd || new Date().toISOString();
+  const trendStartIso = explicitTrendStart || new Date(new Date(trendEndIso).getTime() - (TREND_WINDOW_DAYS - 1) * 24 * 60 * 60 * 1000).toISOString();
+
+  return { rangeStart, rangeEnd, trendStartIso, trendEndIso };
+}
+
+/**
+ * Document-fallback equivalent of pgHelpers.queryProductivityStats' topPackers
+ * query. Aggregates strictly by userId — display name is resolved AFTER
+ * aggregation from the full set of names seen for that user, never frozen to
+ * whichever record's userName happened to be processed first. That keeps the
+ * result deterministic (independent of boxRecords' iteration order) even
+ * when a user's box_saved records carry mixed/stale embedded userName values
+ * (e.g. logged before and after a display-name change).
+ */
 function computeTopPackers(boxRecords, userMap, startMs, endMs, limit = TOP_PACKERS_LIMIT) {
   const byUser = new Map();
   for (const r of boxRecords) {
@@ -66,14 +110,22 @@ function computeTopPackers(boxRecords, userMap, startMs, endMs, limit = TOP_PACK
     if (!Number.isFinite(t) || t < startMs || t > endMs) continue;
     const userId = r.userId || '';
     if (!userId) continue;
-    const existing = byUser.get(userId);
-    const userName = r.userName || userMap[userId]?.name || userMap[userId]?.email || 'Unknown';
-    const entry = existing || { userId, userName, boxes: 0, items: 0 };
+    const entry = byUser.get(userId) || { userId, boxes: 0, items: 0, recordedNames: [] };
     entry.boxes += 1;
     entry.items += toInt(r.itemsCount);
+    if (r.userName) entry.recordedNames.push(r.userName);
     byUser.set(userId, entry);
   }
-  return [...byUser.values()].sort((a, b) => b.boxes - a.boxes).slice(0, limit);
+  const resolved = [...byUser.values()].map(({ recordedNames, ...entry }) => {
+    // Deterministic tie-break when falling back to a record-embedded name:
+    // the lexicographically greatest of all names ever recorded for this
+    // user, so re-running over the same data always picks the same value —
+    // mirrors the MAX(...) tie-break in the equivalent Postgres query.
+    const recordedName = recordedNames.length ? recordedNames.reduce((a, b) => (b > a ? b : a)) : null;
+    const userName = userMap[entry.userId]?.name || recordedName || userMap[entry.userId]?.email || 'Unknown';
+    return { ...entry, userName };
+  });
+  return resolved.sort((a, b) => b.boxes - a.boxes).slice(0, limit);
 }
 
 function buildPlanningPayload(consignments, allSkus, statusCounts = null) {
@@ -485,25 +537,9 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const offset = Math.max(parseInt(req.query.offset, 10) || ((page - 1) * pageSize), 0);
 
-    let rangeStart = startDate;
-    let rangeEnd = endDate;
-    if (date) {
-      const target = new Date(date);
-      rangeStart = target.toISOString();
-      const endOfDay = new Date(target);
-      endOfDay.setHours(23, 59, 59, 999);
-      rangeEnd = endOfDay.toISOString();
-    } else if (startDate && !endDate) {
-      rangeEnd = new Date().toISOString();
-    } else if (!startDate && endDate) {
-      rangeStart = '1970-01-01T00:00:00.000Z';
-    }
-
-    // Daily trend + top-packers always need a bounded window, even when the
-    // caller asked for all-time totals (no date filter) — default to the
-    // trailing 14 days, same window as the Dashboard trend chart.
-    const trendEndIso = rangeEnd || new Date().toISOString();
-    const trendStartIso = rangeStart || new Date(new Date(trendEndIso).getTime() - (TREND_WINDOW_DAYS - 1) * 24 * 60 * 60 * 1000).toISOString();
+    const {
+      rangeStart, rangeEnd, trendStartIso, trendEndIso,
+    } = resolveProductivityDateRanges({ date, startDate, endDate });
 
     if (pgEnabled()) {
       try {
@@ -705,4 +741,5 @@ module.exports = router;
 // how server.js mounts it (app.use('/api/productivity', require(...))).
 router.__testables = {
   buildDashboardAnalytics, getRecentDaysTrend, computeDailyTrend, computeTopPackers,
+  resolveProductivityDateRanges,
 };

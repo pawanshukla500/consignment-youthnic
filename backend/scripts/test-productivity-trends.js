@@ -39,7 +39,7 @@ installMock(path.join(__dirname, '..', 'utils', 'resend.js'), {
 });
 
 const router = require('../routes/productivity');
-const { computeDailyTrend, computeTopPackers } = router.__testables;
+const { computeDailyTrend, computeTopPackers, resolveProductivityDateRanges } = router.__testables;
 
 function daysAgoIso(n, hour = 12) {
   const d = new Date();
@@ -116,12 +116,82 @@ function testComputeTopPackers() {
   assert.strictEqual(limited.length, 1, 'limit is respected');
   assert.strictEqual(limited[0].userId, 'u1', 'limit keeps the highest-ranked packer');
 
+  // Regression: a user whose box_saved records carry two DIFFERENT embedded
+  // userName values (e.g. logged before and after a display-name change,
+  // with no live users-map entry) must still collapse into ONE leaderboard
+  // row with ONE deterministic name — never two rows for the same userId,
+  // and never a name that depends on which record happened to be seen first.
+  const mixedNameRecords = [
+    { eventType: 'box_saved', timestamp: daysAgoIso(2), itemsCount: 5, userId: 'u4', userName: 'Priya Singh' },
+    { eventType: 'box_saved', timestamp: daysAgoIso(1), itemsCount: 3, userId: 'u4', userName: 'Priya S.' },
+  ];
+  const forward = computeTopPackers(mixedNameRecords, {}, startMs, endMs, 10);
+  const reversed = computeTopPackers([...mixedNameRecords].reverse(), {}, startMs, endMs, 10);
+  assert.strictEqual(forward.length, 1, `u4's two records must collapse into a single row: ${JSON.stringify(forward)}`);
+  assert.strictEqual(forward[0].boxes, 2, 'boxes must still sum across both differently-named records');
+  assert.strictEqual(forward[0].userName, reversed[0].userName, 'resolved name must not depend on record iteration order');
+
   console.log('computeTopPackers tests passed.');
+}
+
+function testResolveProductivityDateRanges() {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  // No filters at all — both totals and trend fall back to a 14-day window.
+  {
+    const { rangeStart, rangeEnd, trendStartIso, trendEndIso } = resolveProductivityDateRanges({});
+    assert.strictEqual(rangeStart, undefined, 'no synthetic rangeStart when nothing was supplied');
+    assert.strictEqual(rangeEnd, undefined, 'no synthetic rangeEnd when nothing was supplied');
+    const spanDays = Math.round((new Date(trendEndIso) - new Date(trendStartIso)) / DAY_MS);
+    assert.strictEqual(spanDays, 13, `default trend window must be 14 days (13 days apart), got ${spanDays}`);
+  }
+
+  // Regression: only endDate supplied. Before the fix, rangeStart defaulted
+  // to 1970-01-01 and leaked into trendStartIso, producing a decades-long
+  // window. It must now stay bounded to ~14 days ending at endDate.
+  {
+    const endDate = '2026-06-01T00:00:00.000Z';
+    const { rangeStart, trendStartIso, trendEndIso } = resolveProductivityDateRanges({ endDate });
+    assert.strictEqual(rangeStart, '1970-01-01T00:00:00.000Z', 'totals query is still allowed its all-time epoch default');
+    assert.strictEqual(trendEndIso, endDate, 'trend end must be the explicit endDate');
+    const spanDays = Math.round((new Date(trendEndIso) - new Date(trendStartIso)) / DAY_MS);
+    assert.strictEqual(spanDays, 13, `trend window must stay bounded to 14 days even with only endDate given, got ${spanDays} days (trendStartIso=${trendStartIso})`);
+    assert.notStrictEqual(trendStartIso, '1970-01-01T00:00:00.000Z', 'trend window must never inherit the epoch default');
+  }
+
+  // Only startDate supplied — trend end is "now", trend start is the
+  // explicit startDate (unchanged behavior, not part of the bug).
+  {
+    const startDate = '2026-01-01T00:00:00.000Z';
+    const { rangeEnd, trendStartIso, trendEndIso } = resolveProductivityDateRanges({ startDate });
+    assert.strictEqual(trendStartIso, startDate, 'trend start must be the explicit startDate');
+    assert.ok(rangeEnd, 'totals rangeEnd still defaults to now');
+    assert.strictEqual(trendEndIso, rangeEnd, 'trend end mirrors the totals "now" default when only startDate is given');
+  }
+
+  // Both supplied — trend window matches the explicit range exactly, no matter its size.
+  {
+    const startDate = '2020-01-01T00:00:00.000Z';
+    const endDate = '2020-03-01T00:00:00.000Z';
+    const { trendStartIso, trendEndIso } = resolveProductivityDateRanges({ startDate, endDate });
+    assert.strictEqual(trendStartIso, startDate);
+    assert.strictEqual(trendEndIso, endDate);
+  }
+
+  // Single `date` filter — trend window is that one day, not 14 days.
+  {
+    const { trendStartIso, trendEndIso } = resolveProductivityDateRanges({ date: '2026-05-10' });
+    const spanHours = (new Date(trendEndIso) - new Date(trendStartIso)) / (60 * 60 * 1000);
+    assert.ok(spanHours < 24, `single-day filter must produce a same-day trend window, got ${spanHours}h`);
+  }
+
+  console.log('resolveProductivityDateRanges tests passed.');
 }
 
 (async () => {
   testComputeDailyTrend();
   testComputeTopPackers();
+  testResolveProductivityDateRanges();
   console.log('Productivity trend/leaderboard tests passed.');
 })().catch((err) => {
   console.error(err);
