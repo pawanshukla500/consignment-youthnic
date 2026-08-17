@@ -311,11 +311,11 @@ const Productivity = () => {
           ))}
           <div className="h-5 w-px bg-slate-200 mx-1" />
           <div className="flex items-center gap-2 text-sm">
-            <input type="date" value={dateRange.start}
+            <input type="date" value={dateRange.start} max={dateRange.end || undefined}
               onChange={e => setDateRange(r => ({ ...r, start: e.target.value }))}
               className="px-3 py-1.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-primary-500 text-sm" />
             <span className="text-slate-400">→</span>
-            <input type="date" value={dateRange.end}
+            <input type="date" value={dateRange.end} min={dateRange.start || undefined}
               onChange={e => setDateRange(r => ({ ...r, end: e.target.value }))}
               className="px-3 py-1.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-primary-500 text-sm" />
             <button onClick={() => { setActivePreset('Custom'); fetchData(); }}

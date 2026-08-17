@@ -80,7 +80,18 @@ function computeDailyTrend(boxRecords, startMs, endMs) {
 // a deliberate custom quarter-long range, while keeping the worst case cheap.
 const MAX_TREND_SPAN_DAYS = 92;
 
-function resolveProductivityDateRanges({ date, startDate, endDate }) {
+function resolveProductivityDateRanges({ date, startDate: rawStartDate, endDate: rawEndDate }) {
+  // Normalize a reversed explicit range (startDate after endDate) instead of
+  // passing it through — otherwise every downstream query (the totals'
+  // `WHERE ts >= start AND ts <= end`, Postgres' generate_series, and the
+  // document-fallback loop's `cursor <= trendEndMs`) matches zero rows, so
+  // the page would silently render empty analytics with no error.
+  let startDate = rawStartDate;
+  let endDate = rawEndDate;
+  if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
+    [startDate, endDate] = [endDate, startDate];
+  }
+
   let rangeStart = startDate;
   let rangeEnd = endDate;
   if (date) {

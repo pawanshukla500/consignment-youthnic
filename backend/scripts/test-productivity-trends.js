@@ -223,6 +223,23 @@ function testResolveProductivityDateRanges() {
     assert.notStrictEqual(trendStartIso, startDate, 'the original 20-year-wide startDate must not pass through unclamped');
   }
 
+  // Regression: a reversed explicit range (startDate after endDate — e.g.
+  // from custom date-picker inputs with no min/max relationship enforced)
+  // must be normalized, not passed through. Otherwise every downstream
+  // query matches zero rows and the page silently renders empty analytics.
+  {
+    const laterDate = '2026-06-10T00:00:00.000Z';
+    const earlierDate = '2026-06-01T00:00:00.000Z';
+    const { rangeStart, rangeEnd, trendStartIso, trendEndIso } = resolveProductivityDateRanges({
+      startDate: laterDate, endDate: earlierDate,
+    });
+    assert.strictEqual(rangeStart, earlierDate, 'totals rangeStart must be the earlier date after normalization');
+    assert.strictEqual(rangeEnd, laterDate, 'totals rangeEnd must be the later date after normalization');
+    assert.strictEqual(trendStartIso, earlierDate, 'trend start must be the earlier date after normalization');
+    assert.strictEqual(trendEndIso, laterDate, 'trend end must be the later date after normalization');
+    assert.ok(new Date(trendEndIso) > new Date(trendStartIso), 'normalized window must be non-negative');
+  }
+
   console.log('resolveProductivityDateRanges tests passed.');
 }
 
