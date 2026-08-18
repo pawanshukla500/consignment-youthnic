@@ -4,6 +4,7 @@ const { authenticateToken } = require('../middleware/auth');
 const { generateId, now, firestoreHelpers } = require('../utils/helpers');
 const pgHelpers = require('../utils/pgHelpers');
 const { enrichConsignment, buildMarketplaceMap, sortByDispatchPriority } = require('../utils/dispatchPlanning');
+const { enrichWorkflowFields, LIST_BUCKETS } = require('../utils/consignmentWorkflow');
 const { requirePermission, requireAnyPermission } = require('../utils/permissions');
 const { getPool, pgEnabled } = require('../config/database');
 const {
@@ -16,6 +17,148 @@ const {
 function toInt(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+const TREND_WINDOW_DAYS = 14;
+const TOP_PACKERS_LIMIT = 10;
+
+/**
+ * Document-fallback equivalent of pgHelpers.queryProductivityStats' dailyTrend
+ * query: one row per day in [startMs, endMs] (inclusive, whole days), zero-filled.
+ */
+function computeDailyTrend(boxRecords, startMs, endMs) {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const byDay = new Map();
+  for (const r of boxRecords) {
+    const t = new Date(r.timestamp || r.createdAt).getTime();
+    if (!Number.isFinite(t) || t < startMs || t > endMs) continue;
+    const d = new Date(t);
+    d.setHours(0, 0, 0, 0);
+    const key = d.toISOString().slice(0, 10);
+    const entry = byDay.get(key) || { boxes: 0, items: 0 };
+    entry.boxes += 1;
+    entry.items += toInt(r.itemsCount);
+    byDay.set(key, entry);
+  }
+
+  const days = [];
+  const startDay = new Date(startMs);
+  startDay.setHours(0, 0, 0, 0);
+  for (let cursor = startDay.getTime(); cursor <= endMs; cursor += DAY_MS) {
+    const d = new Date(cursor);
+    const key = d.toISOString().slice(0, 10);
+    const entry = byDay.get(key) || { boxes: 0, items: 0 };
+    days.push({
+      date: key,
+      label: `${d.getDate()} ${d.toLocaleDateString('en-US', { month: 'short' })}`,
+      boxes: entry.boxes,
+      items: entry.items,
+    });
+  }
+  return days;
+}
+
+/**
+ * Resolves the /productivity stats query's date filters into two things:
+ *  - rangeStart/rangeEnd: the "totals" window, widened to synthetic
+ *    all-time defaults on one-sided input (epoch start / now end) so the
+ *    summary query can answer an open-ended range cheaply.
+ *  - trendStartIso/trendEndIso: the daily-trend + top-packers window, which
+ *    must stay bounded (default: trailing TREND_WINDOW_DAYS days) — it must
+ *    NEVER inherit the synthetic epoch/now defaults above, since feeding an
+ *    invented epoch start into a bounded per-day query would force a
+ *    decades-long generate_series (Postgres) or loop (document fallback).
+ *    Only an explicit `date`, or an explicit startDate/endDate the caller
+ *    actually supplied, may widen the trend window.
+ */
+// Hard ceiling on the trend/leaderboard window, applied even to an explicit
+// caller-supplied startDate/endDate — those are trusted to widen the window
+// (unlike the synthetic epoch/now defaults above), but an unbounded explicit
+// span (e.g. a multi-decade range) still forces one row per day out of
+// generate_series (Postgres) or the document-fallback loop. 92 days covers
+// every preset this page ships (a calendar month at most) with headroom for
+// a deliberate custom quarter-long range, while keeping the worst case cheap.
+const MAX_TREND_SPAN_DAYS = 92;
+
+function resolveProductivityDateRanges({ date, startDate: rawStartDate, endDate: rawEndDate }) {
+  // Normalize a reversed explicit range (startDate after endDate) instead of
+  // passing it through — otherwise every downstream query (the totals'
+  // `WHERE ts >= start AND ts <= end`, Postgres' generate_series, and the
+  // document-fallback loop's `cursor <= trendEndMs`) matches zero rows, so
+  // the page would silently render empty analytics with no error.
+  let startDate = rawStartDate;
+  let endDate = rawEndDate;
+  if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
+    [startDate, endDate] = [endDate, startDate];
+  }
+
+  let rangeStart = startDate;
+  let rangeEnd = endDate;
+  if (date) {
+    const target = new Date(date);
+    rangeStart = target.toISOString();
+    const endOfDay = new Date(target);
+    // setUTCHours, not setHours — the local-time variant renders an
+    // incomplete window in any non-UTC server timezone (e.g. only
+    // 00:00-07:00 UTC of the requested day in America/Los_Angeles),
+    // silently dropping most of that day's activity from the report.
+    endOfDay.setUTCHours(23, 59, 59, 999);
+    rangeEnd = endOfDay.toISOString();
+  } else if (startDate && !endDate) {
+    rangeEnd = new Date().toISOString();
+  } else if (!startDate && endDate) {
+    rangeStart = '1970-01-01T00:00:00.000Z';
+  }
+
+  const explicitTrendEnd = date ? rangeEnd : (endDate || null);
+  const explicitTrendStart = date ? rangeStart : (startDate || null);
+  const trendEndIso = explicitTrendEnd || new Date().toISOString();
+  let trendStartIso = explicitTrendStart || new Date(new Date(trendEndIso).getTime() - (TREND_WINDOW_DAYS - 1) * 24 * 60 * 60 * 1000).toISOString();
+
+  // -1: this is an inclusive day-span (e.g. TREND_WINDOW_DAYS uses the same
+  // convention above), so an N-day-apart clamp yields N+1 buckets — matching
+  // MAX_TREND_SPAN_DAYS to bucket count means clamping to one day less.
+  const maxSpanMs = (MAX_TREND_SPAN_DAYS - 1) * 24 * 60 * 60 * 1000;
+  const trendEndMs = new Date(trendEndIso).getTime();
+  if (trendEndMs - new Date(trendStartIso).getTime() > maxSpanMs) {
+    trendStartIso = new Date(trendEndMs - maxSpanMs).toISOString();
+  }
+
+  return { rangeStart, rangeEnd, trendStartIso, trendEndIso };
+}
+
+/**
+ * Document-fallback equivalent of pgHelpers.queryProductivityStats' topPackers
+ * query. Aggregates strictly by userId — display name is resolved AFTER
+ * aggregation from the full set of names seen for that user, never frozen to
+ * whichever record's userName happened to be processed first. That keeps the
+ * result deterministic (independent of boxRecords' iteration order) even
+ * when a user's box_saved records carry mixed/stale embedded userName values
+ * (e.g. logged before and after a display-name change).
+ */
+function computeTopPackers(boxRecords, userMap, startMs, endMs, limit = TOP_PACKERS_LIMIT) {
+  const byUser = new Map();
+  for (const r of boxRecords) {
+    const t = new Date(r.timestamp || r.createdAt).getTime();
+    if (!Number.isFinite(t) || t < startMs || t > endMs) continue;
+    const userId = r.userId || '';
+    if (!userId) continue;
+    const entry = byUser.get(userId) || { userId, boxes: 0, items: 0, recordedNames: [] };
+    entry.boxes += 1;
+    entry.items += toInt(r.itemsCount);
+    if (r.userName) entry.recordedNames.push(r.userName);
+    byUser.set(userId, entry);
+  }
+  const resolved = [...byUser.values()].map(({ recordedNames, ...entry }) => {
+    // Deterministic tie-break when falling back to a record-embedded name:
+    // the lexicographically greatest of all names ever recorded for this
+    // user, so re-running over the same data always picks the same value —
+    // mirrors the MAX(...) tie-break in the equivalent Postgres query.
+    const recordedName = recordedNames.length ? recordedNames.reduce((a, b) => (b > a ? b : a)) : null;
+    const userName = userMap[entry.userId]?.name || recordedName || userMap[entry.userId]?.email || 'Unknown';
+    return { ...entry, userName };
+  });
+  return resolved.sort((a, b) => b.boxes - a.boxes).slice(0, limit);
 }
 
 function buildPlanningPayload(consignments, allSkus, statusCounts = null) {
@@ -155,32 +298,70 @@ function buildPlanningPayload(consignments, allSkus, statusCounts = null) {
   };
 }
 
+/**
+ * Full-consignment-set analysis for the dashboard charts: workflow-bucket
+ * breakdown, marketplace-wise volume, and open-dispute count. Reuses
+ * enrichWorkflowFields (the same bucket logic that drives every badge on
+ * Consignments.jsx) rather than re-deriving the rules in SQL, so the chart
+ * numbers can never drift from what the list page shows. This payload is
+ * cached (DASHBOARD_TTL_MS), so the extra full-collection scan is paid
+ * infrequently, not on every request.
+ */
+async function buildDashboardAnalytics(marketplaceMap) {
+  const consignments = await firestoreHelpers.getCollection('consignments');
+  const enriched = consignments.map((c) => enrichWorkflowFields(enrichConsignment(c, marketplaceMap), { lean: true }));
+
+  const workflowBuckets = Object.fromEntries(Object.keys(LIST_BUCKETS).map((k) => [k, 0]));
+  let disputedCount = 0;
+  const byMarketplace = new Map(); // marketplaceId -> { name, count, required, packed }
+
+  for (const c of enriched) {
+    if (workflowBuckets[c.listPriorityBucket] != null) workflowBuckets[c.listPriorityBucket] += 1;
+    if (c.hasOpenInwardDispute) disputedCount += 1;
+
+    const mpId = c.marketplaceId || 'unassigned';
+    const mpName = c.planning?.marketplaceName || marketplaceMap[c.marketplaceId]?.name || 'Unassigned';
+    if (!byMarketplace.has(mpId)) byMarketplace.set(mpId, { id: mpId, name: mpName, count: 0, required: 0, packed: 0 });
+    const row = byMarketplace.get(mpId);
+    row.count += 1;
+    row.required += toInt(c.totalRequiredQty);
+    row.packed += toInt(c.totalPackedQty);
+  }
+
+  const marketplaceBreakdown = [...byMarketplace.values()].sort((a, b) => b.count - a.count);
+
+  return { workflowBuckets, marketplaceBreakdown, disputedCount, totalConsignments: consignments.length };
+}
+
 async function finalizeDashboardPayload(payload) {
   const marketplaceMap = await buildMarketplaceMap(firestoreHelpers);
   const recentConsignments = payload.recentConsignments.map((c) => enrichConsignment(c, marketplaceMap));
   const priorityQueue = sortByDispatchPriority(
     payload.openConsignments.map((c) => enrichConsignment(c, marketplaceMap))
   ).slice(0, 8);
+  const analytics = await buildDashboardAnalytics(marketplaceMap);
 
   return {
     ...payload,
     recentConsignments,
     priorityQueue,
     openConsignments: undefined,
+    ...analytics,
     cachedForSeconds: Math.round(DASHBOARD_TTL_MS / 1000),
   };
 }
 
-function getRecentDaysTrend(records = []) {
-  const days = [];
-  for (let i = 6; i >= 0; i--) {
+function getRecentDaysTrend(records = [], days = 14) {
+  const out = [];
+  for (let i = days - 1; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
     const key = d.toDateString();
     const value = records.filter((r) => r.eventType === 'box_saved' && new Date(r.timestamp).toDateString() === key).length;
-    days.push({ label: d.toLocaleDateString('en-US', { weekday: 'short' }), value });
+    // "12 Aug" — unambiguous past 7 days, unlike a bare weekday which repeats.
+    out.push({ label: `${d.getDate()} ${d.toLocaleDateString('en-US', { month: 'short' })}`, value });
   }
-  return days;
+  return out;
 }
 
 async function getPgDashboardSummary() {
@@ -238,9 +419,9 @@ async function getPgDashboardSummary() {
       WHERE collection = 'productivity'
     `),
     pool.query(`
-      SELECT to_char(day, 'Dy') AS label, COALESCE(counts.value, 0)::int AS value
+      SELECT to_char(day, 'FMDD Mon') AS label, COALESCE(counts.value, 0)::int AS value
       FROM generate_series(
-        (CURRENT_DATE - INTERVAL '6 days')::timestamp,
+        (CURRENT_DATE - INTERVAL '13 days')::timestamp,
         CURRENT_DATE::timestamp,
         INTERVAL '1 day'
       ) AS day
@@ -249,7 +430,7 @@ async function getPgDashboardSummary() {
         FROM documents
         WHERE collection = 'productivity'
           AND data->>'eventType' = 'box_saved'
-          AND COALESCE(NULLIF(data->>'timestamp', ''), NULLIF(data->>'createdAt', ''))::timestamptz >= CURRENT_DATE - INTERVAL '6 days'
+          AND COALESCE(NULLIF(data->>'timestamp', ''), NULLIF(data->>'createdAt', ''))::timestamptz >= CURRENT_DATE - INTERVAL '13 days'
         GROUP BY 1
       ) counts ON counts.d = day::date
       ORDER BY day
@@ -389,27 +570,22 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const offset = Math.max(parseInt(req.query.offset, 10) || ((page - 1) * pageSize), 0);
 
+    const {
+      rangeStart, rangeEnd, trendStartIso, trendEndIso,
+    } = resolveProductivityDateRanges({ date, startDate, endDate });
+
     if (pgEnabled()) {
       try {
-        let rangeStart = startDate;
-        let rangeEnd = endDate;
-        if (date) {
-          const target = new Date(date);
-          rangeStart = target.toISOString();
-          const endOfDay = new Date(target);
-          endOfDay.setHours(23, 59, 59, 999);
-          rangeEnd = endOfDay.toISOString();
-        } else if (startDate && !endDate) {
-          rangeEnd = new Date().toISOString();
-        } else if (!startDate && endDate) {
-          rangeStart = '1970-01-01T00:00:00.000Z';
-        }
-
-        const { statsRow, totalActivity, recentActivity } = await pgHelpers.queryProductivityStats({
+        const {
+          statsRow, totalActivity, recentActivity, dailyTrend, topPackers,
+        } = await pgHelpers.queryProductivityStats({
           startDate: rangeStart,
           endDate: rangeEnd,
           offset,
           limit: pageSize,
+          trendStart: trendStartIso,
+          trendEnd: trendEndIso,
+          topPackersLimit: TOP_PACKERS_LIMIT,
         });
 
         const avgItemsPerBox = Number(statsRow.avg_items_per_box) || 0;
@@ -429,6 +605,8 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
             avgTimePerBoxSeconds: Math.round(avgTimePerBox * 100) / 100,
           },
           recentActivity,
+          dailyTrend,
+          topPackers,
           pagination: {
             count: recentActivity.length,
             total: totalActivity,
@@ -443,14 +621,20 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
     }
 
     let records = await firestoreHelpers.getCollection('productivity');
-    
+
     // Filter by date range
     if (date) {
       const targetDate = new Date(date).toDateString();
       records = records.filter(r => new Date(r.timestamp).toDateString() === targetDate);
     } else if (startDate && endDate) {
-      const start = new Date(startDate);
-      const end = new Date(endDate);
+      // rangeStart/rangeEnd, not the raw startDate/endDate — those are the
+      // normalized (swapped-if-reversed) values from resolveProductivityDateRanges.
+      // Filtering on the raw pair here would silently return zero records
+      // whenever the caller submitted startDate after endDate, even though
+      // the Postgres path above (and the daily-trend/leaderboard queries)
+      // already correctly use the normalized range.
+      const start = new Date(rangeStart);
+      const end = new Date(rangeEnd);
       records = records.filter(r => {
         const d = new Date(r.timestamp);
         return d >= start && d <= end;
@@ -460,14 +644,14 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
     // Today's stats
     const today = new Date().toDateString();
     const todayRecords = records.filter(r => new Date(r.timestamp).toDateString() === today);
-    
+
     const todayBoxes = todayRecords.filter(r => r.eventType === 'box_saved').length;
     const todayItems = todayRecords.filter(r => r.eventType === 'box_saved').reduce((sum, r) => sum + (r.itemsCount || 0), 0);
-    
+
     // Calculate averages
     const allBoxRecords = records.filter(r => r.eventType === 'box_saved');
-    const avgItemsPerBox = allBoxRecords.length > 0 
-      ? allBoxRecords.reduce((sum, r) => sum + (r.itemsCount || 0), 0) / allBoxRecords.length 
+    const avgItemsPerBox = allBoxRecords.length > 0
+      ? allBoxRecords.reduce((sum, r) => sum + (r.itemsCount || 0), 0) / allBoxRecords.length
       : 0;
     const avgTimePerBox = allBoxRecords.length > 0
       ? allBoxRecords.reduce((sum, r) => sum + (r.duration || 0), 0) / allBoxRecords.length
@@ -477,6 +661,17 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
     records.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     const totalActivity = records.length;
     const recentActivity = records.slice(offset, offset + pageSize);
+
+    // Daily trend + top-packers leaderboard — computeDailyTrend/computeTopPackers
+    // apply their own [trendStartMs, trendEndMs] bound, so this reuses
+    // allBoxRecords whether or not the top-level date filter above already
+    // narrowed it (their bound is always >= as tight as that filter).
+    const trendStartMs = new Date(trendStartIso).getTime();
+    const trendEndMs = new Date(trendEndIso).getTime();
+    const users = await firestoreHelpers.getCollection('users');
+    const userMap = Object.fromEntries(users.map((u) => [u.id, u]));
+    const dailyTrend = computeDailyTrend(allBoxRecords, trendStartMs, trendEndMs);
+    const topPackers = computeTopPackers(allBoxRecords, userMap, trendStartMs, trendEndMs, TOP_PACKERS_LIMIT);
 
     res.json({
       today: {
@@ -492,6 +687,8 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
         avgTimePerBoxSeconds: Math.round(avgTimePerBox * 100) / 100
       },
       recentActivity,
+      dailyTrend,
+      topPackers,
       pagination: {
         count: recentActivity.length,
         total: totalActivity,
@@ -579,3 +776,9 @@ router.get('/planning', authenticateToken, requirePermission('productivity', 'vi
 });
 
 module.exports = router;
+// Router is an Express function — attaching test-only internals doesn't change
+// how server.js mounts it (app.use('/api/productivity', require(...))).
+router.__testables = {
+  buildDashboardAnalytics, getRecentDaysTrend, computeDailyTrend, computeTopPackers,
+  resolveProductivityDateRanges,
+};

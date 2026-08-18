@@ -82,6 +82,14 @@ export default function Consignments() {
   const { addToast } = useToast();
   const { user } = useAuth();
   const { pendingChanges, connected, lastSyncAt } = useConsignmentSync();
+  const initialBucketFilter = (() => {
+    try {
+      const value = new URLSearchParams(window.location.search).get('bucket');
+      return WORKFLOW_BUCKET_ORDER.includes(value) ? value : '';
+    } catch {
+      return '';
+    }
+  })();
   const [listTab, setListTab] = useState('all');
   const isAdmin = user?.role === 'admin' || user?.role === 'organization_head';
   const canDeleteConsignments = isAdmin || user?.permissions?.deleteConsignments === true;
@@ -91,7 +99,7 @@ export default function Consignments() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
-  const [workflowFilter, setWorkflowFilter] = useState('');
+  const [workflowFilter, setWorkflowFilter] = useState(initialBucketFilter);
   const [mpFilter, setMpFilter] = useState('');
   const [shortPackOnly, setShortPackOnly] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
@@ -105,7 +113,8 @@ export default function Consignments() {
   const debouncedSearch = useDebounce(search, 400);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [compactView, setCompactView] = useState(() => localStorage.getItem('consignmentsCompact') === 'true');
+  // Compact (17-column) view is the default — full (29-column) view is opt-in via localStorage.
+  const [compactView, setCompactView] = useState(() => localStorage.getItem('consignmentsCompact') !== 'false');
   const [form, setForm] = useState(createEmptyForm);
 
   const [page, setPage] = useState(1);
@@ -130,6 +139,12 @@ export default function Consignments() {
           archivedOnly: workflowFilter === 'archived' ? 'true' : undefined,
           includeArchived: workflowFilter === 'archived' || debouncedSearch ? 'true' : undefined,
           shortPackOnly: shortPackOnly ? 'true' : undefined,
+          // 'archived' already has a dedicated, DB-paginated path via
+          // archivedOnly/includeArchived above — only route the other
+          // buckets through the server-side bucket filter so filtering
+          // (and the "total" it reports) applies before pagination, not
+          // just to whatever page happened to load first.
+          workflowBucket: (workflowFilter && workflowFilter !== 'archived') ? workflowFilter : undefined,
         }),
         marketplacesAPI.getAll(),
         docketCompaniesAPI.getAll()
@@ -853,7 +868,7 @@ export default function Consignments() {
                 <p className="text-xs text-slate-700">
                   Showing <span className="font-semibold">{Math.min(total, (page - 1) * pageSize + 1)}</span> to{' '}
                   <span className="font-semibold">{Math.min(total, page * pageSize)}</span> of{' '}
-                  <span className="font-semibold">{workflowFilter ? sortedConsignments.length : total}</span> consignments
+                  <span className="font-semibold">{total}</span> consignments
                   {workflowFilter ? ` · ${WORKFLOW_BUCKET_LABELS[workflowFilter] || workflowFilter}` : ''}
                 </p>
               </div>

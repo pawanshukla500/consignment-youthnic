@@ -1,79 +1,36 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link } from 'react-router';
 import {
-  Package, CheckCircle2, Clock, AlertCircle, TrendingUp, ArrowRight, BarChart3, Activity, Boxes, RefreshCw
+  Package, CheckCircle2, Clock, AlertCircle, ArrowRight, Activity, Boxes, RefreshCw, GitBranch, Store
 } from 'lucide-react';
 import { productivityAPI } from '../services/api';
 import { useConsignmentSync } from '../context/ConsignmentSyncContext';
 import { useToast } from '../context/ToastContext';
 import { getShipmentPriority, formatDispatchDate } from '../utils/priority';
 import { getCriticalityCardClass } from '../utils/criticalityUi';
+import { WORKFLOW_BUCKET_ORDER, WORKFLOW_BUCKET_LABELS } from '../utils/workflowPriority';
+import { WORKFLOW_BUCKET_HEX, categoricalColor, formatCompactNumber } from '../utils/chartColors';
 import CriticalityBadge from '../components/CriticalityBadge';
 import ShipmentProgressBar from '../components/ShipmentProgressBar';
 import UnitsProgressCell from '../components/UnitsProgressCell';
 import { DashboardSkeleton } from '../components/Skeleton';
+import { TrendChart, BarList, SegmentedBar } from '../components/charts';
 
 const DASHBOARD_CACHE_KEY = 'dashboard_summary_cache';
 const DASHBOARD_CACHE_MS = 30_000;
 const REALTIME_REFETCH_MS = 4_000;
 
-// ── Lightweight dependency-free charts ──────────────────────────────────────
-const Donut = ({ segments }) => {
-  const total = segments.reduce((s, x) => s + x.value, 0) || 1;
-  let acc = 0;
-  const R = 54, C = 2 * Math.PI * R;
-  return (
-    <div className="flex items-center gap-5">
-      <svg width="130" height="130" viewBox="0 0 130 130" className="-rotate-90">
-        <circle cx="65" cy="65" r={R} fill="none" stroke="#FFF1F2" strokeWidth="16" />
-        {segments.map((s, i) => {
-          const len = (s.value / total) * C;
-          const dash = `${len} ${C - len}`;
-          const off = -acc; acc += len;
-          return <circle key={i} cx="65" cy="65" r={R} fill="none" stroke={s.color} strokeWidth="16" strokeDasharray={dash} strokeDashoffset={off} strokeLinecap="butt" />;
-        })}
-      </svg>
-      <div className="space-y-1.5">
-        {segments.map((s, i) => (
-          <div key={i} className="flex items-center gap-2 text-sm">
-            <span className="w-3 h-3 rounded-sm" style={{ background: s.color }} />
-            <span className="text-slate-600">{s.label}</span>
-            <span className="font-bold text-slate-900 ml-auto">{s.value}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-const Bars = ({ data }) => {
-  const max = Math.max(...data.map(d => d.value), 1);
-  return (
-    <div className="flex items-end justify-between gap-2 h-40 pt-4">
-      {data.map((d, i) => (
-        <div key={i} className="flex-1 flex flex-col items-center gap-1.5 group">
-          <span className="text-[10px] font-semibold text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity">{d.value}</span>
-          <div className="w-full bg-primary-100 rounded-t-md relative" style={{ height: `${(d.value / max) * 100}%`, minHeight: d.value > 0 ? '4px' : '0' }}>
-            <div className="absolute inset-0 rounded-t-md bg-gradient-to-t from-primary-600 to-primary-400" />
-          </div>
-          <span className="text-[10px] text-slate-400">{d.label}</span>
-        </div>
-      ))}
-    </div>
-  );
-};
-
 const StatCard = ({ title, value, icon: Icon, color, subtitle, link }) => (
   <Link to={link || '#'} className="block group">
-    <div className="card p-6 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200">
+    <div className="card p-5 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200">
       <div className="flex items-start justify-between">
         <div>
           <p className="text-sm font-medium text-slate-500">{title}</p>
-          <p className="font-display text-3xl font-bold text-slate-900 mt-2 tabular-nums">{value}</p>
-          {subtitle && <p className="text-sm text-slate-400 mt-1">{subtitle}</p>}
+          <p className="font-display text-2xl font-bold text-slate-900 mt-1.5 tabular-nums">{value}</p>
+          {subtitle && <p className="text-xs text-slate-400 mt-1">{subtitle}</p>}
         </div>
-        <div className={`p-3 rounded-lg ${color}`}>
-          <Icon className="w-6 h-6 text-white" />
+        <div className={`p-2.5 rounded-lg ${color}`}>
+          <Icon className="w-5 h-5 text-white" />
         </div>
       </div>
     </div>
@@ -103,6 +60,9 @@ function applyDashboardData(data, setters) {
   );
   setters.setTrend(data.trend || []);
   setters.setProductivity(data.productivity || null);
+  setters.setWorkflowBuckets(data.workflowBuckets || null);
+  setters.setMarketplaceBreakdown(data.marketplaceBreakdown || []);
+  setters.setDisputedCount(data.disputedCount || 0);
 }
 
 const Dashboard = () => {
@@ -118,6 +78,9 @@ const Dashboard = () => {
   const [recentConsignments, setRecentConsignments] = useState(initialCache?.data?.recentConsignments || []);
   const [priorityQueue, setPriorityQueue] = useState(initialCache?.data?.priorityQueue || []);
   const [trend, setTrend] = useState(initialCache?.data?.trend || []);
+  const [workflowBuckets, setWorkflowBuckets] = useState(initialCache?.data?.workflowBuckets || null);
+  const [marketplaceBreakdown, setMarketplaceBreakdown] = useState(initialCache?.data?.marketplaceBreakdown || []);
+  const [disputedCount, setDisputedCount] = useState(initialCache?.data?.disputedCount || 0);
   const [loading, setLoading] = useState(!initialCache);
   const [refreshing, setRefreshing] = useState(false);
   const { pendingChanges } = useConsignmentSync();
@@ -127,9 +90,14 @@ const Dashboard = () => {
   const fetchDashboardData = useCallback(async ({ force = false, background = false } = {}) => {
     if (fetchInFlightRef.current) return;
 
+    const setters = {
+      setStats, setRecentConsignments, setPriorityQueue, setTrend, setProductivity,
+      setWorkflowBuckets, setMarketplaceBreakdown, setDisputedCount,
+    };
+
     const cached = readDashboardCache();
     if (!force && cached?.data) {
-      applyDashboardData(cached.data, { setStats, setRecentConsignments, setPriorityQueue, setTrend, setProductivity });
+      applyDashboardData(cached.data, setters);
       setLoading(false);
       if (Date.now() - cached.savedAt < DASHBOARD_CACHE_MS) {
         return;
@@ -142,7 +110,7 @@ const Dashboard = () => {
 
     try {
       const { data } = await productivityAPI.getDashboardSummary(force ? { refresh: 1 } : undefined);
-      applyDashboardData(data, { setStats, setRecentConsignments, setPriorityQueue, setTrend, setProductivity });
+      applyDashboardData(data, setters);
       sessionStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), data }));
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
@@ -171,6 +139,22 @@ const Dashboard = () => {
 
   if (loading) return <DashboardSkeleton />;
 
+  const pipelineSegments = (workflowBuckets ? WORKFLOW_BUCKET_ORDER : [])
+    .map((bucket) => ({
+      key: bucket,
+      label: WORKFLOW_BUCKET_LABELS[bucket],
+      value: workflowBuckets?.[bucket] || 0,
+      color: WORKFLOW_BUCKET_HEX[bucket],
+    }));
+
+  const marketplaceItems = marketplaceBreakdown.map((m, i) => ({
+    key: m.id,
+    label: m.name,
+    value: m.count,
+    color: categoricalColor(i),
+    sublabel: m.required ? `${m.packed}/${m.required} pcs` : undefined,
+  }));
+
   return (
     <div>
       <div className="mb-8 animate-fade-in flex items-start justify-between gap-4">
@@ -186,7 +170,7 @@ const Dashboard = () => {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8 stagger-children">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-5 mb-8 stagger-children">
         <StatCard
           title="Total Consignments"
           value={stats.total}
@@ -218,6 +202,14 @@ const Dashboard = () => {
           color="bg-emerald-500"
           subtitle="Finished"
           link="/consignments?status=completed"
+        />
+        <StatCard
+          title="Disputed"
+          value={disputedCount}
+          icon={AlertCircle}
+          color="bg-red-500"
+          subtitle="Inward issue pending"
+          link="/consignments?bucket=disputed"
         />
       </div>
 
@@ -258,69 +250,76 @@ const Dashboard = () => {
         </div>
       )}
 
-      {/* Charts row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        {/* Status donut */}
+      {/* Charts row 1 — workflow pipeline + packing trend */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
-          <div className="flex items-center gap-2 mb-5">
-            <BarChart3 className="w-5 h-5 text-primary-600" />
-            <h2 className="text-base font-semibold text-slate-900">Consignment Status</h2>
+          <div className="flex items-center gap-2 mb-1">
+            <GitBranch className="w-5 h-5 text-primary-600" />
+            <h2 className="text-base font-semibold text-slate-900">Workflow Pipeline</h2>
           </div>
-          {stats.total > 0 ? (
-            <Donut segments={[
-              { label: 'Completed', value: stats.completed, color: '#10b981' },
-              { label: 'In Progress', value: stats.inProgress, color: '#E11D48' },
-              { label: 'Pending', value: stats.pending, color: '#f59e0b' },
-            ]} />
-          ) : <p className="text-slate-400 text-center py-8 text-sm">No consignments yet</p>}
+          <p className="text-xs text-slate-400 mb-5">Where every consignment sits right now, out of {stats.total} total</p>
+          {stats.total > 0 && workflowBuckets ? (
+            <SegmentedBar segments={pipelineSegments} valueFormatter={(v) => String(v)} height={18} />
+          ) : (
+            <p className="text-slate-400 text-center py-8 text-sm">No consignments yet</p>
+          )}
         </div>
 
-        {/* 7-day trend */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
           <div className="flex items-center gap-2 mb-1">
             <Activity className="w-5 h-5 text-primary-600" />
-            <h2 className="text-base font-semibold text-slate-900">Boxes Packed — Last 7 Days</h2>
+            <h2 className="text-base font-semibold text-slate-900">Boxes Packed — Last 14 Days</h2>
           </div>
-          <Bars data={trend} />
+          <p className="text-xs text-slate-400 mb-1">Daily box-save volume across the whole team</p>
+          <TrendChart data={trend} color="#E11D48" valueLabel="boxes" height={176} />
         </div>
       </div>
 
-      {/* Productivity & Recent */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Charts row 2 — productivity, marketplace mix, recent consignments */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Today's Productivity */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
-          <div className="flex items-center gap-2 mb-6">
-            <TrendingUp className="w-5 h-5 text-primary-600" />
-            <h2 className="text-lg font-semibold text-slate-900">Today's Productivity</h2>
+          <div className="flex items-center gap-2 mb-5">
+            <Boxes className="w-5 h-5 text-primary-600" />
+            <h2 className="text-base font-semibold text-slate-900">Today's Productivity</h2>
           </div>
-          
+
           {productivity ? (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between p-4 bg-slate-50 rounded-lg">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
                 <span className="text-sm text-slate-600">Boxes Packed</span>
-                <span className="text-2xl font-bold text-slate-900">{productivity.today?.boxes || 0}</span>
+                <span className="text-xl font-bold text-slate-900 tabular-nums">{productivity.today?.boxes || 0}</span>
               </div>
-              <div className="flex items-center justify-between p-4 bg-slate-50 rounded-lg">
+              <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
                 <span className="text-sm text-slate-600">Items Packed</span>
-                <span className="text-2xl font-bold text-slate-900">{productivity.today?.items || 0}</span>
+                <span className="text-xl font-bold text-slate-900 tabular-nums">{productivity.today?.items || 0}</span>
               </div>
-              <div className="flex items-center justify-between p-4 bg-slate-50 rounded-lg">
+              <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
                 <span className="text-sm text-slate-600">Avg Items/Box</span>
-                <span className="text-2xl font-bold text-slate-900">
+                <span className="text-xl font-bold text-slate-900 tabular-nums">
                   {productivity.today?.avgItemsPerBox || 0}
                 </span>
               </div>
             </div>
           ) : (
-            <p className="text-slate-400 text-center py-8">No data available</p>
+            <p className="text-slate-400 text-center py-8 text-sm">No data available</p>
           )}
-          
-          <Link 
-            to="/productivity" 
-            className="flex items-center justify-center gap-2 mt-6 text-primary-600 hover:text-primary-700 font-medium text-sm"
+
+          <Link
+            to="/productivity"
+            className="flex items-center justify-center gap-2 mt-5 text-primary-600 hover:text-primary-700 font-medium text-sm"
           >
             View Details <ArrowRight className="w-4 h-4" />
           </Link>
+        </div>
+
+        {/* By Marketplace */}
+        <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6">
+          <div className="flex items-center gap-2 mb-5">
+            <Store className="w-5 h-5 text-primary-600" />
+            <h2 className="text-base font-semibold text-slate-900">By Marketplace</h2>
+          </div>
+          <BarList items={marketplaceItems} maxItems={6} valueFormatter={(v) => formatCompactNumber(v)} />
         </div>
 
         {/* Recent Consignments */}
@@ -328,10 +327,10 @@ const Dashboard = () => {
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-2">
               <Package className="w-5 h-5 text-primary-600" />
-              <h2 className="text-lg font-semibold text-slate-900">Recent Consignments</h2>
+              <h2 className="text-base font-semibold text-slate-900">Recent Consignments</h2>
             </div>
-            <Link 
-              to="/consignments" 
+            <Link
+              to="/consignments"
               className="text-primary-600 hover:text-primary-700 font-medium text-sm flex items-center gap-1"
             >
               View All <ArrowRight className="w-4 h-4" />
@@ -374,7 +373,7 @@ const Dashboard = () => {
                         <ShipmentProgressBar consignment={c} variant="compact" />
                       </td>
                       <td className="py-4 text-right">
-                        <Link 
+                        <Link
                           to={`/consignments/${c.id}`}
                           className="text-primary-600 hover:text-primary-700 text-sm font-medium"
                         >
