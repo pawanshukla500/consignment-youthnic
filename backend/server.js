@@ -236,7 +236,7 @@ if (process.env.NODE_ENV !== 'production' || process.env.ALLOW_LOCAL_UPLOAD_STAT
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/consignments', require('./routes/consignments'));
+app.use('/api/consignments', require('./routes/consignments').router);
 
 app.use('/api/uploads', require('./routes/uploads'));
 app.use('/api/productivity', require('./routes/productivity'));
@@ -589,6 +589,45 @@ app.listen(PORT, async () => {
     console.log('[InventoryPlanning] Daily sync+email scheduler started (default 10:30 Asia/Kolkata)');
   } catch (err) {
     console.warn('[InventoryPlanning] Could not start schedulers:', err.message);
+  }
+
+  // Consignment Master sheet: daily box-wise packing push @ 07:00 Asia/Kolkata.
+  // Anything not pushed manually from the Packing Report gets synced here.
+  try {
+    const { getZonedDateParts } = require('./utils/inventorySettings');
+    const { runScheduledSheetPush, isSweepRunning } = require('./utils/consignmentSheetPushService');
+    const SHEET_PUSH_TZ = process.env.SHEET_PUSH_TIMEZONE || 'Asia/Kolkata';
+    const SHEET_PUSH_HOUR = Number(process.env.SHEET_PUSH_HOUR_LOCAL || 7);
+    let lastPushSlot = '';
+
+    setInterval(async () => {
+      try {
+        if (isSweepRunning()) return;
+        const parts = getZonedDateParts(new Date(), SHEET_PUSH_TZ);
+        // Hour-window rather than an exact minute: a Cloud Run instance that was
+        // cold at 07:00 still runs the sweep when it wakes inside the hour, and
+        // the per-day slot key keeps it to one run.
+        if (parts.hour !== SHEET_PUSH_HOUR) return;
+        const slot = `${parts.dateKey}-sheet-push`;
+        if (slot === lastPushSlot) return;
+        lastPushSlot = slot;
+
+        console.log(`[SheetPush] Starting daily push (${SHEET_PUSH_HOUR}:00 ${SHEET_PUSH_TZ})`);
+        const result = await runScheduledSheetPush({ trigger: 'scheduled' });
+        console.log(
+          `[SheetPush] Daily push done — ${result.pushed} pushed, ${result.skipped} unchanged, ` +
+            `${result.failed} failed (of ${result.candidates} candidates)`
+        );
+        if (result.failures?.length) {
+          console.warn('[SheetPush] Failures:', result.failures.slice(0, 5));
+        }
+      } catch (err) {
+        console.warn('[SheetPush] scheduler tick failed:', err.message);
+      }
+    }, 60 * 1000);
+    console.log(`[SheetPush] Daily Google Sheet push scheduler started (${SHEET_PUSH_HOUR}:00 ${SHEET_PUSH_TZ})`);
+  } catch (err) {
+    console.warn('[SheetPush] Could not start scheduler:', err.message);
   }
 
 });

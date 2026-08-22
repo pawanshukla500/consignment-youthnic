@@ -24,6 +24,7 @@ const {
 const { saveBoxWithPostgresTransaction } = require('../utils/packingPersistence');
 const { getMarketplaceBarcode, normalizeSkuInput } = require('../utils/skuIdentity');
 const { lookupShipmentSkus } = require('../utils/consignmentSheet');
+const { pushPackingToSheet } = require('../utils/consignmentSheetPush');
 const { resolveStoragePath, resolvePublicUrl, deleteFile } = require('../utils/storage');
 const { requirePermission, requireAnyPermission, DELETE_CONSIGNMENTS } = require('../utils/permissions');
 const {
@@ -820,24 +821,89 @@ router.get('/sheet-lookup', authenticateToken, requirePermission('consignments',
   }
 });
 
+// Build the packing report for one consignment (shared by the report endpoint
+// and the Google Sheet push).
+async function loadPackingReport(consignmentId) {
+  const consignment = await firestoreHelpers.getDocument('consignments', consignmentId);
+  if (!consignment) return null;
+
+  const skuIds = consignment.skuIds || [];
+  const boxIds = consignment.boxIds || [];
+  const [skus, boxResult] = await Promise.all([
+    skuIds.length ? firestoreHelpers.batchGetDocuments('skus', skuIds) : Promise.resolve([]),
+    getSavedBoxesForConsignment(consignmentId, boxIds),
+  ]);
+
+  return {
+    consignment,
+    report: buildPackingReport(consignment, skus.filter(Boolean), boxResult.boxes, boxResult.missingBoxIds),
+  };
+}
+
+// Push box-wise packing data (sheet columns I and J) to the Consignment Master
+// sheet. Writes fixed cells, so re-running is harmless.
+router.post('/:id/sheet-push', authenticateToken, requirePermission('consignments', 'push packing data to Google Sheets'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const loaded = await loadPackingReport(id);
+    if (!loaded) return res.status(404).json({ error: 'Consignment not found' });
+
+    const { consignment, report } = loaded;
+    const internalShipmentNo = consignment.internalShipmentNo || '';
+    if (!internalShipmentNo) {
+      return res.status(400).json({ error: 'This consignment has no Internal Shipment No., so no sheet rows can be matched.' });
+    }
+
+    const result = await pushPackingToSheet({
+      internalShipmentNo,
+      reportRows: report.rows || [],
+      dryRun: req.query.dryRun === '1' || req.query.dryRun === 'true',
+    });
+
+    if (!result.ok) {
+      return res.status(result.reason === 'shipment_not_in_sheet' ? 404 : 502).json({
+        error: result.error || 'Push to Google Sheet failed.',
+        ...result,
+      });
+    }
+
+    if (!result.dryRun) {
+      const pushedAt = now();
+      const sheetPush = {
+        at: pushedAt,
+        by: req.user?.id || '',
+        byName: req.user?.name || req.user?.email || '',
+        trigger: 'manual',
+        updated: result.updated || 0,
+        fingerprint: result.fingerprint || '',
+      };
+      // setDocument shallow-merges (Firestore { merge: true } semantics).
+      // updatedAt is deliberately left alone: a push does not change the
+      // consignment itself, and the daily sweep treats sheetPush.at < updatedAt
+      // as "packing changed since the last push".
+      await firestoreHelpers.setDocument('consignments', id, { sheetPush });
+      await addAuditLog('sheet_push', 'consignment', id, req.user?.id, {
+        internalShipmentNo,
+        updated: result.updated || 0,
+        cleared: result.cleared || 0,
+        unmatched: (result.unmatchedSkus || []).length,
+      });
+    }
+
+    return res.json(result);
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
 // Box-derived packing report. This intentionally does not use sku.packedQty or
 // sku.boxQuantities for report numbers; those are checked only for integrity.
 router.get('/:id/packing-report', authenticateToken, requireAnyPermission(['consignments', 'packing'], 'view packing reports'), async (req, res) => {
   try {
-    const { id } = req.params;
-    const consignment = await firestoreHelpers.getDocument('consignments', id);
-    if (!consignment) return res.status(404).json({ error: 'Consignment not found' });
+    const loaded = await loadPackingReport(req.params.id);
+    if (!loaded) return res.status(404).json({ error: 'Consignment not found' });
 
-    const skuIds = consignment.skuIds || [];
-    const boxIds = consignment.boxIds || [];
-    const [skus, boxResult] = await Promise.all([
-      skuIds.length ? firestoreHelpers.batchGetDocuments('skus', skuIds) : Promise.resolve([]),
-      getSavedBoxesForConsignment(id, boxIds),
-    ]);
-
-    const report = buildPackingReport(consignment, skus.filter(Boolean), boxResult.boxes, boxResult.missingBoxIds);
-
-    res.json({ report });
+    res.json({ report: loaded.report });
   } catch (error) {
     sendError(res, error);
   }
@@ -1907,4 +1973,6 @@ router.post('/:id/archive', authenticateToken, requirePermission('consignments',
   }
 });
 
-module.exports = router;
+// Exported as an object (same convention as routes/workflow.js) so background
+// jobs can reuse loadPackingReport without going through HTTP.
+module.exports = { router, loadPackingReport };

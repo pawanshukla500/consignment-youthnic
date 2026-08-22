@@ -68,6 +68,7 @@ export const consignmentsAPI = {
   saveBox: (consignmentId, data) => api.post(`/consignments/${consignmentId}/boxes`, data),
   getLabels: (id) => api.get(`/consignments/${id}/labels`, { responseType: 'blob' }),
   archive: (id) => api.post(`/consignments/${id}/archive`),
+  sheetPush: (id) => api.post(`/consignments/${id}/sheet-push`),
   downloadOmsGuruTemplate: (id) => api.get(`/consignments/${id}/oms-guru/template`, { responseType: 'blob' }),
   importOmsGuruTemplate: (id, file) => {
     const formData = new FormData()
