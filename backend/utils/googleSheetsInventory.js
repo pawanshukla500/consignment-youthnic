@@ -846,6 +846,9 @@ async function fetchInventoryFromSheet(spreadsheetId, sheetName, options = {}) {
 }
 
 module.exports = {
+  getSheetsClient,
+  escapeSheetName,
+  withRetry,
   isSheetsConfigured,
   isSheetsReady,
   isSheetsEnvPresent,
