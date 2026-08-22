@@ -743,16 +743,35 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
     }
 
     if (fileType === 'video' && !isRemovalVideo && boxNo) {
-      try {
-        if (!keepExistingVideo) {
+      if (!keepExistingVideo) {
+        try {
           await ensureSingleVideoPerBox(consignmentId, boxNo, fileId);
+        } catch (replaceError) {
+          console.warn('[Upload] Old video cleanup failed for box', boxNo, replaceError.message);
         }
-        const boxId = `${consignmentId}_box_${boxNo}`;
+      }
+
+      // consignmentId and boxNo must be written even though this only *updates*
+      // video fields: setDocument creates the box document when a video is
+      // recorded before the box contents are saved, and a box row without them
+      // is invisible to the consignmentId lookup and is rejected outright by the
+      // documents→boxes sync trigger (boxes.consignment_id is NOT NULL and a
+      // foreign key, so the trigger's 'UNKNOWN' fallback aborts the write).
+      const boxId = `${consignmentId}_box_${boxNo}`;
+      try {
         await firestoreHelpers.setDocument('boxes', boxId, {
+          consignmentId,
+          boxNo: String(boxNo),
           videoStatus: 'metadata_saved',
           videoId: fileId,
           videoUpdatedAt: now(),
         });
+      } catch (boxLinkError) {
+        console.error('[Upload] Failed to link video to box', boxNo, boxLinkError.message);
+      }
+
+      // Written separately: a failure above must not swallow the status update.
+      try {
         await firestoreHelpers.setDocument('consignments', consignmentId, {
           boxVideoStatuses: {
             ...(consignment?.boxVideoStatuses || {}),
@@ -764,8 +783,8 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
           },
           updatedAt: now(),
         });
-      } catch (replaceError) {
-        console.warn('[Upload] Old video cleanup failed for box', boxNo, replaceError.message);
+      } catch (statusError) {
+        console.error('[Upload] Failed to record box video status', boxNo, statusError.message);
       }
     }
 
