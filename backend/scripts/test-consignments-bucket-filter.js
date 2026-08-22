@@ -78,7 +78,7 @@ installMock(path.join(__dirname, '..', 'config', 'database.js'), {
   getPool: () => null,
 });
 
-const router = require('../routes/consignments');
+const { router } = require('../routes/consignments');
 
 function baseConsignment(overrides) {
   return {

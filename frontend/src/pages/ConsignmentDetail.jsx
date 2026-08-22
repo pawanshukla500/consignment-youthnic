@@ -3,7 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router';
 import {
   ArrowLeft, Package, Box, Video, FileText, Upload, AlertCircle,
   Trash2, Download, Loader2, FileSpreadsheet, CheckCircle2,
-  Copy, ExternalLink, Tag, ChevronDown, ChevronUp, Database, Scale, AlertTriangle, History, Pencil
+  Copy, ExternalLink, Tag, ChevronDown, ChevronUp, Database, Scale, AlertTriangle, History, Pencil, UploadCloud
 } from 'lucide-react';
 import ConfirmModal from '../components/ConfirmModal';
 import { printShipmentBoxLabel, printAllShipmentBoxLabels } from '../utils/shipmentLabel';
@@ -397,6 +397,9 @@ const ConsignmentDetail = () => {
   const [videoUploadBoxNo, setVideoUploadBoxNo] = useState('');
   const [selectedVideoBox, setSelectedVideoBox] = useState('all');
   const [consignment, setConsignment] = useState(null);
+  // Google Sheet push (Packing Report → Consignment Master columns I and J)
+  const [sheetPushing, setSheetPushing] = useState(false);
+  const [sheetPushResult, setSheetPushResult] = useState(null);
   const [loading, setLoading] = useState(true);
   const [packingReport, setPackingReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
@@ -702,6 +705,31 @@ const ConsignmentDetail = () => {
       if (!silent) addToast('Failed to load consignment', 'error');
     } finally {
       if (!silent) setLoading(false);
+    }
+  };
+
+  // Push box-wise packing data to the Consignment Master sheet (columns I and J).
+  const handleSheetPush = async () => {
+    if (sheetPushing) return;
+    setSheetPushing(true);
+    setSheetPushResult(null);
+    try {
+      const { data } = await consignmentsAPI.sheetPush(id);
+      setSheetPushResult(data);
+      const unmatched = (data.unmatchedSkus || []).length;
+      addToast(
+        `Pushed to sheet — ${data.updated || 0} row(s) updated`
+          + (data.cleared ? `, ${data.cleared} cleared` : '')
+          + (unmatched ? `, ${unmatched} SKU(s) not in sheet` : ''),
+        unmatched ? 'warning' : 'success'
+      );
+      await fetchConsignment({ silent: true });
+    } catch (err) {
+      const data = err?.response?.data || {};
+      setSheetPushResult({ ok: false, ...data });
+      addToast(data.error || 'Push to Google Sheet failed', 'error');
+    } finally {
+      setSheetPushing(false);
     }
   };
 
@@ -1862,11 +1890,58 @@ const ConsignmentDetail = () => {
                   <button onClick={() => exportCsv('pending')} className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 text-white rounded-lg text-xs font-medium hover:bg-amber-600 transition-colors">
                     <FileSpreadsheet className="w-3.5 h-3.5" />Export Pending
                   </button>
+                  <button
+                    onClick={handleSheetPush}
+                    disabled={sheetPushing}
+                    title="Write box-wise quantities and box numbers into the Consignment Master sheet"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-medium hover:bg-slate-900 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {sheetPushing
+                      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      : <UploadCloud className="w-3.5 h-3.5" />}
+                    {sheetPushing ? 'Pushing…' : 'Push to Google Sheet'}
+                  </button>
                   <span className="text-xs text-slate-500 ml-2">
                     {pivotData.summary.packedSkuCount || 0} packed, {pivotData.summary.pendingSkuCount || 0} pending, {pivotData.summary.completeSkuCount || 0} complete
                   </span>
                 </div>
               </div>
+
+              {(sheetPushResult || consignment?.sheetPush?.at) && (
+                <div className={`mb-4 rounded-xl border px-4 py-3 text-xs ${
+                  sheetPushResult && sheetPushResult.ok === false
+                    ? 'border-red-200 bg-red-50 text-red-800'
+                    : 'border-slate-200 bg-slate-50 text-slate-700'
+                }`}>
+                  {sheetPushResult && sheetPushResult.ok === false ? (
+                    <p className="font-medium">{sheetPushResult.error || 'Push to Google Sheet failed.'}</p>
+                  ) : (
+                    <p>
+                      {sheetPushResult ? (
+                        <>
+                          <span className="font-semibold text-slate-900">Pushed to Google Sheet</span>
+                          {' — '}{sheetPushResult.updated || 0} row(s) updated
+                          {sheetPushResult.cleared ? `, ${sheetPushResult.cleared} cleared` : ''}
+                          {sheetPushResult.skippedMovedRows ? `, ${sheetPushResult.skippedMovedRows} skipped (row moved)` : ''}
+                        </>
+                      ) : (
+                        <>
+                          <span className="font-semibold text-slate-900">Last pushed to Google Sheet</span>
+                          {' — '}{new Date(consignment.sheetPush.at).toLocaleString()}
+                          {consignment.sheetPush.trigger === 'scheduled' ? ' (daily sync)' : ''}
+                        </>
+                      )}
+                    </p>
+                  )}
+                  {sheetPushResult?.unmatchedSkus?.length > 0 && (
+                    <p className="mt-1 text-amber-700">
+                      {sheetPushResult.unmatchedSkus.length} SKU(s) had no matching sheet row:{' '}
+                      {sheetPushResult.unmatchedSkus.slice(0, 5).map((s) => s.marketplaceBarcode).join(', ')}
+                      {sheetPushResult.unmatchedSkus.length > 5 ? ' …' : ''}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {pivotData.integrityIssues?.length > 0 && (
                 <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
