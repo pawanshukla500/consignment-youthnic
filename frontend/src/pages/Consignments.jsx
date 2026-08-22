@@ -42,6 +42,21 @@ const EMPTY_FORM = {
 const EMPTY_SKU_ROW = { marketplaceBarcode: '', marketplaceBarcodeType: '', marketplaceSku: '', internalSku: '', requiredQty: '' };
 const createEmptyForm = () => ({ ...EMPTY_FORM, skus: [{ ...EMPTY_SKU_ROW }] });
 
+const SKU_FIELDS = ['marketplaceBarcode', 'marketplaceBarcodeType', 'marketplaceSku', 'internalSku', 'requiredQty']
+
+const isBlankSkuRow = (sku = {}) => SKU_FIELDS.every((f) => !String(sku[f] ?? '').trim())
+
+/** Safe to overwrite: still the blank starter row, or exactly what we last auto-filled. */
+const isSkuTableReplaceable = (skus = [], lastAutoFilled = null) => {
+  if (!skus.length || skus.every(isBlankSkuRow)) return true
+  if (!lastAutoFilled || lastAutoFilled.length !== skus.length) return false
+  return skus.every((sku, i) => SKU_FIELDS.every(
+    (f) => String(sku[f] ?? '').trim() === String(lastAutoFilled[i]?.[f] ?? '').trim()
+  ))
+}
+
+const SHEET_IDLE = { status: 'idle', message: '', skus: [], rowCount: 0 }
+
 const clean = (value) => (value == null ? '' : String(value).trim());
 const getScanBarcode = (sku = {}) => clean(sku.marketplaceBarcode || sku.barcode || sku.skuBarcode || sku.scanBarcode || sku.marketplaceSku);
 
@@ -116,6 +131,11 @@ export default function Consignments() {
   // Compact (17-column) view is the default — full (29-column) view is opt-in via localStorage.
   const [compactView, setCompactView] = useState(() => localStorage.getItem('consignmentsCompact') !== 'false');
   const [form, setForm] = useState(createEmptyForm);
+  // Consignment Master sheet lookup (Create modal → Internal Shipment No.)
+  const [sheetLookup, setSheetLookup] = useState(SHEET_IDLE);
+  const lastAutoFilledSkus = useRef(null);
+  const currentSkusRef = useRef(form.skus);
+  const debouncedShipmentNo = useDebounce(form.internalShipmentNo, 500);
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -182,6 +202,8 @@ export default function Consignments() {
     setDeleteConfirmText('');
     setShowAdvanced(false);
     setForm(createEmptyForm());
+    setSheetLookup(SHEET_IDLE);
+    lastAutoFilledSkus.current = null;
     setShowCreate(true);
   };
 
@@ -190,7 +212,98 @@ export default function Consignments() {
     setShowCreate(false);
     setShowAdvanced(false);
     setForm(createEmptyForm());
+    setSheetLookup(SHEET_IDLE);
+    lastAutoFilledSkus.current = null;
   };
+
+  useEffect(() => { currentSkusRef.current = form.skus; }, [form.skus]);
+
+  // Fill the SKU table from the Consignment Master sheet. Every failure path is
+  // soft: the operator can always keep entering SKUs by hand.
+  const applySheetSkus = useCallback((skus) => {
+    const rows = skus.map((sku) => ({ ...EMPTY_SKU_ROW, ...sku }));
+    lastAutoFilledSkus.current = rows;
+    setForm((prev) => ({ ...prev, skus: rows }));
+  }, []);
+
+  const runSheetLookup = useCallback(async (query, { refresh = false, signal } = {}) => {
+    const internalShipmentNo = String(query || '').trim();
+    if (!internalShipmentNo) {
+      setSheetLookup(SHEET_IDLE);
+      return;
+    }
+
+    setSheetLookup({ status: 'loading', message: 'Looking up sheet…', skus: [], rowCount: 0 });
+
+    let data;
+    try {
+      const res = await consignmentsAPI.sheetLookup(
+        internalShipmentNo,
+        { ...(refresh ? { params: { refresh: 1 } } : {}), signal }
+      );
+      data = res.data || {};
+    } catch (err) {
+      if (signal?.aborted || err?.code === 'ERR_CANCELED') return;
+      setSheetLookup({
+        status: 'error',
+        message: 'Sheet unavailable — enter SKUs manually.',
+        skus: [],
+        rowCount: 0,
+      });
+      return;
+    }
+    if (signal?.aborted) return;
+
+    const skus = Array.isArray(data.skus) ? data.skus : [];
+
+    if (!data.found || skus.length === 0) {
+      setSheetLookup({
+        status: data.reason === 'sheet_unavailable' ? 'error' : 'empty',
+        message: data.reason === 'sheet_unavailable'
+          ? (data.error || 'Sheet unavailable — enter SKUs manually.')
+          : `No rows found in sheet for ${internalShipmentNo}`,
+        skus: [],
+        rowCount: 0,
+      });
+      return;
+    }
+
+    const note = data.truncated
+      ? `${skus.length} SKU${skus.length === 1 ? '' : 's'} loaded from sheet (capped)`
+      : `${skus.length} SKU${skus.length === 1 ? '' : 's'} loaded from sheet`;
+
+    // Never clobber rows the operator typed or imported — offer a Replace instead.
+    if (!isSkuTableReplaceable(currentSkusRef.current, lastAutoFilledSkus.current)) {
+      setSheetLookup({
+        status: 'confirm',
+        message: `Sheet has ${skus.length} SKU${skus.length === 1 ? '' : 's'} for this shipment.`,
+        skus,
+        rowCount: skus.length,
+      });
+      return;
+    }
+
+    applySheetSkus(skus);
+    setSheetLookup({ status: 'found', message: note, skus, rowCount: skus.length });
+  }, [applySheetSkus]);
+
+  // Auto-fetch on paste or typing, once the field settles.
+  useEffect(() => {
+    if (!showCreate) return undefined;
+    const live = String(form.internalShipmentNo || '').trim();
+    const query = String(debouncedShipmentNo || '').trim();
+    // Ignore a debounced value that no longer matches the field: mid-typing, or
+    // a value left over from the last time the modal was open (the debounce
+    // outlives the form reset, so reopening quickly would otherwise fill the
+    // fresh form from the previous shipment).
+    if (!query || query !== live) {
+      setSheetLookup((prev) => (prev.status === 'idle' ? prev : SHEET_IDLE));
+      return undefined;
+    }
+    const controller = new AbortController();
+    runSheetLookup(query, { signal: controller.signal });
+    return () => controller.abort();
+  }, [debouncedShipmentNo, form.internalShipmentNo, showCreate, runSheetLookup]);
 
   const handleCreate = async (e) => {
     e.preventDefault();
@@ -339,6 +452,7 @@ export default function Consignments() {
         const items = parseCsv(text);
         if (items.length === 0) { addToast('No valid SKUs found in file', 'warning'); return; }
 
+        lastAutoFilledSkus.current = null;
         setForm(prev => ({ ...prev, skus: items }));
         addToast(`${items.length} SKU(s) imported from ${file.name}`, 'success');
       } catch (err) { addToast('Failed to parse file: ' + err.message, 'error'); }
@@ -945,6 +1059,47 @@ export default function Consignments() {
                       Internal Shipment No. <span className="text-primary-600">*</span>
                     </label>
                     <input type="text" required autoFocus value={form.internalShipmentNo} onChange={e=>setForm({...form,internalShipmentNo:e.target.value})} className="inp" placeholder="e.g. 6605JVXH" />
+                    {sheetLookup.status !== 'idle' && (
+                      <div className="mt-1 text-[11px] leading-tight">
+                        {sheetLookup.status === 'loading' && (
+                          <span className="flex items-center gap-1 text-slate-500">
+                            <Loader2 className="w-3 h-3 animate-spin" />{sheetLookup.message}
+                          </span>
+                        )}
+                        {sheetLookup.status === 'found' && (
+                          <span className="flex items-center gap-1 text-emerald-600 font-medium">
+                            <CheckCircle2 className="w-3 h-3" />{sheetLookup.message}
+                          </span>
+                        )}
+                        {sheetLookup.status === 'empty' && (
+                          <span className="text-slate-500">{sheetLookup.message}</span>
+                        )}
+                        {sheetLookup.status === 'error' && (
+                          <span className="flex items-center gap-1 text-amber-600">
+                            <AlertTriangle className="w-3 h-3" />{sheetLookup.message}
+                          </span>
+                        )}
+                        {sheetLookup.status === 'confirm' && (
+                          <span className="flex flex-wrap items-center gap-1.5 text-slate-600">
+                            {sheetLookup.message}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                applySheetSkus(sheetLookup.skus)
+                                setSheetLookup((prev) => ({
+                                  ...prev,
+                                  status: 'found',
+                                  message: `${prev.skus.length} SKU${prev.skus.length === 1 ? '' : 's'} loaded from sheet`,
+                                }))
+                              }}
+                              className="text-primary-600 hover:text-primary-700 underline font-bold"
+                            >
+                              Replace SKU rows
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div>
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
@@ -1052,6 +1207,15 @@ export default function Consignments() {
                   <div className="flex items-center gap-1.5">
                     <button type="button" onClick={async () => { try { const r = await templatesAPI.downloadConsignment(); const url = URL.createObjectURL(new Blob([r.data])); const a = document.createElement('a'); a.href = url; a.download = 'sku_template.csv'; a.click(); } catch(e){ addToast('Download failed','error'); } }} className="flex items-center gap-1 text-xs text-slate-600 hover:text-primary-700 font-medium px-2 py-1.5 rounded-md border border-slate-200 hover:bg-slate-50">
                       <Download className="w-3.5 h-3.5" />Template
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => runSheetLookup(form.internalShipmentNo, { refresh: true })}
+                      disabled={!String(form.internalShipmentNo || '').trim() || sheetLookup.status === 'loading'}
+                      title="Re-read this shipment from the Consignment Master sheet"
+                      className="inline-flex items-center gap-1 text-xs text-slate-600 hover:text-primary-700 font-medium px-2 py-1.5 rounded-md border border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${sheetLookup.status === 'loading' ? 'animate-spin' : ''}`} />Sheet
                     </button>
                     <label className="flex items-center gap-1 text-xs text-slate-600 hover:text-primary-700 font-medium px-2 py-1.5 rounded-md border border-slate-200 hover:bg-slate-50 cursor-pointer">
                       <Upload className="w-3.5 h-3.5" />CSV

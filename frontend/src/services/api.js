@@ -59,6 +59,8 @@ export const consignmentsAPI = {
   getAll: (params) => api.get('/consignments', { params }),
   getById: (id) => api.get(`/consignments/${id}`),
   getPackingReport: (id) => api.get(`/consignments/${id}/packing-report`),
+  sheetLookup: (internalShipmentNo, { params, ...config } = {}) =>
+    api.get('/consignments/sheet-lookup', { params: { internalShipmentNo, ...params }, ...config }),
   create: (data) => api.post('/consignments', data),
   update: (id, data) => api.put(`/consignments/${id}`, data),
   reassignId: (id, newConsignmentId) => api.post(`/consignments/${id}/reassign-id`, { newConsignmentId }),

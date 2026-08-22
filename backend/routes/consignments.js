@@ -23,6 +23,7 @@ const {
 } = require('../utils/consignmentWorkflow');
 const { saveBoxWithPostgresTransaction } = require('../utils/packingPersistence');
 const { getMarketplaceBarcode, normalizeSkuInput } = require('../utils/skuIdentity');
+const { lookupShipmentSkus } = require('../utils/consignmentSheet');
 const { resolveStoragePath, resolvePublicUrl, deleteFile } = require('../utils/storage');
 const { requirePermission, requireAnyPermission, DELETE_CONSIGNMENTS } = require('../utils/permissions');
 const {
@@ -786,6 +787,36 @@ router.get('/', authenticateToken, requirePermission('consignments', 'view consi
     });
   } catch (error) {
     sendError(res, error);
+  }
+});
+
+// Consignment Master sheet lookup: fills the Create Consignment SKU table from
+// Google Sheets, keyed by Internal Shipment No. Declared before '/:id' so the
+// literal path is not captured as an id. Sheet problems are returned as 200 +
+// found:false so the modal degrades to manual entry instead of erroring.
+router.get('/sheet-lookup', authenticateToken, requirePermission('consignments', 'look up consignments'), async (req, res) => {
+  try {
+    const internalShipmentNo = String(req.query.internalShipmentNo || '').trim();
+    if (!internalShipmentNo) {
+      return res.status(400).json({ error: 'internalShipmentNo is required.' });
+    }
+
+    const result = await lookupShipmentSkus(internalShipmentNo, {
+      force: req.query.refresh === '1' || req.query.refresh === 'true',
+      debug: req.query.debug === '1' || req.query.debug === 'true',
+    });
+
+    return res.json(result);
+  } catch (error) {
+    console.error('Sheet lookup error:', error);
+    return res.json({
+      found: false,
+      internalShipmentNo: String(req.query.internalShipmentNo || '').trim(),
+      skus: [],
+      rowCount: 0,
+      reason: 'sheet_unavailable',
+      error: 'Sheet lookup failed. Enter SKUs manually.',
+    });
   }
 });
 
