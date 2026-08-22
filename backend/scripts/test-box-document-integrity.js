@@ -15,13 +15,12 @@
  *     and a foreign key, so its 'UNKNOWN' fallback aborts the whole write).
  */
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
 
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-only';
 process.env.NODE_ENV = process.env.NODE_ENV || 'test';
 
 const { buildPackingReport } = require('../routes/consignments');
+const { buildVideoBoxDocument, buildBoxId } = require('../utils/boxDocuments');
 
 const consignment = { id: 'TEST12345', internalShipmentNo: 'TEST12345', totalRequiredQty: 30, totalPackedQty: 25 };
 const skus = [
@@ -74,13 +73,32 @@ assert.strictEqual(emptyBoxReport.summary.boxCount, 1, 'an empty but numbered bo
 assert.strictEqual(emptyBoxReport.summary.totalPacked, 0);
 
 // ── The video path must write consignmentId and boxNo on the box document ───
-const uploadsSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'uploads.js'), 'utf8');
-const videoBoxWrite = uploadsSource.match(
-  /setDocument\('boxes', boxId, \{\s*consignmentId,\s*boxNo: String\(boxNo\),\s*videoStatus: 'metadata_saved'/
+const videoBox = buildVideoBoxDocument({
+  consignmentId: 'TEST12345',
+  boxNo: 4,
+  videoId: 'vid-4',
+  at: '2026-08-22T10:00:00.000Z',
+});
+assert.strictEqual(videoBox.consignmentId, 'TEST12345', 'video box writes carry the consignment id');
+assert.strictEqual(videoBox.boxNo, '4', 'video box writes carry the box number, as a string');
+assert.strictEqual(videoBox.videoStatus, 'metadata_saved');
+assert.strictEqual(videoBox.videoId, 'vid-4');
+assert.strictEqual(buildBoxId('TEST12345', 4), 'TEST12345_box_4');
+
+// The payload must survive the report path: a box built this way, once its
+// contents are saved, is well-formed enough to be counted.
+const videoBoxReport = buildPackingReport(
+  consignment,
+  skus,
+  [{ id: buildBoxId('TEST12345', 4), ...videoBox, items: [] }],
+  []
 );
-assert.ok(
-  videoBoxWrite,
-  'the video metadata handler must write consignmentId and boxNo when it creates a box document'
+assert.strictEqual(videoBoxReport.summary.boxCount, 1, 'a video-created box is a countable box');
+assert.deepStrictEqual(videoBoxReport.boxes.map((b) => b.boxNo), ['4']);
+assert.strictEqual(
+  videoBoxReport.integrityIssues.filter((i) => i.type === 'box_missing_number').length,
+  0,
+  'a video-created box is never flagged as malformed'
 );
 
 console.log('✅ box document integrity tests passed');

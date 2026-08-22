@@ -29,6 +29,7 @@ const { requestUserHasPermission, requirePermission, requireAnyPermission, DELET
 const { isStoragePathForConsignment } = require('../utils/storagePathValidation');
 const { checkConsignmentVideos } = require('../utils/videoHealthCheck');
 const { buildDurableShareUrl, verifyShareToken, getPublicApiBase } = require('../utils/shareLinks');
+const { buildVideoBoxDocument, buildBoxId } = require('../utils/boxDocuments');
 
 function wantsBrowserHtmlPage(req) {
   const accept = String(req.headers.accept || '');
@@ -751,21 +752,15 @@ router.post('/metadata', authenticateToken, requireAnyPermission(['packing', 'co
         }
       }
 
-      // consignmentId and boxNo must be written even though this only *updates*
-      // video fields: setDocument creates the box document when a video is
-      // recorded before the box contents are saved, and a box row without them
-      // is invisible to the consignmentId lookup and is rejected outright by the
-      // documents→boxes sync trigger (boxes.consignment_id is NOT NULL and a
-      // foreign key, so the trigger's 'UNKNOWN' fallback aborts the write).
-      const boxId = `${consignmentId}_box_${boxNo}`;
+      // buildVideoBoxDocument carries consignmentId and boxNo — see that module
+      // for why this write must not omit them.
+      const boxId = buildBoxId(consignmentId, boxNo);
       try {
-        await firestoreHelpers.setDocument('boxes', boxId, {
-          consignmentId,
-          boxNo: String(boxNo),
-          videoStatus: 'metadata_saved',
-          videoId: fileId,
-          videoUpdatedAt: now(),
-        });
+        await firestoreHelpers.setDocument(
+          'boxes',
+          boxId,
+          buildVideoBoxDocument({ consignmentId, boxNo, videoId: fileId, at: now() })
+        );
       } catch (boxLinkError) {
         console.error('[Upload] Failed to link video to box', boxNo, boxLinkError.message);
       }
