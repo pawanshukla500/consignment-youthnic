@@ -227,11 +227,24 @@ function buildPackingReport(consignment, skus = [], boxes = [], missingBoxIds = 
     return null;
   };
 
+  // A box's number is never derived from its document id. Falling back to the id
+  // turned a malformed box document into a box called "ABC_box_1", which then
+  // reached the packing report and the Google Sheet push. Such a box is now
+  // excluded and surfaced as an integrity issue instead.
+  const malformedBoxes = (boxes || []).filter(Boolean).filter((box) => !cleanKey(box.boxNo || box.box_no));
+  for (const box of malformedBoxes) {
+    integrityIssues.push({
+      type: 'box_missing_number',
+      boxId: box.id || '',
+      message: `Box document ${box.id || '(no id)'} has no box number and was excluded from this report.`,
+    });
+  }
+
   const reportBoxes = (boxes || [])
     .filter(Boolean)
     .map((box) => ({
       id: box.id || '',
-      boxNo: cleanKey(box.boxNo || box.box_no || box.id),
+      boxNo: cleanKey(box.boxNo || box.box_no),
       totalQty: 0,
       savedTotalQty: box.totalQty === undefined ? null : toNumber(box.totalQty),
       originalTotalQty: box.originalTotalQty === undefined ? null : toNumber(box.originalTotalQty),
@@ -1975,4 +1988,4 @@ router.post('/:id/archive', authenticateToken, requirePermission('consignments',
 
 // Exported as an object (same convention as routes/workflow.js) so background
 // jobs can reuse loadPackingReport without going through HTTP.
-module.exports = { router, loadPackingReport };
+module.exports = { router, loadPackingReport, buildPackingReport };
