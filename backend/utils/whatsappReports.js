@@ -2,7 +2,7 @@ const { getPool, pgEnabled } = require('../config/database');
 const { enqueueWhatsAppNotification } = require('./whatsappOutbox');
 const exceljs = require('exceljs');
 const { getShipmentCriticality } = require('./criticality');
-const { getPendingAction } = require('./consignmentWorkflow');
+const { getPendingActionLabel } = require('./consignmentWorkflow');
 
 function getCurrentDateIST() {
   const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -50,7 +50,7 @@ async function sendMorningWhatsAppBrief() {
 
   activeConsignments.forEach(c => {
     const criticality = getShipmentCriticality(c);
-    const pending = getPendingAction(c);
+    const pending = getPendingActionLabel(c);
     const planned = c.totalRequiredQty || 0;
     const packed = c.totalPackedQty || 0;
     
@@ -91,7 +91,7 @@ async function sendMorningWhatsAppBrief() {
     `Open Disputes: ${buckets.disputes.length}`,
     ``,
     `*🚨 CRITICAL / OVERDUE (${buckets.critical.length})*`,
-    ...buckets.critical.slice(0, 5).map(c => `• ${c.id} | ${c.marketplaceId || 'N/A'}\n  Packed: ${c.totalPackedQty || 0}/${c.totalRequiredQty || 0}\n  Action: ${getPendingAction(c)}`),
+    ...buckets.critical.slice(0, 5).map(c => `• ${c.id} | ${c.marketplaceId || 'N/A'}\n  Packed: ${c.totalPackedQty || 0}/${c.totalRequiredQty || 0}\n  Action: ${getPendingActionLabel(c)}`),
     ``,
     `*🔥 MUST PACK / DISPATCH SOON (${buckets.mustPack.length})*`,
     ``,
@@ -118,7 +118,7 @@ async function sendMorningWhatsAppBrief() {
       id: c.id,
       marketplaceId: c.marketplaceId,
       priority: getShipmentCriticality(c).priority,
-      action: getPendingAction(c),
+      action: getPendingActionLabel(c),
       assigned: c.assignedDepartment || 'N/A',
       packed: `${c.totalPackedQty || 0} / ${c.totalRequiredQty || 0}`,
       dispatch: formatDateIST(c.scheduledDispatchDate),
@@ -248,7 +248,7 @@ async function sendTATApproachingAlert() {
   tatApproaching.slice(0, 15).forEach(({ consignment: c, criticality }) => {
     const icon = criticality.level === 'critical' ? '🔴' : '🟠';
     const packed = `${c.totalPackedQty || 0}/${c.totalRequiredQty || 0}`;
-    const pending = getPendingAction(c);
+    const pending = getPendingActionLabel(c);
     textLines.push(`${icon} *${c.id}*`);
     textLines.push(`  Action: ${pending}`);
     textLines.push(`  Packed: ${packed}`);
