@@ -172,6 +172,7 @@ async function initSchema() {
         group_id TEXT,
         message_text TEXT,
         attachments JSONB DEFAULT '[]'::jsonb,
+        mentions JSONB DEFAULT '[]'::jsonb,
         status TEXT DEFAULT 'pending',
         openwa_message_id TEXT,
         attempt_count INT DEFAULT 0,
@@ -182,6 +183,8 @@ async function initSchema() {
         sent_at TIMESTAMPTZ,
         next_attempt_at TIMESTAMPTZ DEFAULT now()
       );
+      
+      ALTER TABLE whatsapp_notification_outbox ADD COLUMN IF NOT EXISTS mentions JSONB DEFAULT '[]'::jsonb;
     `);
 
     // JSONB inverted / GIN index — Cockroach does not support jsonb_path_ops.

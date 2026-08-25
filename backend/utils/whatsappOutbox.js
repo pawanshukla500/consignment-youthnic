@@ -26,22 +26,46 @@ async function enqueueWhatsAppNotification(consignmentId, eventType, dedupeKey, 
 
   try {
     const db = client || getPool();
-    const query = `
-      INSERT INTO whatsapp_notification_outbox 
-      (consignment_id, event_type, dedupe_key, group_id, message_text, attachments, mentions, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
-      ON CONFLICT (dedupe_key) DO NOTHING
-      RETURNING id;
-    `;
-    const result = await db.query(query, [
-      consignmentId, 
-      eventType, 
-      dedupeKey, 
-      config.groupId, 
-      text, 
-      JSON.stringify(attachments),
-      JSON.stringify(mentions)
-    ]);
+    let result;
+    try {
+      const query = `
+        INSERT INTO whatsapp_notification_outbox 
+        (consignment_id, event_type, dedupe_key, group_id, message_text, attachments, mentions, status)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+        ON CONFLICT (dedupe_key) DO NOTHING
+        RETURNING id;
+      `;
+      result = await db.query(query, [
+        consignmentId, 
+        eventType, 
+        dedupeKey, 
+        config.groupId, 
+        text, 
+        JSON.stringify(attachments),
+        JSON.stringify(mentions)
+      ]);
+    } catch (err) {
+      if (err.message && err.message.includes('column "mentions" does not exist')) {
+        console.warn('[WhatsAppOutbox] Mentions column missing, falling back to older schema');
+        const fallbackQuery = `
+          INSERT INTO whatsapp_notification_outbox 
+          (consignment_id, event_type, dedupe_key, group_id, message_text, attachments, status)
+          VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+          ON CONFLICT (dedupe_key) DO NOTHING
+          RETURNING id;
+        `;
+        result = await db.query(fallbackQuery, [
+          consignmentId, 
+          eventType, 
+          dedupeKey, 
+          config.groupId, 
+          text, 
+          JSON.stringify(attachments)
+        ]);
+      } else {
+        throw err;
+      }
+    }
     
     if (result.rowCount === 0) {
       return { ok: true, skipped: true, reason: 'Duplicate dedupe_key' };
