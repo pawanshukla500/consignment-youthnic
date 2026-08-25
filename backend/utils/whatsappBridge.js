@@ -1,7 +1,7 @@
 const { enqueueWhatsAppNotification } = require('./whatsappOutbox');
 const { getShipmentCriticality } = require('./criticality');
-const { getPendingAction } = require('./consignmentWorkflow');
-const { getDocument } = require('./helpers');
+const { getPendingActionLabel } = require('./consignmentWorkflow');
+const { firestoreHelpers } = require('./helpers');
 
 const BRAND = process.env.WHATSAPP_BRAND_NAME || 'YOUTHNIC • CONSIGNMENT OPERATIONS';
 const FRONTEND_URL = process.env.APP_URL || 'https://consignment.youthnic.shop';
@@ -9,7 +9,7 @@ const FRONTEND_URL = process.env.APP_URL || 'https://consignment.youthnic.shop';
 async function resolveUserMention(userId) {
   if (!userId) return null;
   try {
-    const user = await getDocument('users', userId);
+    const user = await firestoreHelpers.getDocument('users', userId);
     if (!user) return null;
     let mobile = null;
     if (user.source_document && user.source_document.mobile) {
@@ -50,7 +50,7 @@ function formatDateIST(dateStr) {
 
 async function notifyWhatsappCreated(consignment) {
   const criticality = getShipmentCriticality(consignment);
-  const pendingAction = getPendingAction(consignment) || 'Pending Assignment';
+  const pendingAction = getPendingActionLabel(consignment) || 'Pending Assignment';
   
   let assignedPersonText = consignment.assignedUserId || 'Unassigned';
   const mentions = [];
@@ -81,7 +81,7 @@ async function notifyWhatsappCreated(consignment) {
 }
 
 async function notifyWhatsappAssignee(consignment) {
-  const pendingAction = getPendingAction(consignment) || 'Pending Assignment';
+  const pendingAction = getPendingActionLabel(consignment) || 'Pending Assignment';
   
   let assignedPersonText = consignment.assignedUserId || 'Unassigned';
   const mentions = [];
@@ -105,7 +105,7 @@ async function notifyWhatsappAssignee(consignment) {
 }
 
 async function notifyWhatsappStages(consignment, stages, options = {}) {
-  const pendingAction = getPendingAction(consignment);
+  const pendingAction = getPendingActionLabel(consignment);
   const stage = stages[stages.length - 1]; // latest stage
   const stageLabel = stage.toUpperCase().replace(/_/g, ' ');
 
@@ -163,7 +163,6 @@ async function notifyWhatsappStages(consignment, stages, options = {}) {
   const attachments = [];
   if (['packing_completed', 'ready_for_invoice', 'invoice_created', 'dispatched'].includes(stage)) {
     try {
-      const { firestoreHelpers } = require('./helpers');
       let docs = [];
       if (consignment.documentIds && consignment.documentIds.length > 0) {
         docs = await firestoreHelpers.batchGetDocuments('documents', consignment.documentIds);
@@ -213,13 +212,13 @@ function notifyWhatsappDisputeEvent(consignment, disputeInfo) {
     body.push(`Resolved By: ${disputeInfo.resolvedBy || 'System'}`);
   }
 
-  const text = buildMessage(title, body, getPendingAction(consignment));
+  const text = buildMessage(title, body, getPendingActionLabel(consignment));
   const disputeKeyId = disputeInfo.id || disputeInfo.ticketId || disputeInfo.event;
   return enqueueWhatsAppNotification(consignment.id, 'dispute_event', `dispute:${consignment.id}:${disputeInfo.event}:${disputeKeyId}`, text);
 }
 
 async function notifyWhatsappEscalation(consignment) {
-  const pendingAction = getPendingAction(consignment);
+  const pendingAction = getPendingActionLabel(consignment);
   
   let assignedPersonText = consignment.assignedUserId || 'Unassigned';
   const mentions = [];
@@ -263,7 +262,7 @@ function notifyWhatsappArchived(consignment) {
 }
 
 async function notifyWhatsappPackingStarted(consignment) {
-  const pendingAction = getPendingAction(consignment) || 'Start Packing Boxes';
+  const pendingAction = getPendingActionLabel(consignment) || 'Start Packing Boxes';
   
   let assignedPersonText = consignment.assignedUserId || 'Unassigned';
   const mentions = [];
