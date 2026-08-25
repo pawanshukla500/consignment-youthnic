@@ -204,6 +204,7 @@ router.post('/:id/assign-ground-team', authenticateToken, requireAnyPermission([
     const enriched = enrichWorkflowFields(next);
     emitConsignmentChange(enriched);
     notifyTaskflowAssigneesRefresh(enriched);
+    try { require('../utils/whatsappBridge').notifyWhatsappAssignee(enriched); } catch (_) {}
 
     const mail = buildWorkflowEmail({
       title: 'Ground team assignment',
@@ -329,11 +330,13 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
     if (result.disputeOpened) {
       // Full resync (covers the stage note too) + priority bump for the dispute.
       notifyTaskflowDisputeEvent(next, { event: 'opened' });
+      try { require('../utils/whatsappBridge').notifyWhatsappDisputeEvent(next, { event: 'opened' }); } catch (_) {}
     } else {
       const taskflowStages = [stage, ...(result.autoStages || [])];
       notifyTaskflowStages(next, taskflowStages, {
         note: note || `Confirmed in Packing: ${STAGE_LABELS[stage] || stage}`,
       });
+      try { require('../utils/whatsappBridge').notifyWhatsappStages(next, taskflowStages, { note }); } catch (_) {}
     }
 
     const actionOwner = autoAssign?.ok ? departmentLabel(nextDept) : null;
@@ -423,6 +426,7 @@ router.post('/:id/inward-disputes/:disputeId/ticket', authenticateToken, async (
     });
     emitConsignmentChange(next);
     notifyTaskflowDisputeEvent(next, { event: 'opened' });
+    try { require('../utils/whatsappBridge').notifyWhatsappDisputeEvent(next, { event: 'opened' }); } catch (_) {}
 
     res.json({ consignment: next, dispute: result.dispute });
   } catch (error) {
@@ -482,6 +486,7 @@ router.post('/:id/inward-disputes/:disputeId/resolve', authenticateToken, async 
     }
     emitConsignmentChange(next);
     notifyTaskflowDisputeEvent(next, { event: 'resolved' });
+    try { require('../utils/whatsappBridge').notifyWhatsappDisputeEvent(next, { event: 'resolved' }); } catch (_) {}
 
     const managers = await listManagementEmails();
     const recipients = buildStageEmailAudience({ autoAssign: null, consignment: next, managers });
@@ -670,6 +675,7 @@ async function processTatRemindersAndEscalations() {
       const escResults = await notifyMany(managers.map((m) => m.email), { ...escMail, tags: ['workflow', 'escalation'] });
       if (!escResults.some((r) => r.ok)) emailFailures += 1;
       emitConsignmentChange(enrichWorkflowFields({ ...c, isEscalated: true, escalationLevel: 2 }));
+      try { require('../utils/whatsappBridge').notifyWhatsappEscalation(c); } catch (_) {}
     }
   }
 
@@ -842,6 +848,66 @@ router.post('/:id/taskflow-resync', authenticateToken, requireRole('admin'), asy
     });
   } catch (error) {
     console.error('[taskflow-resync]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Scheduler Authentication Middleware
+ */
+const requireSchedulerAuth = (req, res, next) => {
+  const secret = req.headers['x-scheduler-secret'];
+  const expected = process.env.WHATSAPP_SCHEDULER_SECRET;
+  
+  if (!expected) {
+    console.warn('[Scheduler] Rejected - WHATSAPP_SCHEDULER_SECRET is not configured on server');
+    return res.status(401).json({ error: 'Scheduler authentication not configured' });
+  }
+
+  // Timing safe comparison in production ideally, but standard equality works for this scope
+  if (secret !== expected) {
+    console.warn('[Scheduler] Rejected - Invalid X-Scheduler-Secret');
+    return res.status(403).json({ error: 'Invalid scheduler secret' });
+  }
+  
+  next();
+};
+
+/** 
+ * Cloud Scheduler endpoint for WhatsApp outbox processing
+ */
+router.post('/whatsapp/process-outbox', requireSchedulerAuth, async (req, res) => {
+  try {
+    const { processOutbox } = require('../utils/whatsappOutbox');
+    const limit = req.body?.limit || 10;
+    const result = await processOutbox(limit);
+    res.json(result);
+  } catch (error) {
+    console.error('[whatsapp/process-outbox]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** Morning Report (e.g., 8:30 AM) via Cloud Scheduler */
+router.post('/whatsapp/morning-brief', requireSchedulerAuth, async (req, res) => {
+  try {
+    const { sendMorningWhatsAppBrief } = require('../utils/whatsappReports');
+    const result = await sendMorningWhatsAppBrief();
+    res.json(result);
+  } catch (error) {
+    console.error('[whatsapp/morning-brief]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** EOD Report (e.g., 8 PM) via Cloud Scheduler */
+router.post('/whatsapp/eod-summary', requireSchedulerAuth, async (req, res) => {
+  try {
+    const { sendEndOfDayWhatsAppSummary } = require('../utils/whatsappReports');
+    const result = await sendEndOfDayWhatsAppSummary();
+    res.json(result);
+  } catch (error) {
+    console.error('[whatsapp/eod-summary]', error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -343,6 +343,14 @@ jobs:
           TASKFLOW_RAISED_BY_USER_ID: ${{ secrets.TASKFLOW_RAISED_BY_USER_ID }}
           TASKFLOW_MCP_PAT: ${{ secrets.TASKFLOW_MCP_PAT }}
           TASKFLOW_WEBHOOK_SECRET: ${{ secrets.TASKFLOW_WEBHOOK_SECRET }}
+          OPENWA_API_KEY: ${{ secrets.OPENWA_API_KEY }}
+          WHATSAPP_SCHEDULER_SECRET: ${{ secrets.WHATSAPP_SCHEDULER_SECRET }}
+          WHATSAPP_ENABLED: ${{ vars.WHATSAPP_ENABLED }}
+          OPENWA_BASE_URL: ${{ vars.OPENWA_BASE_URL }}
+          OPENWA_SESSION_ID: ${{ vars.OPENWA_SESSION_ID }}
+          OPENWA_GROUP_ID: ${{ vars.OPENWA_GROUP_ID }}
+          WHATSAPP_TIMEZONE: ${{ vars.WHATSAPP_TIMEZONE }}
+          WHATSAPP_BRAND_NAME: ${{ vars.WHATSAPP_BRAND_NAME }}
         run: |
           if [ "${{ github.event.inputs.skip_build }}" = "true" ]; then
             export IMAGE_REF="gcr.io/$PROJECT_ID/$IMAGE_NAME:latest"

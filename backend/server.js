@@ -248,6 +248,9 @@ app.use('/api/users', require('./routes/users'));
 app.use('/api/audit-logs', require('./routes/auditLogs'));
 app.use('/api/docket-companies', require('./routes/docketCompanies'));
 app.use('/api/settings', require('./routes/settings'));
+
+// Internal / Admin Routes
+app.use('/api/internal/admin/whatsapp', require('./routes/whatsappAdmin'));
 app.use('/api/email',   require('./routes/email'));
 app.use('/api/workflow', require('./routes/workflow').router);
 app.use('/api/inventory-planning', require('./routes/inventoryPlanning'));
