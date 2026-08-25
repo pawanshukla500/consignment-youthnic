@@ -154,6 +154,14 @@ for key in [
     "TASKFLOW_RAISED_BY_USER_ID",
     "TASKFLOW_MCP_PAT",
     "TASKFLOW_WEBHOOK_SECRET",
+    "OPENWA_API_KEY",
+    "WHATSAPP_SCHEDULER_SECRET",
+    "WHATSAPP_ENABLED",
+    "OPENWA_BASE_URL",
+    "OPENWA_SESSION_ID",
+    "OPENWA_GROUP_ID",
+    "WHATSAPP_TIMEZONE",
+    "WHATSAPP_BRAND_NAME",
 ]:
     put(key, os.environ.get(key), data)
 
@@ -314,3 +322,43 @@ for extra in consignment-pack consignment-packing; do
       --quiet || true
   fi
 done
+
+# Setup Cloud Scheduler jobs for WhatsApp Operations
+if [ "${WHATSAPP_ENABLED:-false}" = "true" ] && [ -n "${WHATSAPP_SCHEDULER_SECRET:-}" ]; then
+  echo "Setting up Google Cloud Scheduler jobs for WhatsApp Operations..."
+  for job in morning-brief eod-summary process-outbox; do
+    if [ "$job" = "morning-brief" ]; then
+      SCHEDULE="30 8 * * *"
+      JOB_NAME="consignment-whatsapp-morning"
+    elif [ "$job" = "eod-summary" ]; then
+      SCHEDULE="0 20 * * *"
+      JOB_NAME="consignment-whatsapp-eod"
+    else
+      SCHEDULE="*/5 * * * *"
+      JOB_NAME="consignment-whatsapp-retry"
+    fi
+    
+    echo "Configuring $JOB_NAME ($SCHEDULE)..."
+    if gcloud scheduler jobs describe "$JOB_NAME" --location="$REGION" >/dev/null 2>&1; then
+      gcloud scheduler jobs update http "$JOB_NAME" \
+        --schedule="$SCHEDULE" \
+        --time-zone="Asia/Kolkata" \
+        --uri="${PRIMARY_URL}/api/workflow/whatsapp/${job}" \
+        --http-method="POST" \
+        --headers="X-Scheduler-Secret=${WHATSAPP_SCHEDULER_SECRET},Content-Type=application/json" \
+        --location="$REGION" \
+        --quiet || echo "::warning::Failed to update scheduler job $JOB_NAME (Does your service account have Cloud Scheduler Admin?)"
+    else
+      gcloud scheduler jobs create http "$JOB_NAME" \
+        --schedule="$SCHEDULE" \
+        --time-zone="Asia/Kolkata" \
+        --uri="${PRIMARY_URL}/api/workflow/whatsapp/${job}" \
+        --http-method="POST" \
+        --headers="X-Scheduler-Secret=${WHATSAPP_SCHEDULER_SECRET},Content-Type=application/json" \
+        --location="$REGION" \
+        --quiet || echo "::warning::Failed to create scheduler job $JOB_NAME (Does your service account have Cloud Scheduler Admin?)"
+    fi
+  done
+else
+  echo "WHATSAPP_ENABLED is not true or WHATSAPP_SCHEDULER_SECRET is missing. Skipping Cloud Scheduler setup."
+fi

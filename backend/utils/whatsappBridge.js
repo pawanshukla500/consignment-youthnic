@@ -1,115 +1,176 @@
-/**
- * Bridge between Consignment Workflow events and the WhatsApp Outbox.
- */
-
 const { enqueueWhatsAppNotification } = require('./whatsappOutbox');
 const { getShipmentCriticality } = require('./criticality');
-const { STAGE_LABELS } = require('./consignmentWorkflow');
+const { getPendingAction } = require('./consignmentWorkflow');
 
-// Basic watermark formatting for text messages
-function formatWatermark(text) {
-  return `*youthnic operations*\n\n${text}\n\n_Auto-generated notification_`;
+const BRAND = process.env.WHATSAPP_BRAND_NAME || 'YOUTHNIC • CONSIGNMENT OPERATIONS';
+
+function buildMessage(title, bodyLines, nextAction = null) {
+  let text = `🟢 *${BRAND}*\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+  if (title) text += `*${title}*\n\n`;
+  text += bodyLines.join('\n');
+  if (nextAction) {
+    text += `\n\n➡️ *NEXT ACTION*\n${nextAction}`;
+  }
+  text += `\n\n━━━━━━━━━━━━━━━━━━━━\n_Automated by Youthnic Consignment System_`;
+  return text;
 }
 
-/**
- * Format consignment details for WhatsApp messages.
- */
-function getConsignmentDetailsString(consignment) {
-  const idStr = consignment.internalShipmentNo || consignment.id || 'N/A';
-  const nameStr = consignment.name || 'N/A';
-  return `*ID:* ${idStr}\n*Name:* ${nameStr}`;
+function formatDateIST(dateStr) {
+  if (!dateStr) return 'N/A';
+  try {
+    return new Date(dateStr).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+  } catch(e) { return dateStr; }
 }
 
-/**
- * Map consignment creation.
- */
-async function notifyWhatsappCreated(consignment) {
-  if (!consignment?.id) return;
-  const critical = getShipmentCriticality(consignment);
-  const isPriority = critical?.level === 'high' || critical?.level === 'critical';
-  const priorityTag = isPriority ? ` 🚨 *[PRIORITY]*` : '';
-
-  const text = formatWatermark(`📦 *New Consignment Created*${priorityTag}\n\n${getConsignmentDetailsString(consignment)}`);
+function notifyWhatsappCreated(consignment) {
+  const criticality = getShipmentCriticality(consignment);
+  const pendingAction = getPendingAction(consignment) || 'Pending Assignment';
   
-  await enqueueWhatsAppNotification('consignment', consignment.id, 'created', {
-    type: 'text',
-    text,
-  });
+  const body = [
+    `Consignment: ${consignment.id}`,
+    `Internal Shipment: ${consignment.internalShipmentNo || 'N/A'}`,
+    `Marketplace: ${consignment.marketplaceId || 'N/A'}`,
+    `Warehouse: ${consignment.warehouse || 'N/A'}`,
+    `SKUs: ${consignment.skus?.length || 0}`,
+    `Planned Qty: ${consignment.totalRequiredQty || 0}`,
+    `Appointment Date: ${formatDateIST(consignment.appointmentDate)}`,
+    `Required Dispatch: ${formatDateIST(consignment.scheduledDispatchDate)}`,
+    `Priority: ${criticality.priority}`,
+    `Created By: ${consignment.createdBy || 'System'}`,
+    `Created At: ${formatDateIST(consignment.createdAt)} IST`
+  ];
+
+  const text = buildMessage('🆕 NEW CONSIGNMENT CREATED', body, pendingAction);
+  return enqueueWhatsAppNotification(consignment.id, 'consignment_created', `created:${consignment.id}`, text);
 }
 
-/**
- * Map workflow stage changes.
- */
-async function notifyWhatsappStages(consignment, stages = [], options = {}) {
-  if (!consignment?.id || !stages.length) return;
-  
-  const stage = stages[stages.length - 1]; // Use the most recent stage if multiple
-  const stageName = STAGE_LABELS[stage] || stage;
-  const critical = getShipmentCriticality(consignment);
-  const isPriority = critical?.level === 'high' || critical?.level === 'critical';
-  const priorityTag = isPriority ? ` 🚨 *[PRIORITY]*` : '';
-  
-  let extraInfo = '';
-  if (options.note) {
-    extraInfo = `\n*Note:* ${options.note}`;
+function notifyWhatsappAssignee(consignment) {
+  const pendingAction = getPendingAction(consignment) || 'Pending Assignment';
+  const body = [
+    `Consignment: ${consignment.id}`,
+    `Assigned Department: ${consignment.assignedDepartment || 'N/A'}`,
+    `Assigned Person: ${consignment.assignedUserId || 'Unassigned'}`,
+    `TAT Deadline: ${formatDateIST(consignment.tatDeadline)}`
+  ];
+
+  const text = buildMessage('👥 ASSIGNMENT CHANGED', body, pendingAction);
+  return enqueueWhatsAppNotification(consignment.id, 'assignment_changed', `assign:${consignment.id}:${consignment.assignedUserId || 'dept'}`, text);
+}
+
+function notifyWhatsappStages(consignment, stages, options = {}) {
+  const pendingAction = getPendingAction(consignment);
+  const stage = stages[stages.length - 1]; // latest stage
+  const stageLabel = stage.toUpperCase().replace(/_/g, ' ');
+
+  const body = [
+    `Consignment: ${consignment.id}`,
+    `Confirmed By: ${options.confirmedBy || 'System'}`,
+    `Time: ${formatDateIST(new Date().toISOString())} IST`,
+  ];
+
+  if (options.note) body.push(`Note: ${options.note}`);
+
+  // Special cases for certain stages
+  if (stage === 'packing_completed') {
+    const planned = consignment.totalRequiredQty || 0;
+    const packed = consignment.totalPackedQty || 0;
+    const short = planned - packed;
+    const perc = planned > 0 ? Math.round((packed / planned) * 100) : 0;
+    body.push(`Planned Qty: ${planned}`);
+    body.push(`Packed Qty: ${packed} (${perc}%)`);
+    if (short > 0) {
+      body.push(`Short Qty: ${short}`);
+      body.push(`Short Reason: ${consignment.shortReason || 'Not Provided'}`);
+    }
+    body.push(`Box Count: ${consignment.boxes?.length || 0}`);
+  } else if (stage === 'invoice_created') {
+    body.push(`Invoice No: ${consignment.forwardInvoiceNo || 'N/A'}`);
+  } else if (stage === 'dispatched') {
+    body.push(`Planned Qty: ${consignment.totalRequiredQty || 0}`);
+    body.push(`Dispatched Qty: ${consignment.unitsShipped || consignment.totalPackedQty || 0}`);
+    body.push(`Boxes: ${consignment.boxes?.length || 0}`);
+    body.push(`Transporter: ${consignment.docketCompany || 'N/A'}`);
+    body.push(`Docket No: ${consignment.docketNo || 'N/A'}`);
+    body.push(`Actual Dispatch: ${formatDateIST(consignment.actualDispatchDate)}`);
+  } else if (stage === 'inward_completed') {
+    const shipped = consignment.unitsShipped || 0;
+    const inwarded = consignment.unitsInwarded || 0;
+    const variance = inwarded - shipped;
+    body.push(`Units Shipped: ${shipped}`);
+    body.push(`Units Inwarded: ${inwarded}`);
+    body.push(`Variance: ${variance}`);
+    body.push(`State: ${variance === 0 ? 'Clean' : 'Mismatch'}`);
   }
 
-  const text = formatWatermark(`✅ *Stage Confirmed: ${stageName}*${priorityTag}\n\n${getConsignmentDetailsString(consignment)}${extraInfo}`);
-  
-  await enqueueWhatsAppNotification('consignment', consignment.id, 'stage_confirmed', {
-    type: 'text',
-    text,
-  });
+  // TODO: Add attachments integration here based on R2 records if provided in options
+  const text = buildMessage(`✅ ${stageLabel}`, body, pendingAction);
+  return enqueueWhatsAppNotification(consignment.id, 'stage_confirmed', `stage:${consignment.id}:${stage}`, text, options.attachments || []);
 }
 
-/**
- * Map ground team assignment.
- */
-async function notifyWhatsappAssignee(consignment) {
-  if (!consignment?.id) return;
-  const assignee = consignment.groundTeamName || consignment.groundTeamEmail || 'Unassigned';
-  const text = formatWatermark(`👤 *Ground Team Assigned*\n\n${getConsignmentDetailsString(consignment)}\n*Assigned To:* ${assignee}`);
+function notifyWhatsappDisputeEvent(consignment, disputeInfo) {
+  const isOpened = disputeInfo.event === 'opened';
+  const title = isOpened ? '🚨 INWARD DISPUTE OPENED' : (disputeInfo.event === 'resolved' ? '✅ DISPUTE RESOLVED' : '🎫 DISPUTE TICKET RECORDED');
   
-  await enqueueWhatsAppNotification('consignment', consignment.id, 'assignment_changed', {
-    type: 'text',
-    text,
-  });
+  const body = [
+    `Consignment: ${consignment.id}`,
+    `Assigned Team: ${consignment.assignedDepartment || 'N/A'}`,
+    `Ticket ID: ${consignment.marketplaceTicketId || 'None'}`,
+  ];
+
+  if (isOpened) {
+    const shipped = consignment.unitsShipped || 0;
+    const inwarded = consignment.unitsInwarded || 0;
+    body.push(`Shipped Qty: ${shipped}`);
+    body.push(`Inward Qty: ${inwarded}`);
+    body.push(`Variance: ${inwarded - shipped}`);
+  }
+
+  if (disputeInfo.event === 'resolved') {
+    body.push(`Resolution: ${disputeInfo.resolution || 'N/A'}`);
+    body.push(`Remark: ${disputeInfo.remark || 'N/A'}`);
+    body.push(`Resolved By: ${disputeInfo.resolvedBy || 'System'}`);
+  }
+
+  const text = buildMessage(title, body, getPendingAction(consignment));
+  return enqueueWhatsAppNotification(consignment.id, 'dispute_event', `dispute:${consignment.id}:${disputeInfo.event}:${Date.now()}`, text);
 }
 
-/**
- * Map dispute events.
- */
-async function notifyWhatsappDisputeEvent(consignment, options = {}) {
-  if (!consignment?.id) return;
-  const { event } = options;
-  const isOpened = event === 'opened';
-  const title = isOpened ? `⚠️ *Inward Dispute Opened*` : `✅ *Inward Dispute Resolved*`;
+function notifyWhatsappEscalation(consignment) {
+  const pendingAction = getPendingAction(consignment);
+  const body = [
+    `Consignment: ${consignment.id}`,
+    `Pending Action: ${pendingAction || 'N/A'}`,
+    `Assigned Team: ${consignment.assignedDepartment || 'N/A'}`,
+    `Assigned Person: ${consignment.assignedUserId || 'Unassigned'}`,
+    `Required Dispatch: ${formatDateIST(consignment.scheduledDispatchDate)}`,
+  ];
   
-  const text = formatWatermark(`${title}\n\n${getConsignmentDetailsString(consignment)}`);
-  
-  await enqueueWhatsAppNotification('consignment', consignment.id, `dispute_${event}`, {
-    type: 'text',
-    text,
-  });
+  if (consignment.totalRequiredQty > 0) {
+    const perc = Math.round(((consignment.totalPackedQty || 0) / consignment.totalRequiredQty) * 100);
+    body.push(`Packing: ${perc}%`);
+  }
+
+  const text = buildMessage('🔴 TAT ESCALATION', body, pendingAction);
+  return enqueueWhatsAppNotification(consignment.id, 'tat_escalation', `escalation:${consignment.id}:${Date.now()}`, text);
 }
 
-/**
- * Map escalations.
- */
-async function notifyWhatsappEscalation(consignment) {
-  if (!consignment?.id) return;
-  const text = formatWatermark(`🚨 *Consignment Escalated*\n\n${getConsignmentDetailsString(consignment)}\n*Reason:* TAT Overdue`);
-  
-  await enqueueWhatsAppNotification('consignment', consignment.id, 'escalated', {
-    type: 'text',
-    text,
-  });
+function notifyWhatsappArchived(consignment) {
+  const body = [
+    `Consignment: ${consignment.id}`,
+    `Final Quantities - Req: ${consignment.totalRequiredQty}, Packed: ${consignment.totalPackedQty}`,
+    `Archive Reason: ${consignment.archiveReason || 'Completed'}`,
+    `Completion Timestamp: ${formatDateIST(new Date().toISOString())}`
+  ];
+
+  const text = buildMessage('🏁 CONSIGNMENT CLOSED', body);
+  return enqueueWhatsAppNotification(consignment.id, 'archived', `archived:${consignment.id}`, text);
 }
 
 module.exports = {
   notifyWhatsappCreated,
-  notifyWhatsappStages,
   notifyWhatsappAssignee,
+  notifyWhatsappStages,
   notifyWhatsappDisputeEvent,
   notifyWhatsappEscalation,
+  notifyWhatsappArchived,
 };

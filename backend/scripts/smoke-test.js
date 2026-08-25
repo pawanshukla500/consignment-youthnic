@@ -192,6 +192,7 @@ async function main() {
     ['GET', '/api/email/resolve-address?name=Pawan%20Shukla'],
     ['GET', '/api/users/firebase-auth-status'],
     ['GET', '/api/templates/consignment'],
+    ['GET', '/api/internal/admin/whatsapp/status'],
   ];
 
   console.log('\n--- Authenticated GET endpoints ---');

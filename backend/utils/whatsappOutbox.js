@@ -11,21 +11,39 @@ const OUTBOX_PROCESSOR_ID = `outbox-worker-${Math.random().toString(36).substrin
  * Enqueue a WhatsApp notification event into the outbox.
  * Can be called with a transaction client or the default pool.
  */
-async function enqueueWhatsAppNotification(entityType, entityId, eventType, payload, client = null) {
+async function enqueueWhatsAppNotification(consignmentId, eventType, dedupeKey, text, attachments = [], client = null) {
   if (!pgEnabled()) {
     console.warn('[WhatsAppOutbox] Skipping enqueue - Postgres is not enabled');
     return { ok: false, reason: 'Postgres disabled' };
+  }
+  
+  const config = openwaClient.getOpenWAConfig();
+  if (!config.enabled) {
+    console.warn('[WhatsAppOutbox] Skipping enqueue - WhatsApp is disabled');
+    return { ok: false, reason: 'WhatsApp disabled' };
   }
 
   try {
     const db = client || getPool();
     const query = `
       INSERT INTO whatsapp_notification_outbox 
-      (entity_type, entity_id, event_type, payload, status)
-      VALUES ($1, $2, $3, $4, 'pending')
+      (consignment_id, event_type, dedupe_key, group_id, message_text, attachments, status)
+      VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+      ON CONFLICT (dedupe_key) DO NOTHING
       RETURNING id;
     `;
-    const result = await db.query(query, [entityType, entityId, eventType, JSON.stringify(payload)]);
+    const result = await db.query(query, [
+      consignmentId, 
+      eventType, 
+      dedupeKey, 
+      config.groupId, 
+      text, 
+      JSON.stringify(attachments)
+    ]);
+    
+    if (result.rowCount === 0) {
+      return { ok: true, skipped: true, reason: 'Duplicate dedupe_key' };
+    }
     return { ok: true, id: result.rows[0].id };
   } catch (error) {
     console.error('[WhatsAppOutbox] Failed to enqueue notification:', error.message);
@@ -34,59 +52,79 @@ async function enqueueWhatsAppNotification(entityType, entityId, eventType, payl
 }
 
 /**
+ * Calculate the next attempt time with bounded exponential backoff.
+ * 1m, 5m, 15m, 1h, then failed.
+ */
+function calculateNextAttempt(attemptCount) {
+  const delaysMin = [1, 5, 15, 60];
+  const delay = delaysMin[Math.min(attemptCount, delaysMin.length - 1)];
+  return `now() + interval '${delay} minutes'`;
+}
+
+/**
  * Process pending items in the outbox. Designed to be called by Cloud Scheduler or a background worker.
  */
 async function processOutbox(limit = 10) {
   if (!pgEnabled()) return { processed: 0, failed: 0, reason: 'Postgres disabled' };
+  
+  const config = openwaClient.getOpenWAConfig();
+  if (!config.enabled) {
+    return { processed: 0, failed: 0, reason: 'WhatsApp disabled' };
+  }
 
   const pool = getPool();
   let processed = 0;
   let failed = 0;
   
-  // Claim pending or stuck items
+  // Claim pending or due items
   const claimQuery = `
     UPDATE whatsapp_notification_outbox
-    SET status = 'claimed',
-        claimed_at = now(),
-        claimed_by = $1,
-        attempts = attempts + 1,
+    SET status = 'processing',
+        attempt_count = attempt_count + 1,
         updated_at = now()
     WHERE id IN (
       SELECT id 
       FROM whatsapp_notification_outbox 
-      WHERE status = 'pending' 
-         OR (status = 'claimed' AND claimed_at < now() - interval '5 minutes')
-         OR (status = 'failed' AND attempts < 5)
-      ORDER BY created_at ASC
-      LIMIT $2
+      WHERE (status = 'pending' OR (status = 'failed' AND attempt_count < max_attempts))
+        AND next_attempt_at <= now()
+      ORDER BY next_attempt_at ASC
+      LIMIT $1
       FOR UPDATE SKIP LOCKED
     )
     RETURNING *;
   `;
 
   try {
-    const claimResult = await pool.query(claimQuery, [OUTBOX_PROCESSOR_ID, limit]);
+    const claimResult = await pool.query(claimQuery, [limit]);
     const jobs = claimResult.rows;
 
     for (const job of jobs) {
       let success = false;
       let errorMsg = null;
+      let messageId = null;
 
       try {
-        // Here we format the text and send via openwaClient
-        const payload = job.payload;
-        let response;
+        // Send attachments first, then text (or handle them together based on WAHA API limits)
+        // If attachments exist, WAHA allows sending file with caption.
+        // For multiple files, we would send multiple messages, or group them.
         
-        if (payload.type === 'text') {
-          response = await openwaClient.sendText(payload.text, payload.chatId);
-        } else if (payload.type === 'file') {
-          response = await openwaClient.sendFile(payload.fileUrl, payload.filename, payload.caption, payload.chatId);
+        let response;
+        if (job.attachments && job.attachments.length > 0) {
+           // For simplicity, we send the text as the caption of the first attachment.
+           const attach = job.attachments[0];
+           // attach might have { type: 'image'|'document', url: '...', filename: '...', mimeType: '...' }
+           if (attach.type === 'image') {
+              response = await openwaClient.sendImage(attach.url, job.message_text, attach.mimeType, job.group_id);
+           } else if (attach.type === 'document') {
+              response = await openwaClient.sendDocument(attach.url, attach.filename, job.message_text, attach.mimeType, job.group_id);
+           }
         } else {
-          throw new Error(`Unknown payload type: ${payload.type}`);
+           response = await openwaClient.sendText(job.message_text, job.group_id);
         }
 
         if (response.ok) {
           success = true;
+          messageId = response.data?.id || null;
         } else {
           errorMsg = response.error;
         }
@@ -97,13 +135,18 @@ async function processOutbox(limit = 10) {
       // Update job status
       if (success) {
         await pool.query(
-          `UPDATE whatsapp_notification_outbox SET status = 'processed', processed_at = now(), error_message = null WHERE id = $1`,
-          [job.id]
+          `UPDATE whatsapp_notification_outbox 
+           SET status = 'sent', sent_at = now(), openwa_message_id = $1, last_error = null 
+           WHERE id = $2`,
+          [messageId, job.id]
         );
         processed++;
       } else {
+        const nextAttemptStr = calculateNextAttempt(job.attempt_count);
         await pool.query(
-          `UPDATE whatsapp_notification_outbox SET status = 'failed', error_message = $1 WHERE id = $2`,
+          `UPDATE whatsapp_notification_outbox 
+           SET status = 'failed', last_error = $1, next_attempt_at = ${nextAttemptStr} 
+           WHERE id = $2`,
           [errorMsg, job.id]
         );
         failed++;

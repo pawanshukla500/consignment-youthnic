@@ -1,22 +1,29 @@
+-- Drop existing if re-running
+DROP TABLE IF EXISTS whatsapp_notification_outbox CASCADE;
+
 -- Create Outbox table for WhatsApp operations notification layer
 CREATE TABLE whatsapp_notification_outbox (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  entity_type text NOT NULL,
-  entity_id text NOT NULL,
+  consignment_id text,
   event_type text NOT NULL,
-  payload jsonb NOT NULL,
-  status text NOT NULL DEFAULT 'pending', -- pending, claimed, processed, failed
-  claimed_at timestamptz,
-  claimed_by text,
-  processed_at timestamptz,
-  error_message text,
-  attempts int DEFAULT 0,
+  dedupe_key text UNIQUE NOT NULL,
+  group_id text NOT NULL,
+  message_text text,
+  attachments jsonb DEFAULT '[]'::jsonb,
+  status text NOT NULL DEFAULT 'pending', -- pending, processing, sent, failed
+  attempt_count int DEFAULT 0,
+  max_attempts int DEFAULT 5,
+  next_attempt_at timestamptz DEFAULT now(),
+  openwa_message_id text,
+  last_error text,
   created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now()
+  updated_at timestamptz DEFAULT now(),
+  sent_at timestamptz
 );
 
--- Index for the processor to quickly find pending items
-CREATE INDEX idx_whatsapp_outbox_pending ON whatsapp_notification_outbox(status) WHERE status IN ('pending', 'claimed');
+-- Index for the processor to quickly find pending/due items
+CREATE INDEX idx_whatsapp_outbox_pending ON whatsapp_notification_outbox(status, next_attempt_at) 
+WHERE status IN ('pending', 'processing', 'failed');
 CREATE INDEX idx_whatsapp_outbox_created_at ON whatsapp_notification_outbox(created_at);
 
 -- Trigger to auto-update updated_at

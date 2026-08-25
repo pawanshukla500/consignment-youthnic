@@ -852,12 +852,31 @@ router.post('/:id/taskflow-resync', authenticateToken, requireRole('admin'), asy
   }
 });
 
+/**
+ * Scheduler Authentication Middleware
+ */
+const requireSchedulerAuth = (req, res, next) => {
+  const secret = req.headers['x-scheduler-secret'];
+  const expected = process.env.WHATSAPP_SCHEDULER_SECRET;
+  
+  if (!expected) {
+    console.warn('[Scheduler] Rejected - WHATSAPP_SCHEDULER_SECRET is not configured on server');
+    return res.status(401).json({ error: 'Scheduler authentication not configured' });
+  }
+
+  // Timing safe comparison in production ideally, but standard equality works for this scope
+  if (secret !== expected) {
+    console.warn('[Scheduler] Rejected - Invalid X-Scheduler-Secret');
+    return res.status(403).json({ error: 'Invalid scheduler secret' });
+  }
+  
+  next();
+};
+
 /** 
  * Cloud Scheduler endpoint for WhatsApp outbox processing
- * Allows unauthenticated call if configured correctly in Cloud Scheduler with internal network, 
- * or optionally we can add a basic secret check.
  */
-router.post('/whatsapp/process-outbox', async (req, res) => {
+router.post('/whatsapp/process-outbox', requireSchedulerAuth, async (req, res) => {
   try {
     const { processOutbox } = require('../utils/whatsappOutbox');
     const limit = req.body?.limit || 10;
@@ -869,66 +888,26 @@ router.post('/whatsapp/process-outbox', async (req, res) => {
   }
 });
 
-/** Morning Report (e.g., 9 AM) via Cloud Scheduler */
-router.post('/whatsapp/morning-report', async (req, res) => {
+/** Morning Report (e.g., 8:30 AM) via Cloud Scheduler */
+router.post('/whatsapp/morning-brief', requireSchedulerAuth, async (req, res) => {
   try {
-    const { enqueueWhatsAppNotification } = require('../utils/whatsappOutbox');
-    const { getPool, pgEnabled } = require('../config/database');
-    
-    if (!pgEnabled()) return res.status(503).json({ error: 'Postgres required' });
-    
-    // Quick count of active consignments
-    const pool = getPool();
-    const result = await pool.query(`
-      SELECT count(*) as count 
-      FROM consignments 
-      WHERE data->>'status' != 'completed' 
-        AND data->>'operationalStatus' != 'archived'
-    `);
-    const count = result.rows[0].count;
-    
-    const text = `🌅 *Good Morning!*\n\nCurrently, there are *${count} active consignments* in the pipeline waiting to be packed/shipped. Let's get to work! 🚀\n\n_Auto-generated Operations Notification_`;
-    
-    await enqueueWhatsAppNotification('system', 'morning_report', 'report', {
-      type: 'text',
-      text,
-    });
-    
-    res.json({ ok: true, report: 'morning', active: count });
+    const { sendMorningWhatsAppBrief } = require('../utils/whatsappReports');
+    const result = await sendMorningWhatsAppBrief();
+    res.json(result);
   } catch (error) {
-    console.error('[whatsapp/morning-report]', error);
+    console.error('[whatsapp/morning-brief]', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-/** EOD Report (e.g., 6 PM) via Cloud Scheduler */
-router.post('/whatsapp/eod-report', async (req, res) => {
+/** EOD Report (e.g., 8 PM) via Cloud Scheduler */
+router.post('/whatsapp/eod-summary', requireSchedulerAuth, async (req, res) => {
   try {
-    const { enqueueWhatsAppNotification } = require('../utils/whatsappOutbox');
-    const { getPool, pgEnabled } = require('../config/database');
-    
-    if (!pgEnabled()) return res.status(503).json({ error: 'Postgres required' });
-    
-    // Quick count of today's shipped items
-    const pool = getPool();
-    const result = await pool.query(`
-      SELECT count(*) as count 
-      FROM consignments 
-      WHERE data->>'shipmentStatus' = 'In Transit' 
-        AND data->>'actualDispatchDate' = $1
-    `, [new Date().toISOString().slice(0, 10)]);
-    const count = result.rows[0].count;
-    
-    const text = `🌇 *End of Day Report*\n\nToday, *${count} consignments* were successfully dispatched. Great job team! 🎉\n\n_Auto-generated Operations Notification_`;
-    
-    await enqueueWhatsAppNotification('system', 'eod_report', 'report', {
-      type: 'text',
-      text,
-    });
-    
-    res.json({ ok: true, report: 'eod', dispatched: count });
+    const { sendEndOfDayWhatsAppSummary } = require('../utils/whatsappReports');
+    const result = await sendEndOfDayWhatsAppSummary();
+    res.json(result);
   } catch (error) {
-    console.error('[whatsapp/eod-report]', error);
+    console.error('[whatsapp/eod-summary]', error);
     res.status(500).json({ error: error.message });
   }
 });
