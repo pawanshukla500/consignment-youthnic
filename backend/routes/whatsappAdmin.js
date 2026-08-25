@@ -118,6 +118,11 @@ router.post('/trigger-report', async (req, res) => {
     }
 
     res.json({ ok: true, result });
+      
+    // Immediately process the outbox asynchronously
+    const { processOutbox } = require('../utils/whatsappOutbox');
+    processOutbox(20).catch(err => console.error('[WhatsAppAdmin] processOutbox async error:', err));
+      
   } catch (error) {
     console.error('[WhatsAppAdmin] Error triggering report:', error);
     res.status(500).json({ error: error.message });
