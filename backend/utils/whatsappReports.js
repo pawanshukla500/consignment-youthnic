@@ -201,8 +201,70 @@ async function sendEndOfDayWhatsAppSummary() {
 
   return { ok: true, dispatched: dispatchedToday.length };
 }
+async function sendTATApproachingAlert() {
+  if (!pgEnabled()) throw new Error('Postgres required');
+  const pool = getPool();
+
+  const query = `
+    SELECT data 
+    FROM consignments 
+    WHERE data->>'status' != 'completed' 
+      AND data->>'operationalStatus' != 'archived'
+  `;
+  const result = await pool.query(query);
+  const activeConsignments = result.rows.map(row => row.data);
+
+  const tatApproaching = [];
+
+  activeConsignments.forEach(c => {
+    const criticality = getShipmentCriticality(c);
+    // TAT Approaching = Critical or High
+    if (criticality.level === 'critical' || criticality.level === 'high') {
+      tatApproaching.push({ consignment: c, criticality });
+    }
+  });
+
+  if (tatApproaching.length === 0) {
+    // We can still send a message saying all is good
+    const goodNews = `✅ *TAT STATUS: ALL GOOD*\nDate: ${getCurrentDateIST()}\n\nNo consignments are currently overdue or at risk. Excellent work! 🎉`;
+    await enqueueWhatsAppNotification('system', 'tat_alert', `tat_alert:${Date.now()}`, goodNews);
+    return { ok: true, active: 0, message: 'No consignments with approaching TAT.' };
+  }
+
+  // Sort by highest risk first
+  tatApproaching.sort((a, b) => a.criticality.sort - b.criticality.sort);
+
+  const textLines = [
+    `🚨 *TAT ESCALATION ALERT*`,
+    `Date: ${getCurrentDateIST()}`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `⚠️ *${tatApproaching.length}* Consignments are At Risk or Overdue!`,
+    ``
+  ];
+
+  tatApproaching.slice(0, 15).forEach(({ consignment: c, criticality }) => {
+    const icon = criticality.level === 'critical' ? '🔴' : '🟠';
+    const packed = `${c.totalPackedQty || 0}/${c.totalRequiredQty || 0}`;
+    const pending = getPendingAction(c);
+    textLines.push(`${icon} *${c.id}*`);
+    textLines.push(`  Action: ${pending}`);
+    textLines.push(`  Packed: ${packed}`);
+    textLines.push(`  Deadline: ${formatDateIST(c.scheduledDispatchDate) || 'N/A'}`);
+    textLines.push(`  Assignee: ${c.assignedUserId || c.assignedDepartment || 'Unassigned'}`);
+    textLines.push(``);
+  });
+
+  if (tatApproaching.length > 15) {
+    textLines.push(`_... and ${tatApproaching.length - 15} more._`);
+  }
+
+  await enqueueWhatsAppNotification('system', 'tat_alert', `tat_alert:${Date.now()}`, textLines.join('\n'));
+
+  return { ok: true, active: tatApproaching.length };
+}
 
 module.exports = {
   sendMorningWhatsAppBrief,
   sendEndOfDayWhatsAppSummary,
+  sendTATApproachingAlert,
 };
