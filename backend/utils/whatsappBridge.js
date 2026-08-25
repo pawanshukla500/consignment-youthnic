@@ -57,7 +57,7 @@ function notifyWhatsappAssignee(consignment) {
   return enqueueWhatsAppNotification(consignment.id, 'assignment_changed', `assign:${consignment.id}:${consignment.assignedUserId || 'dept'}`, text);
 }
 
-function notifyWhatsappStages(consignment, stages, options = {}) {
+async function notifyWhatsappStages(consignment, stages, options = {}) {
   const pendingAction = getPendingAction(consignment);
   const stage = stages[stages.length - 1]; // latest stage
   const stageLabel = stage.toUpperCase().replace(/_/g, ' ');
@@ -102,9 +102,36 @@ function notifyWhatsappStages(consignment, stages, options = {}) {
     body.push(`State: ${variance === 0 ? 'Clean' : 'Mismatch'}`);
   }
 
-  // TODO: Add attachments integration here based on R2 records if provided in options
   const text = buildMessage(`✅ ${stageLabel}`, body, pendingAction);
-  return enqueueWhatsAppNotification(consignment.id, 'stage_confirmed', `stage:${consignment.id}:${stage}`, text, options.attachments || []);
+
+  // Load attachments if requested
+  const attachments = [];
+  if (['packing_completed', 'ready_for_invoice', 'invoice_created', 'dispatched'].includes(stage)) {
+    try {
+      const { firestoreHelpers } = require('./helpers');
+      let docs = [];
+      if (consignment.documentIds && consignment.documentIds.length > 0) {
+        docs = await firestoreHelpers.batchGetDocuments('documents', consignment.documentIds);
+      } else {
+        docs = await firestoreHelpers.queryCollection('documents', 'consignmentId', '==', consignment.id);
+      }
+      
+      const labels = (docs || []).filter(d => d && (d.type === 'document' || d.type === 'invoice' || d.type === 'label' || d.type === 'pdf' || d.type === 'export'));
+      for (const doc of labels.slice(0, 2)) {
+        attachments.push({
+          type: 'document',
+          url: doc.storageUrl || doc.url,
+          storagePath: doc.storagePath,
+          filename: doc.originalName || doc.name || 'document.pdf',
+          mimeType: doc.mimeType || 'application/pdf'
+        });
+      }
+    } catch (err) {
+      console.warn('[WhatsAppBridge] Failed to load attachments for stage', stage, err.message);
+    }
+  }
+
+  return enqueueWhatsAppNotification(consignment.id, 'stage_confirmed', `stage:${consignment.id}:${stage}`, text, attachments);
 }
 
 function notifyWhatsappDisputeEvent(consignment, disputeInfo) {
@@ -132,7 +159,8 @@ function notifyWhatsappDisputeEvent(consignment, disputeInfo) {
   }
 
   const text = buildMessage(title, body, getPendingAction(consignment));
-  return enqueueWhatsAppNotification(consignment.id, 'dispute_event', `dispute:${consignment.id}:${disputeInfo.event}:${Date.now()}`, text);
+  const disputeKeyId = disputeInfo.id || disputeInfo.ticketId || disputeInfo.event;
+  return enqueueWhatsAppNotification(consignment.id, 'dispute_event', `dispute:${consignment.id}:${disputeInfo.event}:${disputeKeyId}`, text);
 }
 
 function notifyWhatsappEscalation(consignment) {
@@ -151,7 +179,8 @@ function notifyWhatsappEscalation(consignment) {
   }
 
   const text = buildMessage('🔴 TAT ESCALATION', body, pendingAction);
-  return enqueueWhatsAppNotification(consignment.id, 'tat_escalation', `escalation:${consignment.id}:${Date.now()}`, text);
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  return enqueueWhatsAppNotification(consignment.id, 'tat_escalation', `escalation:${consignment.id}:${today}`, text);
 }
 
 function notifyWhatsappArchived(consignment) {

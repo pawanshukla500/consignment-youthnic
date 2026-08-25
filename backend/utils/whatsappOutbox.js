@@ -4,6 +4,7 @@
  */
 const { getPool, pgEnabled } = require('../config/database');
 const openwaClient = require('./openwaClient');
+const { resolveReadableUrl } = require('./storage');
 
 const OUTBOX_PROCESSOR_ID = `outbox-worker-${Math.random().toString(36).substring(2, 9)}`;
 
@@ -105,21 +106,35 @@ async function processOutbox(limit = 10) {
 
       try {
         // Send attachments first, then text (or handle them together based on WAHA API limits)
-        // If attachments exist, WAHA allows sending file with caption.
-        // For multiple files, we would send multiple messages, or group them.
-        
         let response;
         if (job.attachments && job.attachments.length > 0) {
-           // For simplicity, we send the text as the caption of the first attachment.
            const attach = job.attachments[0];
-           // attach might have { type: 'image'|'document', url: '...', filename: '...', mimeType: '...' }
+           
+           let finalUrl = attach.url;
+           if (attach.storagePath) {
+             finalUrl = await resolveReadableUrl({ storagePath: attach.storagePath }, { expiresMs: 3600000 });
+           }
+
            if (attach.type === 'image') {
-              response = await openwaClient.sendImage(attach.url, job.message_text, attach.mimeType, job.group_id);
+              response = await openwaClient.sendImage({
+                chatId: job.group_id,
+                url: finalUrl,
+                base64: attach.base64,
+                caption: job.message_text,
+                mimetype: attach.mimeType
+              });
            } else if (attach.type === 'document') {
-              response = await openwaClient.sendDocument(attach.url, attach.filename, job.message_text, attach.mimeType, job.group_id);
+              response = await openwaClient.sendDocument({
+                chatId: job.group_id,
+                url: finalUrl,
+                base64: attach.base64,
+                filename: attach.filename,
+                mimetype: attach.mimeType,
+                caption: job.message_text
+              });
            }
         } else {
-           response = await openwaClient.sendText(job.message_text, job.group_id);
+           response = await openwaClient.sendText({ chatId: job.group_id, text: job.message_text });
         }
 
         if (response.ok) {
