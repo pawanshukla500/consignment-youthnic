@@ -321,6 +321,7 @@ async function main() {
       group_id TEXT,
       message_text TEXT,
       attachments JSONB DEFAULT '[]'::jsonb,
+      mentions JSONB DEFAULT '[]'::jsonb,
       status TEXT DEFAULT 'pending',
       openwa_message_id TEXT,
       attempt_count INT DEFAULT 0,
@@ -736,6 +737,14 @@ async function main() {
     ORDER BY table_name
   `);
   console.log(`Tables (${tables.rows.length}):`, tables.rows.map((r) => r.table_name).join(', '));
+
+  // Ensure mentions column exists in outbox
+  try {
+    await pool.query(`ALTER TABLE whatsapp_notification_outbox ADD COLUMN IF NOT EXISTS mentions JSONB DEFAULT '[]'::jsonb`);
+    console.log('[schema] Ensured mentions column on whatsapp_notification_outbox');
+  } catch (err) {
+    console.log('[schema] Mentions column check failed (might already exist):', err.message);
+  }
 
   await pool.end();
   console.log('\n✓ Cockroach schema apply finished.');

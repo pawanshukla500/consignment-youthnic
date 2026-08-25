@@ -504,6 +504,11 @@ router.post('/load', authenticateToken, async (req, res) => {
       await firestoreHelpers.setDocument('consignments', actualCid, loadStatusUpdates);
       Object.assign(consignment, loadStatusUpdates);
       emitConsignmentChange(mapChange(consignment, loadStatusUpdates));
+      
+      if (loadStatusUpdates.status === 'in_progress') {
+        try { require('../utils/whatsappBridge').notifyWhatsappPackingStarted(consignment); } catch (_) {}
+      }
+
       await addAuditLog('update', 'consignment', actualCid, req.user.id, {
         action: 'packing_started',
         status: loadStatusUpdates.status,

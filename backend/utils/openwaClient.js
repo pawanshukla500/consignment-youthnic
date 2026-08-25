@@ -71,18 +71,20 @@ async function healthCheck() {
   return handleFetch(`${BASE_URL}/api/health`, { method: 'GET' }, 5000);
 }
 
-async function sendText({ chatId = GROUP_ID, text }) {
+async function sendText({ chatId = GROUP_ID, text, mentions = [] }) {
   const payload = { chatId, text };
+  if (mentions && mentions.length > 0) payload.mentions = mentions;
   return handleFetch(`${BASE_URL}/api/sessions/${SESSION_ID}/messages/send-text`, {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
-async function sendImage({ chatId = GROUP_ID, url, base64, caption, mimetype }) {
+async function sendImage({ chatId = GROUP_ID, url, base64, caption, mimetype, mentions = [] }) {
   const payload = { chatId, caption };
   if (url) payload.file = { url, mimetype };
   else if (base64) payload.file = { data: base64, mimetype };
+  if (mentions && mentions.length > 0) payload.mentions = mentions;
 
   return handleFetch(`${BASE_URL}/api/sessions/${SESSION_ID}/messages/send-image`, {
     method: 'POST',
@@ -90,10 +92,11 @@ async function sendImage({ chatId = GROUP_ID, url, base64, caption, mimetype }) 
   });
 }
 
-async function sendDocument({ chatId = GROUP_ID, url, base64, filename, mimetype, caption }) {
-  const payload = { chatId, caption };
-  if (url) payload.file = { url, filename, mimetype };
-  else if (base64) payload.file = { data: base64, filename, mimetype };
+async function sendDocument({ chatId = GROUP_ID, url, base64, filename, caption, mimetype, mentions = [] }) {
+  const payload = { chatId, filename, caption };
+  if (url) payload.file = { url, mimetype };
+  else if (base64) payload.file = { data: base64, mimetype };
+  if (mentions && mentions.length > 0) payload.mentions = mentions;
 
   return handleFetch(`${BASE_URL}/api/sessions/${SESSION_ID}/messages/send-document`, {
     method: 'POST',

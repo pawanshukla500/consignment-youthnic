@@ -12,7 +12,7 @@ const OUTBOX_PROCESSOR_ID = `outbox-worker-${Math.random().toString(36).substrin
  * Enqueue a WhatsApp notification event into the outbox.
  * Can be called with a transaction client or the default pool.
  */
-async function enqueueWhatsAppNotification(consignmentId, eventType, dedupeKey, text, attachments = [], client = null) {
+async function enqueueWhatsAppNotification(consignmentId, eventType, dedupeKey, text, attachments = [], mentions = [], client = null) {
   if (!pgEnabled()) {
     console.warn('[WhatsAppOutbox] Skipping enqueue - Postgres is not enabled');
     return { ok: false, reason: 'Postgres disabled' };
@@ -28,8 +28,8 @@ async function enqueueWhatsAppNotification(consignmentId, eventType, dedupeKey, 
     const db = client || getPool();
     const query = `
       INSERT INTO whatsapp_notification_outbox 
-      (consignment_id, event_type, dedupe_key, group_id, message_text, attachments, status)
-      VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+      (consignment_id, event_type, dedupe_key, group_id, message_text, attachments, mentions, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
       ON CONFLICT (dedupe_key) DO NOTHING
       RETURNING id;
     `;
@@ -39,7 +39,8 @@ async function enqueueWhatsAppNotification(consignmentId, eventType, dedupeKey, 
       dedupeKey, 
       config.groupId, 
       text, 
-      JSON.stringify(attachments)
+      JSON.stringify(attachments),
+      JSON.stringify(mentions)
     ]);
     
     if (result.rowCount === 0) {
@@ -127,7 +128,8 @@ async function processOutbox(limit = 10) {
                 url: finalUrl,
                 base64: attach.base64,
                 caption: job.message_text,
-                mimetype: attach.mimeType
+                mimetype: attach.mimeType,
+                mentions: job.mentions
               });
            } else if (attach.type === 'document') {
               response = await openwaClient.sendDocument({
@@ -136,11 +138,16 @@ async function processOutbox(limit = 10) {
                 base64: attach.base64,
                 filename: attach.filename,
                 mimetype: attach.mimeType,
-                caption: job.message_text
+                caption: job.message_text,
+                mentions: job.mentions
               });
            }
         } else {
-           response = await openwaClient.sendText({ chatId: job.group_id, text: job.message_text });
+           response = await openwaClient.sendText({ 
+             chatId: job.group_id, 
+             text: job.message_text,
+             mentions: job.mentions 
+           });
         }
 
         if (response.ok) {

@@ -1,8 +1,34 @@
 const { enqueueWhatsAppNotification } = require('./whatsappOutbox');
 const { getShipmentCriticality } = require('./criticality');
 const { getPendingAction } = require('./consignmentWorkflow');
+const { getDocument } = require('./helpers');
 
 const BRAND = process.env.WHATSAPP_BRAND_NAME || 'YOUTHNIC • CONSIGNMENT OPERATIONS';
+const FRONTEND_URL = process.env.APP_URL || 'https://consignment.youthnic.shop';
+
+async function resolveUserMention(userId) {
+  if (!userId) return null;
+  try {
+    const user = await getDocument('users', userId);
+    if (!user) return null;
+    let mobile = null;
+    if (user.source_document && user.source_document.mobile) {
+      mobile = user.source_document.mobile;
+    } else if (user.mobile) {
+      mobile = user.mobile;
+    }
+    
+    if (mobile) {
+      mobile = mobile.replace(/\D/g, '');
+      if (mobile.length === 10) return '91' + mobile;
+      if (mobile.startsWith('91') && mobile.length === 12) return mobile;
+      return mobile;
+    }
+  } catch(e) {
+    console.error('[WhatsAppBridge] Failed to resolve mention for', userId, e.message);
+  }
+  return null;
+}
 
 function buildMessage(title, bodyLines, nextAction = null) {
   let text = `🟢 *${BRAND}*\n━━━━━━━━━━━━━━━━━━━━\n\n`;
@@ -22,13 +48,22 @@ function formatDateIST(dateStr) {
   } catch(e) { return dateStr; }
 }
 
-function notifyWhatsappCreated(consignment) {
+async function notifyWhatsappCreated(consignment) {
   const criticality = getShipmentCriticality(consignment);
   const pendingAction = getPendingAction(consignment) || 'Pending Assignment';
+  
+  let assignedPersonText = consignment.assignedUserId || 'Unassigned';
+  const mentions = [];
+  const mobile = await resolveUserMention(consignment.assignedUserId);
+  if (mobile) {
+    assignedPersonText = `@${mobile}`;
+    mentions.push(`${mobile}@c.us`);
+  }
   
   const body = [
     `Consignment: ${consignment.id}`,
     `Internal Shipment: ${consignment.internalShipmentNo || 'N/A'}`,
+    `Assigned: ${assignedPersonText}`,
     `Marketplace: ${consignment.marketplaceId || 'N/A'}`,
     `Warehouse: ${consignment.warehouse || 'N/A'}`,
     `SKUs: ${consignment.skus?.length || 0}`,
@@ -37,24 +72,36 @@ function notifyWhatsappCreated(consignment) {
     `Required Dispatch: ${formatDateIST(consignment.scheduledDispatchDate)}`,
     `Priority: ${criticality.priority}`,
     `Created By: ${consignment.createdBy || 'System'}`,
-    `Created At: ${formatDateIST(consignment.createdAt)} IST`
+    `Created At: ${formatDateIST(consignment.createdAt)} IST`,
+    `\nLink: ${FRONTEND_URL}/consignments/${consignment.id}`
   ];
 
   const text = buildMessage('🆕 NEW CONSIGNMENT CREATED', body, pendingAction);
-  return enqueueWhatsAppNotification(consignment.id, 'consignment_created', `created:${consignment.id}`, text);
+  return enqueueWhatsAppNotification(consignment.id, 'consignment_created', `created:${consignment.id}`, text, [], mentions);
 }
 
-function notifyWhatsappAssignee(consignment) {
+async function notifyWhatsappAssignee(consignment) {
   const pendingAction = getPendingAction(consignment) || 'Pending Assignment';
+  
+  let assignedPersonText = consignment.assignedUserId || 'Unassigned';
+  const mentions = [];
+  const mobile = await resolveUserMention(consignment.assignedUserId);
+  if (mobile) {
+    assignedPersonText = `@${mobile}`;
+    mentions.push(`${mobile}@c.us`);
+  }
+
   const body = [
     `Consignment: ${consignment.id}`,
+    `Internal Shipment: ${consignment.internalShipmentNo || 'N/A'}`,
     `Assigned Department: ${consignment.assignedDepartment || 'N/A'}`,
-    `Assigned Person: ${consignment.assignedUserId || 'Unassigned'}`,
-    `TAT Deadline: ${formatDateIST(consignment.tatDeadline)}`
+    `Assigned Person: ${assignedPersonText}`,
+    `TAT Deadline: ${formatDateIST(consignment.tatDeadline)}`,
+    `\nLink: ${FRONTEND_URL}/consignments/${consignment.id}`
   ];
 
   const text = buildMessage('👥 ASSIGNMENT CHANGED', body, pendingAction);
-  return enqueueWhatsAppNotification(consignment.id, 'assignment_changed', `assign:${consignment.id}:${consignment.assignedUserId || 'dept'}`, text);
+  return enqueueWhatsAppNotification(consignment.id, 'assignment_changed', `assign:${consignment.id}:${consignment.assignedUserId || 'dept'}`, text, [], mentions);
 }
 
 async function notifyWhatsappStages(consignment, stages, options = {}) {
@@ -102,6 +149,14 @@ async function notifyWhatsappStages(consignment, stages, options = {}) {
     body.push(`State: ${variance === 0 ? 'Clean' : 'Mismatch'}`);
   }
 
+  const mentions = [];
+  const mobile = await resolveUserMention(consignment.assignedUserId);
+  if (mobile) {
+    mentions.push(`${mobile}@c.us`);
+    body.splice(1, 0, `Assigned: @${mobile}`);
+  }
+
+  body.push(`\nLink: ${FRONTEND_URL}/consignments/${consignment.id}`);
   const text = buildMessage(`✅ ${stageLabel}`, body, pendingAction);
 
   // Load attachments if requested
@@ -131,7 +186,7 @@ async function notifyWhatsappStages(consignment, stages, options = {}) {
     }
   }
 
-  return enqueueWhatsAppNotification(consignment.id, 'stage_confirmed', `stage:${consignment.id}:${stage}`, text, attachments);
+  return enqueueWhatsAppNotification(consignment.id, 'stage_confirmed', `stage:${consignment.id}:${stage}`, text, attachments, mentions);
 }
 
 function notifyWhatsappDisputeEvent(consignment, disputeInfo) {
@@ -163,13 +218,23 @@ function notifyWhatsappDisputeEvent(consignment, disputeInfo) {
   return enqueueWhatsAppNotification(consignment.id, 'dispute_event', `dispute:${consignment.id}:${disputeInfo.event}:${disputeKeyId}`, text);
 }
 
-function notifyWhatsappEscalation(consignment) {
+async function notifyWhatsappEscalation(consignment) {
   const pendingAction = getPendingAction(consignment);
+  
+  let assignedPersonText = consignment.assignedUserId || 'Unassigned';
+  const mentions = [];
+  const mobile = await resolveUserMention(consignment.assignedUserId);
+  if (mobile) {
+    assignedPersonText = `@${mobile}`;
+    mentions.push(`${mobile}@c.us`);
+  }
+
   const body = [
     `Consignment: ${consignment.id}`,
+    `Internal Shipment: ${consignment.internalShipmentNo || 'N/A'}`,
     `Pending Action: ${pendingAction || 'N/A'}`,
     `Assigned Team: ${consignment.assignedDepartment || 'N/A'}`,
-    `Assigned Person: ${consignment.assignedUserId || 'Unassigned'}`,
+    `Assigned Person: ${assignedPersonText}`,
     `Required Dispatch: ${formatDateIST(consignment.scheduledDispatchDate)}`,
   ];
   
@@ -177,10 +242,12 @@ function notifyWhatsappEscalation(consignment) {
     const perc = Math.round(((consignment.totalPackedQty || 0) / consignment.totalRequiredQty) * 100);
     body.push(`Packing: ${perc}%`);
   }
+  
+  body.push(`\nLink: ${FRONTEND_URL}/consignments/${consignment.id}`);
 
   const text = buildMessage('🔴 TAT ESCALATION', body, pendingAction);
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-  return enqueueWhatsAppNotification(consignment.id, 'tat_escalation', `escalation:${consignment.id}:${today}`, text);
+  return enqueueWhatsAppNotification(consignment.id, 'tat_escalation', `escalation:${consignment.id}:${today}`, text, [], mentions);
 }
 
 function notifyWhatsappArchived(consignment) {
@@ -195,6 +262,30 @@ function notifyWhatsappArchived(consignment) {
   return enqueueWhatsAppNotification(consignment.id, 'archived', `archived:${consignment.id}`, text);
 }
 
+async function notifyWhatsappPackingStarted(consignment) {
+  const pendingAction = getPendingAction(consignment) || 'Start Packing Boxes';
+  
+  let assignedPersonText = consignment.assignedUserId || 'Unassigned';
+  const mentions = [];
+  const mobile = await resolveUserMention(consignment.assignedUserId);
+  if (mobile) {
+    assignedPersonText = `@${mobile}`;
+    mentions.push(`${mobile}@c.us`);
+  }
+
+  const body = [
+    `Consignment: ${consignment.id}`,
+    `Internal Shipment: ${consignment.internalShipmentNo || 'N/A'}`,
+    `Assigned Team: ${consignment.assignedDepartment || 'N/A'}`,
+    `Assigned Person: ${assignedPersonText}`,
+    `Planned Qty: ${consignment.totalRequiredQty || 0}`,
+    `\nLink: ${FRONTEND_URL}/consignments/${consignment.id}`
+  ];
+
+  const text = buildMessage('📦 PACKING IN PROGRESS', body, pendingAction);
+  return enqueueWhatsAppNotification(consignment.id, 'packing_started', `packing_started:${consignment.id}`, text, [], mentions);
+}
+
 module.exports = {
   notifyWhatsappCreated,
   notifyWhatsappAssignee,
@@ -202,4 +293,5 @@ module.exports = {
   notifyWhatsappDisputeEvent,
   notifyWhatsappEscalation,
   notifyWhatsappArchived,
+  notifyWhatsappPackingStarted,
 };
