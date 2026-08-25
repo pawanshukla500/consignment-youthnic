@@ -27,8 +27,9 @@ async function sendMorningWhatsAppBrief() {
 
   const query = `
     SELECT data 
-    FROM consignments 
-    WHERE data->>'status' != 'completed' 
+    FROM documents 
+    WHERE collection = 'consignments'
+      AND data->>'status' != 'completed' 
       AND data->>'operationalStatus' != 'archived'
   `;
   const result = await pool.query(query);
@@ -143,8 +144,9 @@ async function sendEndOfDayWhatsAppSummary() {
 
   const query = `
     SELECT data 
-    FROM consignments 
-    WHERE data->>'status' != 'completed' 
+    FROM documents 
+    WHERE collection = 'consignments'
+      AND data->>'status' != 'completed' 
       AND data->>'operationalStatus' != 'archived'
   `;
   const result = await pool.query(query);
@@ -153,8 +155,8 @@ async function sendEndOfDayWhatsAppSummary() {
   // We should ideally query audit logs for exact "today" stats.
   // For simplicity, we approximate using actualDispatchDate for dispatch.
   const dispatchedQuery = `
-    SELECT data FROM consignments
-    WHERE data->>'actualDispatchDate' LIKE $1 || '%'
+    SELECT data FROM documents
+    WHERE collection = 'consignments' AND data->>'actualDispatchDate' LIKE $1 || '%'
   `;
   const dispatchResult = await pool.query(dispatchedQuery, [todayIST]);
   const dispatchedToday = dispatchResult.rows.map(r => r.data);
@@ -207,8 +209,9 @@ async function sendTATApproachingAlert() {
 
   const query = `
     SELECT data 
-    FROM consignments 
-    WHERE data->>'status' != 'completed' 
+    FROM documents 
+    WHERE collection = 'consignments'
+      AND data->>'status' != 'completed' 
       AND data->>'operationalStatus' != 'archived'
   `;
   const result = await pool.query(query);
