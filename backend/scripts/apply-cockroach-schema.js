@@ -312,6 +312,27 @@ async function main() {
 
   console.log('\n--- Additive columns ---');
 
+  await run(pool, 'whatsapp_notification_outbox', `
+    CREATE TABLE IF NOT EXISTS whatsapp_notification_outbox (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      consignment_id TEXT,
+      event_type TEXT,
+      dedupe_key TEXT UNIQUE,
+      group_id TEXT,
+      message_text TEXT,
+      attachments JSONB DEFAULT '[]'::jsonb,
+      status TEXT DEFAULT 'pending',
+      openwa_message_id TEXT,
+      attempt_count INT DEFAULT 0,
+      max_attempts INT DEFAULT 5,
+      last_error TEXT,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      updated_at TIMESTAMPTZ DEFAULT now(),
+      sent_at TIMESTAMPTZ,
+      next_attempt_at TIMESTAMPTZ DEFAULT now()
+    )
+  `);
+
   await run(pool, 'consignments.oms_guru_*', `
     ALTER TABLE consignments ADD COLUMN IF NOT EXISTS oms_guru_qty_removed BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE consignments ADD COLUMN IF NOT EXISTS oms_guru_qty_removed_at TIMESTAMPTZ;
