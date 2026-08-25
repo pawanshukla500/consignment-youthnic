@@ -1621,6 +1621,9 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
     try {
       require('../utils/inventoryNotify').scheduleInventoryPlanningCheck('new_shortage');
     } catch (_) { /* non-blocking */ }
+    try {
+      require('../utils/whatsappBridge').notifyWhatsappCreated(consignmentOut);
+    } catch (_) { /* non-blocking */ }
   } catch (error) {
     if (error?.code === 'DOCUMENT_ALREADY_EXISTS' || error?.statusCode === 409) {
       return res.status(409).json({

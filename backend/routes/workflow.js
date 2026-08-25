@@ -204,6 +204,7 @@ router.post('/:id/assign-ground-team', authenticateToken, requireAnyPermission([
     const enriched = enrichWorkflowFields(next);
     emitConsignmentChange(enriched);
     notifyTaskflowAssigneesRefresh(enriched);
+    try { require('../utils/whatsappBridge').notifyWhatsappAssignee(enriched); } catch (_) {}
 
     const mail = buildWorkflowEmail({
       title: 'Ground team assignment',
@@ -329,11 +330,13 @@ router.post('/:id/confirm-stage', authenticateToken, requirePermission('consignm
     if (result.disputeOpened) {
       // Full resync (covers the stage note too) + priority bump for the dispute.
       notifyTaskflowDisputeEvent(next, { event: 'opened' });
+      try { require('../utils/whatsappBridge').notifyWhatsappDisputeEvent(next, { event: 'opened' }); } catch (_) {}
     } else {
       const taskflowStages = [stage, ...(result.autoStages || [])];
       notifyTaskflowStages(next, taskflowStages, {
         note: note || `Confirmed in Packing: ${STAGE_LABELS[stage] || stage}`,
       });
+      try { require('../utils/whatsappBridge').notifyWhatsappStages(next, taskflowStages, { note }); } catch (_) {}
     }
 
     const actionOwner = autoAssign?.ok ? departmentLabel(nextDept) : null;
@@ -423,6 +426,7 @@ router.post('/:id/inward-disputes/:disputeId/ticket', authenticateToken, async (
     });
     emitConsignmentChange(next);
     notifyTaskflowDisputeEvent(next, { event: 'opened' });
+    try { require('../utils/whatsappBridge').notifyWhatsappDisputeEvent(next, { event: 'opened' }); } catch (_) {}
 
     res.json({ consignment: next, dispute: result.dispute });
   } catch (error) {
@@ -482,6 +486,7 @@ router.post('/:id/inward-disputes/:disputeId/resolve', authenticateToken, async 
     }
     emitConsignmentChange(next);
     notifyTaskflowDisputeEvent(next, { event: 'resolved' });
+    try { require('../utils/whatsappBridge').notifyWhatsappDisputeEvent(next, { event: 'resolved' }); } catch (_) {}
 
     const managers = await listManagementEmails();
     const recipients = buildStageEmailAudience({ autoAssign: null, consignment: next, managers });
@@ -670,6 +675,7 @@ async function processTatRemindersAndEscalations() {
       const escResults = await notifyMany(managers.map((m) => m.email), { ...escMail, tags: ['workflow', 'escalation'] });
       if (!escResults.some((r) => r.ok)) emailFailures += 1;
       emitConsignmentChange(enrichWorkflowFields({ ...c, isEscalated: true, escalationLevel: 2 }));
+      try { require('../utils/whatsappBridge').notifyWhatsappEscalation(c); } catch (_) {}
     }
   }
 
@@ -842,6 +848,87 @@ router.post('/:id/taskflow-resync', authenticateToken, requireRole('admin'), asy
     });
   } catch (error) {
     console.error('[taskflow-resync]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** 
+ * Cloud Scheduler endpoint for WhatsApp outbox processing
+ * Allows unauthenticated call if configured correctly in Cloud Scheduler with internal network, 
+ * or optionally we can add a basic secret check.
+ */
+router.post('/whatsapp/process-outbox', async (req, res) => {
+  try {
+    const { processOutbox } = require('../utils/whatsappOutbox');
+    const limit = req.body?.limit || 10;
+    const result = await processOutbox(limit);
+    res.json(result);
+  } catch (error) {
+    console.error('[whatsapp/process-outbox]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** Morning Report (e.g., 9 AM) via Cloud Scheduler */
+router.post('/whatsapp/morning-report', async (req, res) => {
+  try {
+    const { enqueueWhatsAppNotification } = require('../utils/whatsappOutbox');
+    const { getPool, pgEnabled } = require('../config/database');
+    
+    if (!pgEnabled()) return res.status(503).json({ error: 'Postgres required' });
+    
+    // Quick count of active consignments
+    const pool = getPool();
+    const result = await pool.query(`
+      SELECT count(*) as count 
+      FROM consignments 
+      WHERE data->>'status' != 'completed' 
+        AND data->>'operationalStatus' != 'archived'
+    `);
+    const count = result.rows[0].count;
+    
+    const text = `🌅 *Good Morning!*\n\nCurrently, there are *${count} active consignments* in the pipeline waiting to be packed/shipped. Let's get to work! 🚀\n\n_Auto-generated Operations Notification_`;
+    
+    await enqueueWhatsAppNotification('system', 'morning_report', 'report', {
+      type: 'text',
+      text,
+    });
+    
+    res.json({ ok: true, report: 'morning', active: count });
+  } catch (error) {
+    console.error('[whatsapp/morning-report]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** EOD Report (e.g., 6 PM) via Cloud Scheduler */
+router.post('/whatsapp/eod-report', async (req, res) => {
+  try {
+    const { enqueueWhatsAppNotification } = require('../utils/whatsappOutbox');
+    const { getPool, pgEnabled } = require('../config/database');
+    
+    if (!pgEnabled()) return res.status(503).json({ error: 'Postgres required' });
+    
+    // Quick count of today's shipped items
+    const pool = getPool();
+    const result = await pool.query(`
+      SELECT count(*) as count 
+      FROM consignments 
+      WHERE data->>'shipmentStatus' = 'In Transit' 
+        AND data->>'actualDispatchDate' = $1
+    `, [new Date().toISOString().slice(0, 10)]);
+    const count = result.rows[0].count;
+    
+    const text = `🌇 *End of Day Report*\n\nToday, *${count} consignments* were successfully dispatched. Great job team! 🎉\n\n_Auto-generated Operations Notification_`;
+    
+    await enqueueWhatsAppNotification('system', 'eod_report', 'report', {
+      type: 'text',
+      text,
+    });
+    
+    res.json({ ok: true, report: 'eod', dispatched: count });
+  } catch (error) {
+    console.error('[whatsapp/eod-report]', error);
     res.status(500).json({ error: error.message });
   }
 });
