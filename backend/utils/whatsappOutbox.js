@@ -45,6 +45,12 @@ async function enqueueWhatsAppNotification(consignmentId, eventType, dedupeKey, 
     if (result.rowCount === 0) {
       return { ok: true, skipped: true, reason: 'Duplicate dedupe_key' };
     }
+    
+    // Auto-trigger outbox processor in the background
+    setTimeout(() => {
+      processOutbox(5).catch(err => console.error('[WhatsAppOutbox] Auto-trigger processOutbox failed:', err.message));
+    }, 2000);
+    
     return { ok: true, id: result.rows[0].id };
   } catch (error) {
     console.error('[WhatsAppOutbox] Failed to enqueue notification:', error.message);
