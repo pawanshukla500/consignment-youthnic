@@ -23,7 +23,7 @@ export default function Profile() {
   const { user, logout, updateUser, sendVerificationEmail, sessionTimeoutMinutes } = useAuth()
   const { addToast } = useToast()
   const [profile, setProfile] = useState(null)
-  const [form, setForm] = useState({ name: '', avatarUrl: '', preferences: { theme: 'light', notifications: true, language: 'en' } })
+  const [form, setForm] = useState({ name: '', mobile: '', avatarUrl: '', preferences: { theme: 'light', notifications: true, language: 'en' } })
   const [passwordForm, setPasswordForm] = useState(emptyPassword)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -46,6 +46,7 @@ export default function Profile() {
       setProfile(next)
       setForm({
         name: next.name || '',
+        mobile: next.mobile || '',
         avatarUrl: next.avatarUrl || '',
         preferences: {
           theme: next.preferences?.theme || 'light',
@@ -65,6 +66,7 @@ export default function Profile() {
         setProfile(user)
         setForm({
           name: user.name || '',
+          mobile: user.mobile || '',
           avatarUrl: user.avatarUrl || '',
           preferences: {
             theme: user.preferences?.theme || 'light',
@@ -84,6 +86,7 @@ export default function Profile() {
   const cancelEdit = () => {
     setForm({
       name: profile?.name || '',
+      mobile: profile?.mobile || '',
       avatarUrl: profile?.avatarUrl || '',
       preferences: {
         theme: profile?.preferences?.theme || 'light',
@@ -109,6 +112,7 @@ export default function Profile() {
     try {
       const res = await usersAPI.updateProfile({
         name: form.name.trim(),
+        mobile: form.mobile.trim(),
         avatarUrl: form.avatarUrl.trim(),
         preferences: form.preferences,
       })
@@ -118,7 +122,7 @@ export default function Profile() {
         return
       }
       setProfile(updated)
-      updateUser({ name: updated.name, avatarUrl: updated.avatarUrl })
+      updateUser({ name: updated.name, avatarUrl: updated.avatarUrl, mobile: updated.mobile })
       setEditMode(false)
       addToast('Profile saved', 'success')
     } catch (error) {
@@ -253,6 +257,17 @@ export default function Profile() {
               <label className="block">
                 <span className="text-sm font-semibold text-slate-700">Email address</span>
                 <input value={profile?.email || ''} disabled className="inp mt-2 bg-slate-50 text-slate-500" />
+              </label>
+              <label className="block md:col-span-2">
+                <span className="text-sm font-semibold text-slate-700">Mobile No.</span>
+                <input
+                  type="tel"
+                  value={form.mobile}
+                  onChange={(event) => setForm((prev) => ({ ...prev, mobile: event.target.value }))}
+                  disabled={!editMode}
+                  className="inp mt-2"
+                  placeholder="+91..."
+                />
               </label>
               <label className="block md:col-span-2">
                 <span className="text-sm font-semibold text-slate-700">Profile picture URL</span>

@@ -160,6 +160,7 @@ router.put('/me', authenticateToken, async (req, res) => {
     if (user.isActive === false) return res.status(403).json({ error: 'Account is deactivated.' });
 
     const name = String(req.body?.name || '').trim();
+    const mobile = String(req.body?.mobile || '').trim();
     if (!name || name.length < 2 || name.length > 80) {
       return res.status(400).json({ error: 'Display name must be between 2 and 80 characters.' });
     }
@@ -179,6 +180,7 @@ router.put('/me', authenticateToken, async (req, res) => {
     const updated = {
       ...user,
       name,
+      mobile,
       avatarUrl,
       photoURL: avatarUrl,
       preferences: cleanedPreferences,
@@ -266,6 +268,7 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
       permissions = {},
       department = null,
       departments,
+      mobile,
     } = req.body;
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'Name, email, and password are required.' });
@@ -285,6 +288,7 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
     const userData = sanitizeUserForStorage({
       id,
       name,
+      mobile: String(mobile || '').trim(),
       email: normalizedEmail,
       role,
       departments: resolvedDepartments,
@@ -341,7 +345,7 @@ router.post('/', authenticateToken, requireRole('admin'), async (req, res) => {
 router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, role, permissions, password, isActive, department, departments } = req.body;
+    const { name, email, role, permissions, password, isActive, department, departments, mobile } = req.body;
 
     if (id === DEFAULT_USER.id && req.user.id !== DEFAULT_USER.id) {
       return res.status(403).json({ error: 'Cannot modify default admin.' });
@@ -352,6 +356,7 @@ router.put('/:id', authenticateToken, requireRole('admin'), async (req, res) => 
 
     const updateData = { updatedAt: now() };
     if (name !== undefined) updateData.name = name;
+    if (mobile !== undefined) updateData.mobile = String(mobile || '').trim();
     if (email !== undefined) updateData.email = normalizeEmail(email);
     if (role !== undefined) updateData.role = role;
     if (departments !== undefined || department !== undefined) {
