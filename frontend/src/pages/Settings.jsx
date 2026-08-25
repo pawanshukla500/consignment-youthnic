@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Link, Navigate } from 'react-router';
 import { useAuth } from '../context/AuthContext';
-import { Save, Trash2, AlertTriangle, ChevronLeft, Loader2, Clock, Database, Play, Server, CheckCircle2, RefreshCw, ShieldCheck, HardDrive, Activity, BarChart3, ExternalLink, ClipboardPaste, Factory } from 'lucide-react';
-import { settingsAPI, usersAPI } from '../services/api';
+import { Save, Trash2, AlertTriangle, ChevronLeft, Loader2, Clock, Database, Play, Server, CheckCircle2, RefreshCw, ShieldCheck, HardDrive, Activity, BarChart3, ExternalLink, ClipboardPaste, Factory, MessageCircle } from 'lucide-react';
+import { settingsAPI, usersAPI, whatsappAdminAPI } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
 import SystemHealthPanel from '../components/SystemHealthPanel';
@@ -16,6 +16,7 @@ export default function Settings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [runningCleanup, setRunningCleanup] = useState(false);
+  const [triggeringReport, setTriggeringReport] = useState(null);
   const [showCleanupConfirm, setShowCleanupConfirm] = useState(false);
   const [dbInfo, setDbInfo] = useState(null);
   const [dbLoading, setDbLoading] = useState(true);
@@ -183,6 +184,20 @@ export default function Settings() {
       addToast(err.response?.data?.error || 'Cleanup failed', 'error');
     }
     setRunningCleanup(false);
+  };
+
+  const handleTriggerReport = async (type) => {
+    setTriggeringReport(type);
+    try {
+      const res = await whatsappAdminAPI.triggerReport(type);
+      const r = res.data.result;
+      if (type === 'morning') addToast(`Morning brief sent. Active consignments: ${r.active}`, 'success');
+      else if (type === 'eod') addToast(`EOD summary sent. Dispatched today: ${r.dispatched}`, 'success');
+      else if (type === 'tat_alert') addToast(`TAT alert sent. At risk: ${r.active}`, 'success');
+    } catch (err) {
+      addToast(err.response?.data?.error || 'Failed to trigger report', 'error');
+    }
+    setTriggeringReport(null);
   };
 
   const fmtDate = (d) => {
@@ -577,6 +592,71 @@ export default function Settings() {
                       Open Better Stack <ExternalLink className="w-3 h-3" />
                     </a>
                   </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* WhatsApp Integration */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3">
+              <div className="p-2 bg-green-50 rounded-lg">
+                <MessageCircle className="w-5 h-5 text-green-600" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">WhatsApp Operations Alerts</h2>
+                <p className="text-sm text-slate-500">Manually trigger scheduled operation reports and TAT alerts to the connected group</p>
+              </div>
+            </div>
+
+            <div className="p-6">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="border border-slate-200 rounded-lg p-4 flex flex-col justify-between">
+                  <div>
+                    <h3 className="font-semibold text-slate-800 mb-1">Morning Priority Brief</h3>
+                    <p className="text-xs text-slate-500 mb-4">Generates the Morning Brief Excel report containing critical and at-risk consignments, and posts it to the WhatsApp group.</p>
+                  </div>
+                  <button
+                    onClick={() => handleTriggerReport('morning')}
+                    disabled={triggeringReport === 'morning'}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg text-sm font-medium transition-colors"
+                  >
+                    {triggeringReport === 'morning' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                    Trigger Morning Brief
+                  </button>
+                </div>
+                
+                <div className="border border-slate-200 rounded-lg p-4 flex flex-col justify-between">
+                  <div>
+                    <h3 className="font-semibold text-slate-800 mb-1">EOD Summary</h3>
+                    <p className="text-xs text-slate-500 mb-4">Generates the End of Day Excel summary showing today's dispatched totals and active snapshots.</p>
+                  </div>
+                  <button
+                    onClick={() => handleTriggerReport('eod')}
+                    disabled={triggeringReport === 'eod'}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg text-sm font-medium transition-colors"
+                  >
+                    {triggeringReport === 'eod' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                    Trigger EOD Summary
+                  </button>
+                </div>
+                
+                <div className="border border-red-200 bg-red-50/30 rounded-lg p-4 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <AlertTriangle className="w-4 h-4 text-red-500" />
+                      <h3 className="font-semibold text-red-800">TAT Approaching Alert</h3>
+                    </div>
+                    <p className="text-xs text-red-700/80 mb-4">Instantly queries for all 'Critical' and 'High Risk' consignments and posts an escalation alert directly to the group.</p>
+                  </div>
+                  <button
+                    onClick={() => handleTriggerReport('tat_alert')}
+                    disabled={triggeringReport === 'tat_alert'}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-red-600 text-white hover:bg-red-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                  >
+                    {triggeringReport === 'tat_alert' ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageCircle className="w-4 h-4" />}
+                    Trigger TAT Alert
+                  </button>
                 </div>
               </div>
             </div>

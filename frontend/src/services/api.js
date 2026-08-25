@@ -229,4 +229,11 @@ export const inventoryPlanningAPI = {
   syncLogs: (limit) => api.get('/inventory-planning/sync/logs', { params: { limit } }),
 };
 
+export const whatsappAdminAPI = {
+  getStatus: () => api.get('/internal/admin/whatsapp/status'),
+  getOutbox: () => api.get('/internal/admin/whatsapp/outbox'),
+  retryJob: (id) => api.post(`/internal/admin/whatsapp/outbox/${id}/retry`),
+  triggerReport: (reportType) => api.post('/internal/admin/whatsapp/trigger-report', { reportType })
+};
+
 export default api;

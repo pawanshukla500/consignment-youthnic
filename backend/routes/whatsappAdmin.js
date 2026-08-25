@@ -93,4 +93,35 @@ router.post('/outbox/:id/retry', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/internal/admin/whatsapp/trigger-report
+ * Manually triggers WhatsApp reports.
+ */
+router.post('/trigger-report', async (req, res) => {
+  try {
+    const { reportType } = req.body;
+    const { 
+      sendMorningWhatsAppBrief, 
+      sendEndOfDayWhatsAppSummary, 
+      sendTATApproachingAlert 
+    } = require('../utils/whatsappReports');
+
+    let result;
+    if (reportType === 'morning') {
+      result = await sendMorningWhatsAppBrief();
+    } else if (reportType === 'eod') {
+      result = await sendEndOfDayWhatsAppSummary();
+    } else if (reportType === 'tat_alert') {
+      result = await sendTATApproachingAlert();
+    } else {
+      return res.status(400).json({ error: 'Invalid reportType' });
+    }
+
+    res.json({ ok: true, result });
+  } catch (error) {
+    console.error('[WhatsAppAdmin] Error triggering report:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
