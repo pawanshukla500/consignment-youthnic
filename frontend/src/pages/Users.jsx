@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import {
   Users as UsersIcon, Plus, Search, Trash2, Loader2,
   Edit2, X, Check, Shield, KeyRound, Eye, EyeOff,
@@ -64,6 +64,7 @@ const DEPARTMENT_OPTIONS = [
 const emptyForm = () => ({
   name: '',
   email: '',
+  mobile: '',
   password: '',
   role: 'user',
   departments: [],
@@ -198,7 +199,7 @@ export default function Users() {
   const [selected, setSelected] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [editing, setEditing] = useState(null)
-  const [editForm, setEditForm] = useState({ name: '', email: '', role: 'user', departments: [], permissions: {} })
+  const [editForm, setEditForm] = useState({ name: '', email: '', mobile: '', role: 'user', departments: [], permissions: {} })
   const [showChangePwd, setShowChangePwd] = useState(null)
   const [pwdForm, setPwdForm] = useState({ newPassword: '', confirmPassword: '' })
   const [form, setForm] = useState(emptyForm)
@@ -271,6 +272,7 @@ export default function Users() {
     setEditForm({
       name: u.name,
       email: u.email,
+      mobile: u.mobile || '',
       role: u.role || 'user',
       departments: userDepartments(u),
       permissions: permissionsForRole(u.role || 'user', u.permissions || {}),
@@ -389,6 +391,12 @@ export default function Users() {
                             onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
                             className="inp py-1.5 text-xs"
                             placeholder="Email"
+                          />
+                          <input
+                            value={editForm.mobile}
+                            onChange={(e) => setEditForm({ ...editForm, mobile: e.target.value })}
+                            className="inp py-1.5 text-xs"
+                            placeholder="Mobile No."
                           />
                         </div>
                       ) : (
@@ -588,6 +596,16 @@ export default function Users() {
                 onChange={(e) => setForm({ ...form, email: e.target.value })}
                 className="inp py-1.5 text-xs"
                 placeholder="name@company.com"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-medium text-slate-600 mb-1">Mobile No.</label>
+              <input
+                type="tel"
+                value={form.mobile}
+                onChange={(e) => setForm({ ...form, mobile: e.target.value })}
+                className="inp py-1.5 text-xs"
+                placeholder="+91..."
               />
             </div>
           </div>

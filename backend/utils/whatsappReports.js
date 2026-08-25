@@ -30,7 +30,7 @@ async function sendMorningWhatsAppBrief() {
     FROM documents 
     WHERE collection = 'consignments'
       AND data->>'status' != 'completed' 
-      AND data->>'operationalStatus' != 'archived'
+      AND (data->>'operationalStatus' IS NULL OR data->>'operationalStatus' != 'archived')
   `;
   const result = await pool.query(query);
   const activeConsignments = result.rows.map(row => row.data);
@@ -147,7 +147,7 @@ async function sendEndOfDayWhatsAppSummary() {
     FROM documents 
     WHERE collection = 'consignments'
       AND data->>'status' != 'completed' 
-      AND data->>'operationalStatus' != 'archived'
+      AND (data->>'operationalStatus' IS NULL OR data->>'operationalStatus' != 'archived')
   `;
   const result = await pool.query(query);
   const activeConsignments = result.rows.map(row => row.data);
@@ -212,7 +212,7 @@ async function sendTATApproachingAlert() {
     FROM documents 
     WHERE collection = 'consignments'
       AND data->>'status' != 'completed' 
-      AND data->>'operationalStatus' != 'archived'
+      AND (data->>'operationalStatus' IS NULL OR data->>'operationalStatus' != 'archived')
   `;
   const result = await pool.query(query);
   const activeConsignments = result.rows.map(row => row.data);
