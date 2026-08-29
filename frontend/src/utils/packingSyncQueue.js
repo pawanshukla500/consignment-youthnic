@@ -148,9 +148,10 @@ export async function drainPackingSyncQueue(sendJob, onResult) {
             drainAgain = true
             break
           }
+          const isNetwork = !navigator.onLine || /network error|timeout|failed to fetch/i.test(err?.message || '');
           const next = {
             ...job,
-            retries: (job.retries || 0) + 1,
+            retries: isNetwork ? (job.retries || 0) : (job.retries || 0) + 1,
             updatedAt: Date.now(),
           }
           if (next.retries >= MAX_RETRIES) {

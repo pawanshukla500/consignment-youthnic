@@ -264,7 +264,8 @@ export function nextRetryState(entry, errorMessage, {
   now = Date.now(),
   maxRetries = VIDEO_UPLOAD_CONFIG.maxUploadRetries,
 } = {}) {
-  const retries = (Number(entry?.retries) || 0) + 1
+  const isNetwork = !navigator.onLine || /network error|timeout|failed to fetch/i.test(errorMessage || '');
+  const retries = isNetwork ? (Number(entry?.retries) || 0) : (Number(entry?.retries) || 0) + 1
   if (retries >= maxRetries) {
     return {
       status: VIDEO_STATUS.FAILED,
