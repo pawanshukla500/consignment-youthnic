@@ -3,7 +3,7 @@ import { scanAudio, sfx } from '../scanAudio';
 
 describe('scanAudio', () => {
   beforeEach(() => {
-    global.window = {};
+    globalThis.window = {};
   });
 
   it('initializes context on first init call', () => {
@@ -12,7 +12,7 @@ describe('scanAudio', () => {
       state: 'suspended',
       resume: mockResume,
     }));
-    global.window.AudioContext = mockContext;
+    globalThis.window.AudioContext = mockContext;
     
     expect(scanAudio.ctx).toBeNull();
     scanAudio.init();

@@ -3,8 +3,6 @@ import {
   isValidBarcode,
   barcodeValidationMessage,
   normalizeBarcodeInput,
-  getMarketplaceBarcode,
-  resolveQueueBarcode,
   barcodeMatchesSku,
   createScannerInputGuard,
 } from '../barcodeInput';

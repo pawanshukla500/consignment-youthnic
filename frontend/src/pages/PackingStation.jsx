@@ -215,7 +215,7 @@ export default function PackingStation() {
     settingsAPI.getPackingConfig()
       .then((res) => setPackingAllowPaste(Boolean(res.data?.packingAllowPaste)))
       .catch(() => {});
-    primeScanAudio();
+    sfx.init();
     void warmScanQueueDb();
   }, [zone]);
 
