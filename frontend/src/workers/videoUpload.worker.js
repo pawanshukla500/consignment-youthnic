@@ -120,7 +120,7 @@ function buildVideoStoragePath(metadata, fileName, entryId) {
 }
 
 function isCorsOrNetworkError(err) {
-  return /network error|cors|failed to fetch|load failed|upload aborted/i.test(err?.message || '')
+  return /network error|cors|failed to fetch|load failed|upload aborted|timeout|status 5\d\d|status 408|status 429/i.test(err?.message || '')
 }
 
 function putBlob(uploadUrl, blob, {

@@ -8,7 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run --poolOptions.threads.singleThread=true --pool=threads",
     "test:watch": "vitest",
     "test:security": "vitest run src/utils/__tests__/printHtml.test.js src/services/__tests__/videoDrainWaiter.test.js src/utils/__tests__/videoUploadReliability.stress.test.js src/utils/__tests__/phase05VideoReliability.test.js"
   },
