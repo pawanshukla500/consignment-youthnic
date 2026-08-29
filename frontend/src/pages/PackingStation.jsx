@@ -65,32 +65,8 @@ function getScanMessage(reason, data = {}) {
   return data.message || 'Scan rejected';
 }
 
-/* ═══ SOUND ENGINE (reference: packing-sync-sounds) ═══ */
-const sfx = (() => {
-  let ctx = null;
-  function ac() {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === 'suspended') void ctx.resume();
-    return ctx;
-  }
-  function beep(freq, type, dur, vol, sd, fe) {
-    const a = ac(), o = a.createOscillator(), g = a.createGain();
-    o.connect(g); g.connect(a.destination);
-    const t = a.currentTime + sd;
-    o.type = type; o.frequency.setValueAtTime(freq, t);
-    if (fe !== undefined) o.frequency.exponentialRampToValueAtTime(fe, t + dur);
-    g.gain.setValueAtTime(vol, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    o.start(t); o.stop(t + dur);
-  }
-  return {
-    cid: () => { beep(660, 'sine', .12, .42, 0); beep(990, 'sine', .16, .38, .12); },
-    box: () => { beep(440, 'triangle', .1, .48, 0, 500); },
-    ok: () => { beep(920, 'sine', .045, .48, 0); beep(1380, 'sine', .065, .42, .05); },
-    warn: () => { beep(420, 'square', .055, .52, 0); beep(420, 'square', .055, .52, .075); beep(300, 'sawtooth', .1, .48, .15); },
-    err: () => { beep(220, 'sawtooth', .07, .58, 0); beep(160, 'sawtooth', .09, .52, .085); },
-  };
-})();
+/* ═══ SOUND ENGINE ═══ */
+import { sfx } from '../utils/scanAudio';
 
 function resolveScanSound(reason, data = {}) {
   if (reason === 'ok' || reason === 'success') return 'ok';
@@ -104,13 +80,7 @@ function playScanSound(reason, data = {}) {
   if (typeof sfx[key] === 'function') sfx[key]();
 }
 
-function primeScanAudio() {
-  try {
-    const a = new (window.AudioContext || window.webkitAudioContext)();
-    if (a.state === 'suspended') void a.resume();
-    a.close();
-  } catch (_) {}
-}
+
 
 /* ═══ TOAST ═══ */
 function useToasts() {
@@ -278,7 +248,7 @@ export default function PackingStation() {
   const uploadingQueueRef = useRef(false);
   const scannerGuardRef = useRef(createScannerInputGuard());
   const scanSubmitLockRef = useRef(false);
-  const pendingScanBarcodeRef = useRef(null);
+  const scanQueueBufferRef = useRef([]);
   const scanToastDedupRef = useRef({ message: '', at: 0 });
   const { pendingChanges } = useConsignmentSync();
 
@@ -1680,9 +1650,8 @@ export default function PackingStation() {
 
   const releaseScanLock = () => {
     scanSubmitLockRef.current = false;
-    const pending = pendingScanBarcodeRef.current;
-    if (pending) {
-      pendingScanBarcodeRef.current = null;
+    if (scanQueueBufferRef.current.length > 0) {
+      const pending = scanQueueBufferRef.current.shift();
       doScan(pending);
     }
   };
@@ -1732,7 +1701,7 @@ export default function PackingStation() {
     }
 
     if (scanSubmitLockRef.current) {
-      if (bc) pendingScanBarcodeRef.current = bc;
+      if (bc) scanQueueBufferRef.current.push(bc);
       return;
     }
 
@@ -1782,13 +1751,6 @@ export default function PackingStation() {
       return;
     }
 
-    // eslint-disable-next-line react-hooks/purity -- event callback timestamp used to suppress duplicate server-confirm beeps
-    const instantOkAt = Date.now();
-    lastInstantOkRef.current = { barcode: bc, at: instantOkAt };
-    playScanSound('ok');
-    flash('ok');
-    if (navigator.vibrate) navigator.vibrate(40);
-
     scanSubmitLockRef.current = true;
     requestAnimationFrame(releaseScanLock);
 
@@ -1801,6 +1763,13 @@ export default function PackingStation() {
       .then(() => {
         setSyncState('pending');
         kickScanQueue();
+        
+        // Ensure success feedback happens only after safely queued
+        const instantOkAt = Date.now();
+        lastInstantOkRef.current = { barcode: bc, at: instantOkAt };
+        playScanSound('ok');
+        flash('ok');
+        if (navigator.vibrate) navigator.vibrate(40);
       })
       .catch(() => {
         commitPackingState(() => snapshot, { syncSkus: false, flush: true });
@@ -2432,8 +2401,10 @@ export default function PackingStation() {
                 spellCheck={false}
                 inputMode={packingAllowPaste ? 'text' : 'none'}
                 className="w-full px-2.5 py-2 border rounded-lg outline-none transition-all text-xs bg-slate-50 border-slate-200 text-slate-900 font-mono focus:ring-2 focus:ring-primary-500"
-                onFocus={primeScanAudio}
+                onFocus={() => sfx.init()}
+                onPointerDown={() => sfx.init()}
                 onKeyDown={(e) => {
+                  sfx.init();
                   scannerGuardRef.current.noteKeyDown();
                   if (e.key === 'Enter') {
                     e.preventDefault();
