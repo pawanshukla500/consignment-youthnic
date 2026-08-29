@@ -162,6 +162,7 @@ export async function drainPackingSyncQueue(sendJob, onResult) {
           } else {
             next.status = 'pending'
             await putJob(next)
+            if (isNetwork && isOffline) break;
             await new Promise((resolve) => setTimeout(resolve, backoffMs(next.retries)))
           }
         }

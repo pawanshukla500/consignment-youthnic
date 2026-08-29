@@ -561,6 +561,14 @@ router.post('/increment', authenticateToken, async (req, res) => {
 async function handleIncrement(req, res) {
   try {
     const { consignment_id, barcode, box_no, qty: rawQty = 1, scan_id } = req.body;
+    
+    // Offline-safe removal delegation
+    const isRemoval = Number(rawQty) < 0;
+    if (isRemoval) {
+      req.body.qty = Math.abs(Number(rawQty)); // Convert to positive for handleDecrement
+      return await handleDecrement(req, res);
+    }
+    
     const qty = parsePositiveQty(rawQty);
     if (!consignment_id || !barcode || !box_no) {
       return res.status(400).json({ error: 'consignment_id, barcode, and box_no are required' });
@@ -819,7 +827,7 @@ router.post('/decrement', authenticateToken, async (req, res) => {
 
 async function handleDecrement(req, res) {
   try {
-    const { consignment_id, barcode, box_no, qty: rawQty = 1 } = req.body;
+    const { consignment_id, barcode, box_no, qty: rawQty = 1, scan_id } = req.body;
     const qty = parsePositiveQty(rawQty);
     if (!consignment_id || !barcode || !box_no) {
       return res.status(400).json({ error: 'consignment_id, barcode, and box_no are required' });
@@ -830,6 +838,27 @@ async function handleDecrement(req, res) {
 
     const session = await getOrLoadSession(consignment_id);
     if (!session.skus || !session.skus.length) return res.status(400).json({ error: 'No consignment loaded' });
+
+    if (!session.processedScanIds) session.processedScanIds = [];
+    if (!session.scanResults) session.scanResults = {};
+
+    if (scan_id && session.processedScanIds.includes(scan_id)) {
+      const cached = session.scanResults[scan_id];
+      if (cached) return res.json(cached);
+      const storedPayload = await getStoredScanPayload(scan_id);
+      if (storedPayload) {
+        cacheScanResult(session, scan_id, storedPayload);
+        return res.json(storedPayload);
+      }
+    }
+
+    if (scan_id && !session.processedScanIds.includes(scan_id)) {
+      const storedPayload = await getStoredScanPayload(scan_id);
+      if (storedPayload) {
+        cacheScanResult(session, scan_id, storedPayload);
+        return res.json(storedPayload);
+      }
+    }
 
     const barcodeKey = clean(barcode);
     if (!barcodeKey) {
@@ -871,8 +900,12 @@ async function handleDecrement(req, res) {
         qty: -qty,
         result: 'decrement',
         req,
+        scanId: scan_id,
         payload,
       });
+      if (scan_id) {
+        cacheScanResult(session, scan_id, payload);
+      }
       await flushDraftSave(consignment_id, session, req.user.id);
 
       // Recompute consignment status from session (includes saved boxes + draft).

@@ -1648,11 +1648,82 @@ export default function PackingStation() {
     await updatePendingCount();
   };
 
-  const releaseScanLock = () => {
-    scanSubmitLockRef.current = false;
-    if (scanQueueBufferRef.current.length > 0) {
-      const pending = scanQueueBufferRef.current.shift();
-      doScan(pending);
+  const isProcessingScansRef = useRef(false);
+
+  const processScanQueue = async () => {
+    if (isProcessingScansRef.current) return;
+    isProcessingScansRef.current = true;
+    
+    try {
+      while (scanQueueBufferRef.current.length > 0) {
+        const item = scanQueueBufferRef.current.shift();
+        const bc = typeof item === 'string' ? item : item.barcode;
+        const qty = typeof item === 'string' ? 1 : item.qty;
+
+        if (qty === -1) {
+          const session = stateRef.current;
+          try {
+            await enqueueScan({ barcode: bc, consignmentId: session.cid, boxNo: session.box, qty: -1 });
+            commitPackingState((prev) => {
+              const nextBoxItems = (prev.boxes[prev.box] || [])
+                .map((i) => {
+                  const match = i.barcode === bc || i.marketplaceBarcode === bc || i.marketplaceSku === bc || i.skuId === bc;
+                  return match ? { ...i, qty: i.qty - 1 } : i;
+                })
+                .filter((i) => i.qty > 0);
+              const nextBoxes = { ...prev.boxes, [prev.box]: nextBoxItems };
+              return {
+                ...prev,
+                boxes: nextBoxes,
+                skus: recomputeSkuTotals(prev.skus, nextBoxes),
+              };
+            }, { flush: true });
+            setSyncState('pending');
+            kickScanQueue();
+            toast('Removed', 'info');
+          } catch (err) {
+            toast('Could not queue removal', 'error');
+          }
+          continue;
+        }
+
+        const snapshot = stateRef.current;
+        const optimistic = applyOptimisticScan(snapshot, bc, 1);
+
+        if (!optimistic?.ok) {
+          playScanSound(optimistic.reason, optimistic);
+          toast(
+            optimistic.message || getScanMessage(optimistic.reason, optimistic),
+            'error',
+            optimistic.reason === 'locked' || optimistic.extra_item ? 4000 : 2500
+          );
+          flash('err');
+          if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+          continue;
+        }
+
+        const scannedSku = optimistic.scannedSku;
+        const queueBarcode = optimistic.queueBarcode || resolveQueueBarcode(scannedSku, bc);
+
+        try {
+          await enqueueScan({ barcode: queueBarcode, consignmentId: snapshot.cid, boxNo: snapshot.box, qty: 1 });
+          
+          commitPackingState(() => optimistic.next, { syncSkus: false, flush: true });
+          setSyncState('pending');
+          kickScanQueue();
+          
+          const instantOkAt = Date.now();
+          lastInstantOkRef.current = { barcode: bc, at: instantOkAt };
+          playScanSound('ok');
+          flash('ok');
+          if (navigator.vibrate) navigator.vibrate(40);
+        } catch (err) {
+          sfx.err();
+          toast('Could not queue scan — scan again', 'error');
+        }
+      }
+    } finally {
+      isProcessingScansRef.current = false;
     }
   };
 
@@ -1671,11 +1742,8 @@ export default function PackingStation() {
     inSkuRef.current.focus();
     try {
       inSkuRef.current.setSelectionRange(0, cleaned.length);
-    } catch {
-      // setSelectionRange unsupported on some input types
-    }
+    } catch {}
     scannerGuardRef.current.reset();
-    scanSubmitLockRef.current = false;
     doScan(cleaned);
   };
 
@@ -1697,11 +1765,6 @@ export default function PackingStation() {
       inSkuRef.current?.focus();
       scannerGuardRef.current.reset();
       doNewBox();
-      return;
-    }
-
-    if (scanSubmitLockRef.current) {
-      if (bc) scanQueueBufferRef.current.push(bc);
       return;
     }
 
@@ -1736,47 +1799,8 @@ export default function PackingStation() {
     inSkuRef.current?.focus();
     scannerGuardRef.current.reset();
 
-    const snapshot = stateRef.current;
-    const optimistic = applyOptimisticScan(snapshot, bc, 1);
-
-    if (!optimistic?.ok) {
-      playScanSound(optimistic.reason, optimistic);
-      toast(
-        optimistic.message || getScanMessage(optimistic.reason, optimistic),
-        'error',
-        optimistic.reason === 'locked' || optimistic.extra_item ? 4000 : 2500
-      );
-      flash('err');
-      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-      return;
-    }
-
-    scanSubmitLockRef.current = true;
-    requestAnimationFrame(releaseScanLock);
-
-    commitPackingState(() => optimistic.next, { syncSkus: false, flush: true });
-
-    const scannedSku = optimistic.scannedSku;
-    const queueBarcode = optimistic.queueBarcode || resolveQueueBarcode(scannedSku, bc);
-
-    void enqueueScan({ barcode: queueBarcode, consignmentId: session.cid, boxNo: session.box, qty: 1 })
-      .then(() => {
-        setSyncState('pending');
-        kickScanQueue();
-        
-        // Ensure success feedback happens only after safely queued
-        const instantOkAt = Date.now();
-        lastInstantOkRef.current = { barcode: bc, at: instantOkAt };
-        playScanSound('ok');
-        flash('ok');
-        if (navigator.vibrate) navigator.vibrate(40);
-      })
-      .catch(() => {
-        commitPackingState(() => snapshot, { syncSkus: false, flush: true });
-        sfx.err();
-        toast('Could not queue scan', 'error');
-        inSkuRef.current.value = bc;
-      });
+    scanQueueBufferRef.current.push(bc);
+    processScanQueue();
   };
 
   const removeItem = async (marketplaceSku) => {
@@ -1785,21 +1809,9 @@ export default function PackingStation() {
     const boxItems = session.boxes[session.box] || [];
     const item = boxItems.find((i) => i.marketplaceSku === marketplaceSku || i.skuId === marketplaceSku);
     const barcode = item?.barcode || item?.marketplaceBarcode || marketplaceSku;
-    try {
-      await packingAPI.decrement({ consignment_id: session.cid, barcode, box_no: session.box, qty: 1 });
-      commitPackingState((prev) => {
-        const nextBoxItems = (prev.boxes[prev.box] || [])
-          .map((i) => (i.marketplaceSku === marketplaceSku ? { ...i, qty: i.qty - 1 } : i))
-          .filter((i) => i.qty > 0);
-        const nextBoxes = { ...prev.boxes, [prev.box]: nextBoxItems };
-        return {
-          ...prev,
-          boxes: nextBoxes,
-          skus: recomputeSkuTotals(prev.skus, nextBoxes),
-        };
-      });
-      toast('Removed', 'info');
-    } catch (e) {}
+    
+    scanQueueBufferRef.current.push({ barcode, qty: -1 });
+    processScanQueue();
   };
 
   const saveBoxWithWeight = async (boxNo, weight, unit, imageFileOrBlob) => {
@@ -2400,7 +2412,7 @@ export default function PackingStation() {
                 autoCapitalize="off"
                 spellCheck={false}
                 inputMode={packingAllowPaste ? 'text' : 'none'}
-                className="w-full px-2.5 py-2 border rounded-lg outline-none transition-all text-xs bg-slate-50 border-slate-200 text-slate-900 font-mono focus:ring-2 focus:ring-primary-500"
+                className="w-full px-4 py-4 border-2 rounded-xl outline-none transition-all text-lg font-bold bg-slate-50 border-slate-300 text-slate-900 font-mono focus:ring-4 focus:ring-emerald-500/20 focus:border-emerald-500 placeholder:text-slate-400 placeholder:font-normal"
                 onFocus={() => sfx.init()}
                 onPointerDown={() => sfx.init()}
                 onKeyDown={(e) => {
@@ -2414,11 +2426,35 @@ export default function PackingStation() {
                 onPaste={handleSkuBarcodePaste}
               />
             </form>
-            <div className="flex gap-1.5 flex-wrap mt-2.5">
-              <button onClick={doSaveBox} disabled={loading} className="px-3 py-1.5 rounded-lg text-[10px] font-semibold text-white cursor-pointer transition-all active:scale-[0.96] bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60">💾 Save</button>
-              <button onClick={doNewBox} disabled={loading} className="px-3 py-1.5 rounded-lg text-[11px] font-semibold text-white cursor-pointer transition-all active:scale-[0.96] bg-amber-600 hover:bg-amber-700 shadow-md shadow-amber-200 disabled:opacity-60">📦 NEXT BOX</button>
-              <button onClick={doDL} className="px-3 py-1.5 rounded-lg text-[10px] font-semibold border cursor-pointer transition-all active:scale-[0.96] bg-white text-slate-600 border-slate-200 hover:bg-slate-50">⬇ PDF</button>
-              <button onClick={doFinish} disabled={loading} className="px-3 py-1.5 rounded-lg text-[10px] font-semibold text-white cursor-pointer transition-all active:scale-[0.96] bg-red-500 hover:bg-red-600 disabled:opacity-60">✅ Done</button>
+            <div className="flex gap-2 flex-wrap mt-3">
+              <button onClick={doSaveBox} disabled={loading} className="flex-1 px-4 py-3 rounded-xl text-[13px] font-bold text-white cursor-pointer transition-all active:scale-[0.96] bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 shadow-sm shadow-emerald-200">💾 SAVE BOX</button>
+              <button onClick={doNewBox} disabled={loading} className="flex-1 px-4 py-3 rounded-xl text-[13px] font-bold text-white cursor-pointer transition-all active:scale-[0.96] bg-amber-500 hover:bg-amber-600 shadow-sm shadow-amber-200 disabled:opacity-60">📦 NEXT BOX</button>
+            </div>
+            <div className="flex gap-2 mt-2">
+              <button onClick={doDL} className="flex-1 px-3 py-2 rounded-lg text-[11px] font-semibold border cursor-pointer transition-all active:scale-[0.96] bg-white text-slate-600 border-slate-200 hover:bg-slate-50">⬇ Download PDF</button>
+              <button onClick={doFinish} disabled={loading} className="flex-1 px-3 py-2 rounded-lg text-[11px] font-semibold text-white cursor-pointer transition-all active:scale-[0.96] bg-red-500 hover:bg-red-600 disabled:opacity-60">✅ Finish Packing</button>
+            </div>
+          </div>
+
+          {/* Current Box Items (Moved from center column) */}
+          <div className={`rounded-xl border overflow-hidden shadow-sm bg-white border-slate-200 ${currentBoxItems.length ? 'block' : 'hidden'}`}>
+            <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <h3 className="text-xs font-bold text-slate-700">📦 Current Box Items</h3>
+              <span className="text-[10px] font-bold bg-white border border-slate-200 px-2 py-0.5 rounded text-slate-600 shadow-sm">{currentBoxItems.length} items</span>
+            </div>
+            <div className="p-2 space-y-1.5 max-h-[300px] overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
+              {currentBoxItems.map(item => (
+                <div key={item.marketplaceSku} className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-100 shadow-sm">
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-[11px] font-bold text-slate-700 max-w-[180px] truncate" title={item.internalSku}>{item.internalSku}</span>
+                    <span className="text-[10px] font-mono text-slate-400">{item.marketplaceSku}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">x{item.qty}</span>
+                    <button onClick={() => removeItem(item.marketplaceSku)} className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors" title="Remove Item">✕</button>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -2575,25 +2611,6 @@ export default function PackingStation() {
             </div>
           </div>
 
-          {/* Current Box Items */}
-          <div className={`flex-1 rounded-xl border overflow-hidden shadow-sm bg-white border-slate-100 ${currentBoxItems.length ? 'block' : 'hidden'}`}>
-            <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-red-500">📦 Current Box Items</h3>
-              <span className="text-[10px] text-slate-400">{currentBoxItems.length} items</span>
-            </div>
-            <div className="p-2 space-y-1">
-              {currentBoxItems.map(item => (
-                <div key={item.marketplaceSku} className="flex items-center justify-between p-1.5 rounded-md bg-slate-50">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-mono text-slate-400">{item.marketplaceSku}</span>
-                    <span className="text-[10px] font-medium text-slate-700">{item.internalSku}</span>
-                    <span className="text-[10px] font-semibold text-red-500">x{item.qty}</span>
-                  </div>
-                  <button onClick={() => removeItem(item.marketplaceSku)} className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors">✕</button>
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
 
         {/* Right Column */}

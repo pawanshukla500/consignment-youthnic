@@ -23,19 +23,28 @@ class SharedAudioContext {
     this.unlocked = true;
   }
 
-  beep(freq, type, dur, vol, sd, fe) {
-    // Fallback init in case it wasn't primed, though it may fail on Safari
-    // if not inside a user gesture.
+  async beep(freq, type, dur, vol, sd, fe) {
     if (!this.ctx) this.init();
     
     const a = this.ctx;
+    
+    // Safely resume before playing to fix Safari restriction issues
+    if (a.state === 'suspended') {
+      try {
+        await a.resume();
+      } catch (err) {
+        console.warn('[Audio] Failed to resume context:', err);
+        return; // Skip playing sound if context cannot be resumed
+      }
+    }
+    
     const o = a.createOscillator();
     const g = a.createGain();
     
     o.connect(g);
     g.connect(a.destination);
     
-    const t = a.currentTime + sd;
+    const t = Math.max(a.currentTime, a.currentTime + sd);
     o.type = type;
     o.frequency.setValueAtTime(freq, t);
     
@@ -46,8 +55,12 @@ class SharedAudioContext {
     g.gain.setValueAtTime(vol, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + dur);
     
-    o.start(t);
-    o.stop(t + dur);
+    try {
+      o.start(t);
+      o.stop(t + dur);
+    } catch (err) {
+      console.warn('[Audio] Failed to start oscillator:', err);
+    }
   }
 }
 

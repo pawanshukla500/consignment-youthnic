@@ -1,7 +1,6 @@
 import {
   getPendingVideos,
   markVideoUploaded,
-  incrementRetry,
   resetFailedToPending,
   recoverOrphanedRecordings,
   getQueueCount,
@@ -17,7 +16,7 @@ import {
   listPendingMultipartAborts,
   clearPendingMultipartAbort,
 } from '../utils/videoQueue'
-import { VIDEO_STATUS, VIDEO_UPLOAD_CONFIG, backoffMs, uploadTimeoutForBytes } from '../utils/videoUploadConfig'
+import { VIDEO_STATUS, VIDEO_UPLOAD_CONFIG, uploadTimeoutForBytes } from '../utils/videoUploadConfig'
 import {
   assertVideoSizeAllowed,
   buildClientUploadId,
@@ -26,6 +25,7 @@ import {
   mergeCompletedParts,
   missingMultipartParts,
   shouldUseMultipart,
+  nextRetryState,
 } from '../utils/videoUploadPipeline'
 
 const PART_SIZE = VIDEO_UPLOAD_CONFIG.partSizeBytes
@@ -789,8 +789,16 @@ async function processVideoQueue(opts = {}) {
           })
           await notify()
         } catch (e) {
-          const nextAttemptAt = Date.now() + backoffMs(video.retries || 0)
-          const isFailed = await incrementRetry(video.id, nextAttemptAt, e.message)
+          const next = nextRetryState(video, e.message, { maxRetries: VIDEO_UPLOAD_CONFIG.maxRetries || 30 })
+          const isFailed = next.status === VIDEO_STATUS.FAILED
+          
+          await patchVideoQueueEntry(video.id, {
+            status: next.status,
+            retries: next.retries,
+            lastError: next.lastError,
+            nextAttemptAt: next.nextAttemptAt
+          })
+
           if (isFailed) {
             failedIds.push(String(video.id))
             emitItemStatus(video, VIDEO_STATUS.FAILED, { lastError: e.message })
