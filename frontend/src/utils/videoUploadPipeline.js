@@ -264,7 +264,8 @@ export function nextRetryState(entry, errorMessage, {
   now = Date.now(),
   maxRetries = VIDEO_UPLOAD_CONFIG.maxUploadRetries,
 } = {}) {
-  const isNetwork = !navigator.onLine || /network error|timeout|failed to fetch/i.test(errorMessage || '');
+  const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  const isNetwork = isOffline || /network error|timeout|failed to fetch/i.test(errorMessage || '');
   const retries = isNetwork ? (Number(entry?.retries) || 0) : (Number(entry?.retries) || 0) + 1
   if (retries >= maxRetries) {
     return {
@@ -507,7 +508,9 @@ export function simulateContinuousPackingUpload({
     for (const id of wave) {
       const entry = localQueue.find((e) => e.id === id)
       if (!entry || entry.status === VIDEO_STATUS.COMPLETED) continue
-      const disconnect = disconnectSet.has(entry.boxNo) && entry.retries === 0
+      const disconnectAttempts = entry._disconnectAttempts || 0
+      const disconnect = disconnectSet.has(entry.boxNo) && disconnectAttempts === 0
+      if (disconnect) entry._disconnectAttempts = disconnectAttempts + 1
       const ok = tryUploadOne(entry, { forceDisconnect: disconnect })
       if (ok) {
         // Remove from local queue (delete after verify)

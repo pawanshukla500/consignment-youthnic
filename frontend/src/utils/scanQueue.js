@@ -121,7 +121,8 @@ async function processOneScan(scan, sendScan, onResult) {
     await deleteScan(scan.id)
     onResult?.(scan, result, null)
   } catch (err) {
-    const isNetwork = !navigator.onLine || /network error|timeout|failed to fetch/i.test(err?.message || '');
+    const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+    const isNetwork = isOffline || /network error|timeout|failed to fetch/i.test(err?.message || '');
     if (!isNetwork) {
       scan.retries += 1;
     }
