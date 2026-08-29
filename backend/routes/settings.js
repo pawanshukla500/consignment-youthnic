@@ -115,6 +115,39 @@ router.post('/cleanup', authenticateToken, requireRole('admin'), async (req, res
   }
 });
 
+// Trigger WhatsApp reports manually (admin only)
+router.post('/whatsapp-test', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const { reportType } = req.body;
+    const {
+      sendMorningWhatsAppBrief,
+      sendEndOfDayWhatsAppSummary,
+      sendTATApproachingAlert,
+    } = require('../utils/whatsappReports');
+    const { processWhatsAppOutbox } = require('../utils/whatsappOutbox');
+
+    let result = null;
+    if (reportType === 'morning') {
+      result = await sendMorningWhatsAppBrief();
+    } else if (reportType === 'end_of_day') {
+      result = await sendEndOfDayWhatsAppSummary();
+    } else if (reportType === 'tat_alert') {
+      result = await sendTATApproachingAlert();
+    } else {
+      return res.status(400).json({ error: 'Invalid or missing reportType. Allowed: morning, end_of_day, tat_alert' });
+    }
+    
+    // Explicitly process outbox right away so user doesn't have to wait for cron
+    await processWhatsAppOutbox();
+
+    await addAuditLog('whatsapp_trigger', 'settings', reportType, req.user.id, result);
+    res.json({ ok: true, reportType, result });
+  } catch (error) {
+    console.error('[WhatsAppTest] Manual trigger failed:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Database info + health (admin only) — shows the live datastore connection
 // ─────────────────────────────────────────────────────────────────────────────
