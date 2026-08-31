@@ -99,6 +99,9 @@ export async function processPackingSyncQueues() {
   return { done: true }
 }
 
+let handleOnline = null
+let handleVis = null
+
 export async function initPackingSyncService() {
   if (intervalId) return
 
@@ -118,16 +121,26 @@ export async function initPackingSyncService() {
   processPackingSyncQueues()
 
   intervalId = setInterval(() => processPackingSyncQueues(), 8_000)
-  window.addEventListener('online', () => processPackingSyncQueues())
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) processPackingSyncQueues()
-  })
+  
+  handleOnline = () => processPackingSyncQueues()
+  handleVis = () => { if (!document.hidden) processPackingSyncQueues() }
+  
+  window.addEventListener('online', handleOnline)
+  document.addEventListener('visibilitychange', handleVis)
 }
 
 export function stopPackingSyncService() {
   if (intervalId) {
     clearInterval(intervalId)
     intervalId = null
+  }
+  if (handleOnline) {
+    window.removeEventListener('online', handleOnline)
+    handleOnline = null
+  }
+  if (handleVis) {
+    document.removeEventListener('visibilitychange', handleVis)
+    handleVis = null
   }
 }
 

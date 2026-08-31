@@ -56,8 +56,10 @@ export async function enqueueScan({ barcode, consignmentId, boxNo, qty = 1 }) {
   }
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite')
+    tx.oncomplete = () => resolve(entry)
+    tx.onerror = () => reject(tx.error)
+    tx.onabort = () => reject(new Error('Transaction aborted'))
     const req = tx.objectStore(STORE).add(entry)
-    req.onsuccess = () => resolve(entry)
     req.onerror = () => reject(req.error)
   })
 }
@@ -116,10 +118,11 @@ async function processOneScan(scan, sendScan, onResult) {
         await updateScan(scan)
         await new Promise((r) => setTimeout(r, backoffMs(scan.retries)))
       }
-      return
+      return { ok: false, offline: false }
     }
     await deleteScan(scan.id)
     onResult?.(scan, result, null)
+    return { ok: true, offline: false }
   } catch (err) {
     const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
     const isNetwork = isOffline || /network error|timeout|failed to fetch/i.test(err?.message || '');
@@ -130,10 +133,15 @@ async function processOneScan(scan, sendScan, onResult) {
       scan.status = 'failed'
       await updateScan(scan)
       onResult?.(scan, null, err)
+      return { ok: false, offline: false }
     } else {
       scan.status = 'pending'
       await updateScan(scan)
+      if (isNetwork && isOffline) {
+        return { ok: false, offline: true }
+      }
       await new Promise((r) => setTimeout(r, backoffMs(scan.retries)))
+      return { ok: false, offline: isNetwork }
     }
   }
 }
@@ -154,12 +162,19 @@ export async function drainScanQueue(sendScan, onResult) {
       do {
         drainAgain = false
         let pending = await getPendingScans()
+        let brokeOffline = false
         while (pending.length > 0) {
           for (const scan of pending) {
-            await processOneScan(scan, sendScan, onResult)
+            const { offline } = await processOneScan(scan, sendScan, onResult) || {}
+            if (offline) {
+              brokeOffline = true
+              break
+            }
           }
+          if (brokeOffline) break
           pending = await getPendingScans()
         }
+        if (brokeOffline) break
       } while (drainAgain)
     } finally {
       draining = false
