@@ -63,11 +63,9 @@ describe('Packing Station Scan Mutex', () => {
     let state = { packed: 0 };
     const scanQueueBuffer = [];
     let isProcessing = false;
-    let processed = 0;
 
     const enqueueScan = async () => {
       await new Promise(resolve => setTimeout(resolve, 1));
-      processed++;
     };
 
     const processScanQueue = async () => {
