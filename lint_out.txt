@@ -1,0 +1,282 @@
+
+> consignment-packing-app@1.0.0 lint
+> cd frontend && npm run lint
+
+
+> frontend@0.0.0 lint
+> eslint .
+
+
+D:\consignment-youthnic\frontend\src\components\ConsignmentWorkflowPanel.jsx
+  212:6  warning  React Hook useEffect has a missing dependency: 'consignment'. Either include it or remove the dependency array. If 'setForms' needs the current value of 'consignment', you can also switch to useReducer instead of useState and read 'consignment' in the reducer  react-hooks/exhaustive-deps
+
+D:\consignment-youthnic\frontend\src\context\AuthContext.jsx
+  341:6   warning  React Hook useEffect has a missing dependency: 'logout'. Either include it or remove the dependency array                       react-hooks/exhaustive-deps
+  491:14  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+D:\consignment-youthnic\frontend\src\context\ConsignmentSyncContext.jsx
+  248:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  252:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+  265:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+D:\consignment-youthnic\frontend\src\context\ToastContext.jsx
+  60:14  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+D:\consignment-youthnic\frontend\src\pages\ConsignmentDetail.jsx
+  488:6  warning  React Hook useEffect has a missing dependency: 'fetchConsignment'. Either include it or remove the dependency array     react-hooks/exhaustive-deps
+  501:6  warning  React Hook useEffect has a missing dependency: 'consignment'. Either include it or remove the dependency array          react-hooks/exhaustive-deps
+  505:6  warning  React Hook useEffect has a missing dependency: 'fetchPackingReport'. Either include it or remove the dependency array   react-hooks/exhaustive-deps
+  514:6  warning  React Hook useEffect has a missing dependency: 'fetchOmsGuruUploads'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+  696:6  warning  React Hook useEffect has a missing dependency: 'fetchPackingReport'. Either include it or remove the dependency array   react-hooks/exhaustive-deps
+
+D:\consignment-youthnic\frontend\src\pages\Consignments.jsx
+  572:30  warning  Compilation Skipped: Existing memoization could not be preserved
+
+React Compiler has skipped optimizing this component because the existing manual memoization could not be preserved. This value was memoized in source but not in compilation output.
+
+  570 |   }, [consignments]);
+  571 |
+> 572 |   const sortedConsignments = useMemo(() => {
+      |                              ^^^^^^^^^^^^^^^
+> 573 |     const sorted = sortByWorkflowPriority(consignments);
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 574 |     if (!workflowFilter) return sorted;
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 575 |     return sorted.filter((c) => getWorkflowBucket(c) === workflowFilter);
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 576 |   }, [consignments, workflowFilter]);
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Could not preserve existing memoization
+  577 |
+  578 |   /** Rows with optional section headers when viewing all priorities */
+  579 |   const tableRows = useMemo(() => {  react-hooks/preserve-manual-memoization
+
+D:\consignment-youthnic\frontend\src\pages\Dashboard.jsx
+  127:6  warning  React Hook useEffect has a missing dependency: 'initialCache'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+D:\consignment-youthnic\frontend\src\pages\InventoryPlanning.jsx
+  113:9  warning  The 'skus' logical expression could make the dependencies of useMemo Hook (at line 127) change on every render. Move it inside the useMemo callback. Alternatively, wrap the initialization of 'skus' in its own useMemo() Hook  react-hooks/exhaustive-deps
+
+D:\consignment-youthnic\frontend\src\pages\PackingStation.jsx
+   250:9   error    'scanSubmitLockRef' is assigned a value but never used. Allowed unused vars must match /^(React|_)/u                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       no-unused-vars
+   381:6   warning  React Hook useEffect has missing dependencies: 'checkSyncStatus', 'runPendingSync', and 'toast'. Either include them or remove the dependency array                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        react-hooks/exhaustive-deps
+   399:6   warning  React Hook useEffect has missing dependencies: 'S.cid' and 'zone'. Either include them or remove the dependency array                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      react-hooks/exhaustive-deps
+   752:45  warning  Error: Cannot call impure function during render
+
+`Date.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).
+
+  750 |       }
+  751 |
+> 752 |       const fileName = `${cid}_box_${box}_${Date.now()}.${actualExt}`;
+      |                                             ^^^^^^^^^^ Cannot call impure function
+  753 |       const metadata = {
+  754 |         fileName,
+  755 |         mimeType: mimeType || 'video/webm',                                                                                                                                                                            react-hooks/purity
+   849:27  warning  Error: Cannot call impure function during render
+
+`Date.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).
+
+  847 |     };
+  848 |
+> 849 |     recStartRef.current = Date.now();
+      |                           ^^^^^^^^^^ Cannot call impure function
+  850 |     recTimerRef.current = setInterval(() => {
+  851 |       const e = Math.floor((Date.now() - recStartRef.current) / 1000);
+  852 |       setRecDuration(`${String(Math.floor(e/60)).padStart(2,'0')}:${String(e%60).padStart(2,'0')}`);                                                                                             react-hooks/purity
+   989:22  warning  Error: Cannot call impure function during render
+
+`Date.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).
+
+  987 |     if (!silent) toast('Finishing video upload(s) — keep this tab open…', 'info', 4500);
+  988 |
+> 989 |     const deadline = Date.now() + VIDEO_UPLOAD_CONFIG.finishDrainTimeoutMs;
+      |                      ^^^^^^^^^^ Cannot call impure function
+  990 |     while (Date.now() < deadline) {
+  991 |       let drainOk = false;
+  992 |       try {                                                                                                                         react-hooks/purity
+   990:12  warning  Error: Cannot call impure function during render
+
+`Date.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).
+
+  988 |
+  989 |     const deadline = Date.now() + VIDEO_UPLOAD_CONFIG.finishDrainTimeoutMs;
+> 990 |     while (Date.now() < deadline) {
+      |            ^^^^^^^^^^ Cannot call impure function
+  991 |       let drainOk = false;
+  992 |       try {
+  993 |         const drain = await processVideoUploadQueue({                                                                                                                                                                      react-hooks/purity
+  1002:52  warning  Error: Cannot call impure function during render
+
+`Date.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).
+
+  1000 |       } catch (drainErr) {
+  1001 |         // Failed/pending/timeout — inspect IndexedDB before giving up
+> 1002 |         if (drainErr?.result?.failedIds?.length && Date.now() > deadline - 5000) {
+       |                                                    ^^^^^^^^^^ Cannot call impure function
+  1003 |           const err = new Error(
+  1004 |             drainErr.message || 'Video upload failed. Stay online and retry before finishing.'
+  1005 |           );  react-hooks/purity
+  1030:28  warning  Error: Cannot call impure function during render
+
+`Date.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).
+
+  1028 |       }
+  1029 |       const failed = outstanding.filter((v) => v.status === 'failed' || v.status === 'storage_failed');
+> 1030 |       if (failed.length && Date.now() > deadline - 5000) break;
+       |                            ^^^^^^^^^^ Cannot call impure function
+  1031 |       await new Promise((r) => setTimeout(r, 800));
+  1032 |     }
+  1033 |                                                                                                                  react-hooks/purity
+  2674:45  warning  Error: Cannot access refs during render
+
+React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).
+
+  2672 |         boxNo={removalModal.boxNo}
+  2673 |         displayConsignmentId={S.intShip || S.cid}
+> 2674 |         mediaStream={removalModal.stream || streamRef.current}
+       |                                             ^^^^^^^^^^^^^^^^^ Cannot access ref value during render
+  2675 |         toast={toast}
+  2676 |         onClose={() => setRemovalModal({ open: false, boxNo: null, stream: null })}
+  2677 |         onCompleted={async () => {   react-hooks/refs
+
+D:\consignment-youthnic\frontend\src\pages\Productivity.jsx
+   53:30  warning  Error: Cannot call impure function during render
+
+`Date.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).
+
+  51 |     try {
+  52 |       const cached = JSON.parse(sessionStorage.getItem(PRODUCTIVITY_CACHE_KEY) || 'null');
+> 53 |       if (cached?.savedAt && Date.now() - cached.savedAt < PRODUCTIVITY_CACHE_MS) return cached;
+     |                              ^^^^^^^^^^ Cannot call impure function
+  54 |     } catch {
+  55 |       // ignore corrupt cache
+  56 |     }                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        react-hooks/purity
+   86:33  warning  Compilation Skipped: Existing memoization could not be preserved
+
+React Compiler has skipped optimizing this component because the existing manual memoization could not be preserved. The inferred dependencies did not match the manually specified dependencies, which could cause the value to change more or less frequently than expected. The inferred dependency was `setInitialLoading`, but the source dependencies were [dateRange, stats, planning, auditLogs, consignments, persistCache]. Inferred different dependency than source.
+
+   84 |
+   85 |   // ── Fetch ─────────────────────────────────────────────────────────────────
+>  86 |   const fetchData = useCallback(async (range, { background = false } = {}) => {
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>  87 |     const r = range || dateRange;
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>  88 |     const hasCachedCore = Boolean(stats && planning);
+      …
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 130 |     }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 131 |   }, [dateRange, stats, planning, auditLogs, consignments, persistCache]);
+      | ^^^^ Could not preserve existing manual memoization
+  132 |
+  133 |   useEffect(() => { fetchData(undefined, { background: Boolean(initialCache) }); }, []);
+  134 |    react-hooks/preserve-manual-memoization
+   86:33  warning  Compilation Skipped: Existing memoization could not be preserved
+
+React Compiler has skipped optimizing this component because the existing manual memoization could not be preserved. The inferred dependencies did not match the manually specified dependencies, which could cause the value to change more or less frequently than expected. The inferred dependency was `setRefreshing`, but the source dependencies were [dateRange, stats, planning, auditLogs, consignments, persistCache]. Inferred different dependency than source.
+
+   84 |
+   85 |   // ── Fetch ─────────────────────────────────────────────────────────────────
+>  86 |   const fetchData = useCallback(async (range, { background = false } = {}) => {
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>  87 |     const r = range || dateRange;
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>  88 |     const hasCachedCore = Boolean(stats && planning);
+      …
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 130 |     }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 131 |   }, [dateRange, stats, planning, auditLogs, consignments, persistCache]);
+      | ^^^^ Could not preserve existing manual memoization
+  132 |
+  133 |   useEffect(() => { fetchData(undefined, { background: Boolean(initialCache) }); }, []);
+  134 |        react-hooks/preserve-manual-memoization
+   86:33  warning  Compilation Skipped: Existing memoization could not be preserved
+
+React Compiler has skipped optimizing this component because the existing manual memoization could not be preserved. The inferred dependencies did not match the manually specified dependencies, which could cause the value to change more or less frequently than expected. The inferred dependency was `setSecondaryLoading`, but the source dependencies were [dateRange, stats, planning, auditLogs, consignments, persistCache]. Inferred different dependency than source.
+
+   84 |
+   85 |   // ── Fetch ─────────────────────────────────────────────────────────────────
+>  86 |   const fetchData = useCallback(async (range, { background = false } = {}) => {
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>  87 |     const r = range || dateRange;
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>  88 |     const hasCachedCore = Boolean(stats && planning);
+      …
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 130 |     }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 131 |   }, [dateRange, stats, planning, auditLogs, consignments, persistCache]);
+      | ^^^^ Could not preserve existing manual memoization
+  132 |
+  133 |   useEffect(() => { fetchData(undefined, { background: Boolean(initialCache) }); }, []);
+  134 |  react-hooks/preserve-manual-memoization
+   86:33  warning  Compilation Skipped: Existing memoization could not be preserved
+
+React Compiler has skipped optimizing this component because the existing manual memoization could not be preserved. The inferred dependencies did not match the manually specified dependencies, which could cause the value to change more or less frequently than expected. The inferred dependency was `setStats`, but the source dependencies were [dateRange, stats, planning, auditLogs, consignments, persistCache]. Inferred different dependency than source.
+
+   84 |
+   85 |   // ── Fetch ─────────────────────────────────────────────────────────────────
+>  86 |   const fetchData = useCallback(async (range, { background = false } = {}) => {
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>  87 |     const r = range || dateRange;
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>  88 |     const hasCachedCore = Boolean(stats && planning);
+      …
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 130 |     }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 131 |   }, [dateRange, stats, planning, auditLogs, consignments, persistCache]);
+      | ^^^^ Could not preserve existing manual memoization
+  132 |
+  133 |   useEffect(() => { fetchData(undefined, { background: Boolean(initialCache) }); }, []);
+  134 |             react-hooks/preserve-manual-memoization
+   86:33  warning  Compilation Skipped: Existing memoization could not be preserved
+
+React Compiler has skipped optimizing this component because the existing manual memoization could not be preserved. The inferred dependencies did not match the manually specified dependencies, which could cause the value to change more or less frequently than expected. The inferred dependency was `setAuditLogs`, but the source dependencies were [dateRange, stats, planning, auditLogs, consignments, persistCache]. Inferred different dependency than source.
+
+   84 |
+   85 |   // ── Fetch ─────────────────────────────────────────────────────────────────
+>  86 |   const fetchData = useCallback(async (range, { background = false } = {}) => {
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>  87 |     const r = range || dateRange;
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>  88 |     const hasCachedCore = Boolean(stats && planning);
+      …
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 130 |     }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 131 |   }, [dateRange, stats, planning, auditLogs, consignments, persistCache]);
+      | ^^^^ Could not preserve existing manual memoization
+  132 |
+  133 |   useEffect(() => { fetchData(undefined, { background: Boolean(initialCache) }); }, []);
+  134 |         react-hooks/preserve-manual-memoization
+   86:33  warning  Compilation Skipped: Existing memoization could not be preserved
+
+React Compiler has skipped optimizing this component because the existing manual memoization could not be preserved. The inferred dependencies did not match the manually specified dependencies, which could cause the value to change more or less frequently than expected. The inferred dependency was `setConsignments`, but the source dependencies were [dateRange, stats, planning, auditLogs, consignments, persistCache]. Inferred different dependency than source.
+
+   84 |
+   85 |   // ── Fetch ─────────────────────────────────────────────────────────────────
+>  86 |   const fetchData = useCallback(async (range, { background = false } = {}) => {
+      |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>  87 |     const r = range || dateRange;
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+>  88 |     const hasCachedCore = Boolean(stats && planning);
+      …
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 130 |     }
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+> 131 |   }, [dateRange, stats, planning, auditLogs, consignments, persistCache]);
+      | ^^^^ Could not preserve existing manual memoization
+  132 |
+  133 |   useEffect(() => { fetchData(undefined, { background: Boolean(initialCache) }); }, []);
+  134 |      react-hooks/preserve-manual-memoization
+  133:85  warning  React Hook useEffect has missing dependencies: 'fetchData' and 'initialCache'. Either include them or remove the dependency array                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  react-hooks/exhaustive-deps
+
+D:\consignment-youthnic\frontend\src\pages\Profile.jsx
+  84:38  warning  React Hook useEffect has a missing dependency: 'loadProfile'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+D:\consignment-youthnic\frontend\src\pages\Settings.jsx
+  56:6  warning  React Hook useEffect has missing dependencies: 'fetchDbInfo' and 'fetchSettings'. Either include them or remove the dependency array  react-hooks/exhaustive-deps
+
+✖ 35 problems (1 error, 34 warnings)
+

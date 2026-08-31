@@ -247,7 +247,7 @@ export default function PackingStation() {
   const composeFrameRef = useRef(null);
   const uploadingQueueRef = useRef(false);
   const scannerGuardRef = useRef(createScannerInputGuard());
-  const scanQueueBufferRef = useRef([]);
+  const scanMutexRef = useRef(Promise.resolve());
   const scanToastDedupRef = useRef({ message: '', at: 0 });
   const { pendingChanges } = useConsignmentSync();
 
@@ -1647,83 +1647,14 @@ export default function PackingStation() {
     await updatePendingCount();
   };
 
-  const isProcessingScansRef = useRef(false);
-
-  const processScanQueue = async () => {
-    if (isProcessingScansRef.current) return;
-    isProcessingScansRef.current = true;
-    
-    try {
-      while (scanQueueBufferRef.current.length > 0) {
-        const item = scanQueueBufferRef.current.shift();
-        const bc = typeof item === 'string' ? item : item.barcode;
-        const qty = typeof item === 'string' ? 1 : item.qty;
-
-        if (qty === -1) {
-          const session = stateRef.current;
-          try {
-            await enqueueScan({ barcode: bc, consignmentId: session.cid, boxNo: session.box, qty: -1 });
-            commitPackingState((prev) => {
-              const nextBoxItems = (prev.boxes[prev.box] || [])
-                .map((i) => {
-                  const match = i.barcode === bc || i.marketplaceBarcode === bc || i.marketplaceSku === bc || i.skuId === bc;
-                  return match ? { ...i, qty: i.qty - 1 } : i;
-                })
-                .filter((i) => i.qty > 0);
-              const nextBoxes = { ...prev.boxes, [prev.box]: nextBoxItems };
-              return {
-                ...prev,
-                boxes: nextBoxes,
-                skus: recomputeSkuTotals(prev.skus, nextBoxes),
-              };
-            }, { flush: true });
-            setSyncState('pending');
-            kickScanQueue();
-            toast('Removed', 'info');
-          } catch (err) {
-            toast('Could not queue removal', 'error');
-          }
-          continue;
-        }
-
-        const snapshot = stateRef.current;
-        const optimistic = applyOptimisticScan(snapshot, bc, 1);
-
-        if (!optimistic?.ok) {
-          playScanSound(optimistic.reason, optimistic);
-          toast(
-            optimistic.message || getScanMessage(optimistic.reason, optimistic),
-            'error',
-            optimistic.reason === 'locked' || optimistic.extra_item ? 4000 : 2500
-          );
-          flash('err');
-          if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-          continue;
-        }
-
-        const scannedSku = optimistic.scannedSku;
-        const queueBarcode = optimistic.queueBarcode || resolveQueueBarcode(scannedSku, bc);
-
-        try {
-          await enqueueScan({ barcode: queueBarcode, consignmentId: snapshot.cid, boxNo: snapshot.box, qty: 1 });
-          
-          commitPackingState(() => optimistic.next, { syncSkus: false, flush: true });
-          setSyncState('pending');
-          kickScanQueue();
-          
-          const instantOkAt = Date.now();
-          lastInstantOkRef.current = { barcode: bc, at: instantOkAt };
-          playScanSound('ok');
-          flash('ok');
-          if (navigator.vibrate) navigator.vibrate(40);
-        } catch (err) {
-          sfx.err();
-          toast('Could not queue scan — scan again', 'error');
-        }
+  const queueScanOperation = (operationFn) => {
+    scanMutexRef.current = scanMutexRef.current.then(async () => {
+      try {
+        await operationFn();
+      } catch (err) {
+        console.error('[PackingStation] scan operation error:', err);
       }
-    } finally {
-      isProcessingScansRef.current = false;
-    }
+    });
   };
 
   const handleSkuBarcodePaste = (e) => {
@@ -1798,8 +1729,67 @@ export default function PackingStation() {
     inSkuRef.current?.focus();
     scannerGuardRef.current.reset();
 
-    scanQueueBufferRef.current.push(bc);
-    processScanQueue();
+    const capturedCid = session.cid;
+    const capturedBox = session.box;
+
+    queueScanOperation(async () => {
+      const snapshot = stateRef.current;
+      const proxySnapshot = { ...snapshot, box: capturedBox, cid: capturedCid };
+      const optimistic = applyOptimisticScan(proxySnapshot, bc, 1);
+
+      if (!optimistic?.ok) {
+        playScanSound(optimistic.reason, optimistic);
+        toast(
+          optimistic.message || getScanMessage(optimistic.reason, optimistic),
+          'error',
+          optimistic.reason === 'locked' || optimistic.extra_item ? 4000 : 2500
+        );
+        flash('err');
+        if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+        return;
+      }
+
+      try {
+        await enqueueScan({ 
+          barcode: optimistic.queueBarcode, 
+          consignmentId: capturedCid, 
+          boxNo: capturedBox, 
+          qty: 1 
+        });
+        
+        commitPackingState((latestState) => {
+          const boxItems = [...(latestState.boxes[capturedBox] || [])];
+          const existing = boxItems.find((i) => i.skuId === optimistic.scannedSku.id);
+          if (existing) {
+            existing.qty += 1;
+          } else {
+            boxItems.push({
+              skuId: optimistic.scannedSku.id,
+              marketplaceBarcode: optimistic.queueBarcode,
+              barcode: optimistic.queueBarcode,
+              marketplaceSku: optimistic.scannedSku.marketplaceSku || optimistic.queueBarcode,
+              internalSku: optimistic.scannedSku.internalSku,
+              name: optimistic.scannedSku.internalSku,
+              qty: 1,
+            });
+          }
+          const nextBoxes = { ...latestState.boxes, [capturedBox]: boxItems };
+          return { ...latestState, boxes: nextBoxes };
+        }, { syncSkus: true, flush: true });
+        
+        setSyncState('pending');
+        kickScanQueue();
+        
+        const instantOkAt = Date.now();
+        lastInstantOkRef.current = { barcode: bc, at: instantOkAt };
+        playScanSound('ok');
+        flash('ok');
+        if (navigator.vibrate) navigator.vibrate(40);
+      } catch (err) {
+        sfx.err();
+        toast('Could not queue scan — scan again', 'error');
+      }
+    });
   };
 
   const removeItem = async (marketplaceSku) => {
@@ -1807,10 +1797,32 @@ export default function PackingStation() {
     if (!session.cid || !session.box) return;
     const boxItems = session.boxes[session.box] || [];
     const item = boxItems.find((i) => i.marketplaceSku === marketplaceSku || i.skuId === marketplaceSku);
-    const barcode = item?.barcode || item?.marketplaceBarcode || marketplaceSku;
+    const bc = item?.barcode || item?.marketplaceBarcode || marketplaceSku;
     
-    scanQueueBufferRef.current.push({ barcode, qty: -1 });
-    processScanQueue();
+    const capturedCid = session.cid;
+    const capturedBox = session.box;
+
+    queueScanOperation(async () => {
+      try {
+        await enqueueScan({ barcode: bc, consignmentId: capturedCid, boxNo: capturedBox, qty: -1 });
+        commitPackingState((latestState) => {
+          const nextBoxItems = (latestState.boxes[capturedBox] || [])
+            .map((i) => {
+              const match = i.barcode === bc || i.marketplaceBarcode === bc || i.marketplaceSku === bc || i.skuId === bc;
+              return match ? { ...i, qty: i.qty - 1 } : i;
+            })
+            .filter((i) => i.qty > 0);
+          const nextBoxes = { ...latestState.boxes, [capturedBox]: nextBoxItems };
+          return { ...latestState, boxes: nextBoxes };
+        }, { syncSkus: true, flush: true });
+        
+        setSyncState('pending');
+        kickScanQueue();
+        toast('Removed', 'info');
+      } catch (err) {
+        toast('Could not queue removal', 'error');
+      }
+    });
   };
 
   const saveBoxWithWeight = async (boxNo, weight, unit, imageFileOrBlob) => {
@@ -1889,7 +1901,10 @@ export default function PackingStation() {
     toast(`Box ${boxNo} saved locally and queued for sync`, 'info', 5000);
   };
 
-  const handleBoxCompletion = (actionAfterSave) => {
+  const handleBoxCompletion = async (actionAfterSave) => {
+    // BARRIER: Wait for any rapid physical scans to finish persisting
+    await scanMutexRef.current;
+
     if (!S.cid || !S.box || !S.boxes[S.box]?.length) {
       if (S.box && (mediaRecorderRef.current?.state === 'recording' || recordingSessionIdRef.current)) {
         setLoading(true);
@@ -1918,7 +1933,10 @@ export default function PackingStation() {
     setShowWeightModal(true);
   };
 
-  const openFinishModal = () => {
+  const openFinishModal = async () => {
+    // BARRIER: Wait for any rapid physical scans to finish
+    await scanMutexRef.current;
+
     const pending = S.skus.filter(s => s.remaining > 0).sort((a, b) => b.remaining - a.remaining);
     const totalReq = S.skus.reduce((s, k) => s + k.required, 0);
     const totalPkd = S.skus.reduce((s, k) => s + k.packed, 0);
