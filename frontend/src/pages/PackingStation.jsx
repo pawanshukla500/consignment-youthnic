@@ -247,7 +247,6 @@ export default function PackingStation() {
   const composeFrameRef = useRef(null);
   const uploadingQueueRef = useRef(false);
   const scannerGuardRef = useRef(createScannerInputGuard());
-  const scanSubmitLockRef = useRef(false);
   const scanQueueBufferRef = useRef([]);
   const scanToastDedupRef = useRef({ message: '', at: 0 });
   const { pendingChanges } = useConsignmentSync();
