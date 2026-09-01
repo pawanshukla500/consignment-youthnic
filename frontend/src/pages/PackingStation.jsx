@@ -68,7 +68,7 @@ import {
   getMarketplaceBarcode,
   barcodeMatchesSku,
 } from '../utils/barcodeInput';
-import { recomputeSkuTotals, getShipmentQtySummary } from '../utils/packingQuantities';
+import { clonePackingBoxItems, recomputeSkuTotals, getShipmentQtySummary } from '../utils/packingQuantities';
 
 function getScanMessage(reason, data = {}) {
   if (data.extra_item || (reason === 'not_found' && data.all_complete)) {
@@ -1397,7 +1397,9 @@ export default function PackingStation() {
       };
     }
 
-    const boxItems = [...(prev.boxes[prev.box] || [])];
+    // Validation must never mutate the live state row; the durable commit below
+    // applies the quantity exactly once.
+    const boxItems = clonePackingBoxItems(prev.boxes[prev.box] || []);
     const existing = boxItems.find((i) => i.skuId === sku.id);
     const marketplaceBarcode = getMarketplaceBarcode(sku) || normalized;
     if (existing) {

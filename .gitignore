@@ -70,6 +70,9 @@ backend/backups/
 backend/ssh_cmd.js
 backend/ssh_test.py
 
+# Supabase CLI local cache
+supabase/.temp/
+
 
 # Cursor IDE
 .cursor/

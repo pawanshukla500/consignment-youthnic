@@ -1,0 +1,3 @@
+ALTER TABLE IF EXISTS public.scan_events
+  ADD COLUMN IF NOT EXISTS sequence_no BIGINT,
+  ADD COLUMN IF NOT EXISTS scanner_received_at TIMESTAMPTZ;

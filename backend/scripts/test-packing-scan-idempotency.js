@@ -14,7 +14,12 @@ const fakeClient = {
     if (normalized.startsWith('INSERT INTO scan_events')) {
       const id = params[0];
       if (relationalEvents.has(id)) return { rowCount: 0, rows: [] };
-      relationalEvents.set(id, { id, payload: JSON.parse(params[12]) });
+      relationalEvents.set(id, {
+        id,
+        sequenceNo: params[12],
+        scannerReceivedAt: params[13],
+        payload: JSON.parse(params[14]),
+      });
       return { rowCount: 1, rows: [{ id }] };
     }
     if (normalized.startsWith('INSERT INTO documents')) {
@@ -51,13 +56,19 @@ const packingRouter = require('../routes/packing');
 const {
   acquireIncrementLock,
   getStoredScanPayload,
+  resolvePackingMutationKey,
   restorePackingSession,
   snapshotPackingSession,
   writeScanEvent,
 } = packingRouter.__packingScanTest;
 
 const request = {
-  body: { station_id: 'station-test', client_created_at: new Date().toISOString() },
+  body: {
+    station_id: 'station-test',
+    client_created_at: new Date().toISOString(),
+    sequence_no: 7,
+    scanner_received_at: '2026-09-01T12:00:00.000Z',
+  },
   headers: {},
   user: { id: 'user-test' },
 };
@@ -131,6 +142,12 @@ async function main() {
   assert.strictEqual(duplicateProcessor.quantity, 1, 'same scan_id must mutate quantity once');
   assert.strictEqual(relationalEvents.size, 1, 'database primary key must store one scan event');
   assert.ok(duplicateResults.every((result) => result.packed === 1));
+  assert.strictEqual(relationalEvents.get('same-id').sequenceNo, 7);
+  assert.strictEqual(
+    relationalEvents.get('same-id').scannerReceivedAt,
+    '2026-09-01T12:00:00.000Z',
+    'normalized scan ledger must retain scanner timing metadata'
+  );
 
   // Simulated backend restart: the process cache is gone, but the durable event remains.
   const restartedProcessor = createProcessor(1);
@@ -162,6 +179,16 @@ async function main() {
     Array.from({ length: 10 }, () => removalProcessor.process({ scanId: 'remove-once', required: 10, qty: -1 }))
   );
   assert.strictEqual(removalProcessor.quantity, 9, 'duplicate removal must remove exactly once');
+
+  const canonicalResolver = async (identifier) => ({
+    id: identifier === 'SHIPMENT-ALIAS' ? 'consignment-1' : identifier,
+  });
+  const [aliasKey, canonicalKey] = await Promise.all([
+    resolvePackingMutationKey('SHIPMENT-ALIAS', canonicalResolver),
+    resolvePackingMutationKey('consignment-1', canonicalResolver),
+  ]);
+  assert.strictEqual(aliasKey, canonicalKey,
+    'alias and canonical requests must serialize on the same lock key');
 
   const rollbackSession = {
     boxes: { 3: [{ skuId: 'sku-1', qty: 1 }] },
@@ -195,6 +222,15 @@ async function main() {
     'each locked mutation must refresh the latest durable draft');
   assert.ok(source.includes('restorePackingSession(session, sessionSnapshot)'),
     'database rollback must restore volatile session state');
+  assert.ok(source.includes('req.body.consignment_id = consignmentId'),
+    'handlers must mutate the canonical consignment session protected by the lock');
+
+  const migration = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'supabase', 'migrations', '20260901124619_add_scan_event_capture_metadata.sql'),
+    'utf8'
+  );
+  assert.ok(migration.includes('sequence_no BIGINT'));
+  assert.ok(migration.includes('scanner_received_at TIMESTAMPTZ'));
 
   console.log('Packing scan idempotency/concurrency tests passed.');
 }

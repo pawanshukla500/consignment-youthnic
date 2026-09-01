@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createScanCaptureCoordinator } from '../scanCaptureCoordinator'
+import { clonePackingBoxItems } from '../packingQuantities'
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -129,5 +130,16 @@ describe('Packing Station post-durability coordinator', () => {
     await coordinator.flushAcceptedScansForBox(context)
     expect(accepted).toBe(10)
     expect(rejected).toBe(5)
+  })
+
+  it('does not mutate the live box row during optimistic validation', () => {
+    const liveItems = [{ skuId: 'sku-1', qty: 1 }]
+    const validationItems = clonePackingBoxItems(liveItems)
+    validationItems[0].qty += 1
+    expect(liveItems[0].qty).toBe(1)
+
+    const committedItems = clonePackingBoxItems(liveItems)
+    committedItems[0].qty += 1
+    expect(committedItems[0].qty).toBe(2)
   })
 })

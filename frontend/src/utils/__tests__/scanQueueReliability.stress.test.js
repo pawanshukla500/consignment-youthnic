@@ -214,6 +214,19 @@ describe('durable scan outbox stress and recovery', () => {
     expect(await getPendingScanCount()).toBe(0)
   })
 
+  it('retries a successful API payload marked retry instead of rejecting it terminally', async () => {
+    await captureReady(envelope(1, 'RETRY-PAYLOAD'))
+    let attempts = 0
+    await drainScanQueue(async () => {
+      attempts += 1
+      if (attempts === 1) return { retry: true, error: 'draft commit unavailable' }
+      return { packed: 1, required: 1 }
+    })
+    const [stored] = await getScanHistory()
+    expect(attempts).toBe(2)
+    expect(stored.status).toBe(SCAN_STATUS.SERVER_CONFIRMED)
+  })
+
   it('retries an offline removal with the same ID and removes exactly once', async () => {
     const removal = envelope(1, 'REMOVE-SKU', -1)
     await captureReady(removal)

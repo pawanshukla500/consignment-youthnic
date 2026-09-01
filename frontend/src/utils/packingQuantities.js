@@ -3,6 +3,10 @@ function toNumber(value) {
   return Number.isFinite(n) ? n : 0
 }
 
+export function clonePackingBoxItems(items = []) {
+  return (items || []).map((item) => ({ ...item }))
+}
+
 export function sumPackedQtyBySku(boxes = {}) {
   const totals = {}
   for (const items of Object.values(boxes || {})) {

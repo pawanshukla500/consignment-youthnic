@@ -295,13 +295,13 @@ async function writeScanEvent({ consignmentId, boxNo, sku, barcode, qty, result,
   if (client && pgEnabled()) {
     const inserted = await client.query(
       `INSERT INTO scan_events (
-         id, consignment_id, box_no, sku_id, barcode, marketplace_sku,
-         internal_sku, qty_delta, result, station_id, user_id,
-         client_created_at, payload, created_at
+       id, consignment_id, box_no, sku_id, barcode, marketplace_sku,
+       internal_sku, qty_delta, result, station_id, user_id,
+         client_created_at, sequence_no, scanner_received_at, payload, created_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6,
          $7, $8, $9, $10, $11,
-         $12, $13::jsonb, now()
+         $12, $13, $14, $15::jsonb, now()
        )
        ON CONFLICT (id) DO NOTHING
        RETURNING id`,
@@ -318,6 +318,8 @@ async function writeScanEvent({ consignmentId, boxNo, sku, barcode, qty, result,
         eventData.stationId,
         eventData.userId,
         eventData.clientCreatedAt,
+        eventData.sequenceNo,
+        eventData.scannerReceivedAt,
         JSON.stringify(payload),
       ]
     );
@@ -458,8 +460,22 @@ async function synchronizeSessionFromDurableDraft(consignmentId, client) {
   return session;
 }
 
+async function resolvePackingMutationKey(identifier, resolver = resolveConsignmentByKey) {
+  const requested = String(identifier || '').trim();
+  if (!requested) return requested;
+  const consignment = await resolver(requested);
+  return consignment?.id || requested;
+}
+
 async function runSerializedPackingMutation(req, res, handler) {
-  const consignmentId = req.body?.consignment_id;
+  const requestedConsignmentId = req.body?.consignment_id;
+  let consignmentId;
+  try {
+    consignmentId = await resolvePackingMutationKey(requestedConsignmentId);
+  } catch (error) {
+    return sendError(res, error);
+  }
+  if (req.body && consignmentId) req.body.consignment_id = consignmentId;
   const release = await acquireIncrementLock(consignmentId);
   if (!pgEnabled()) {
     try {
@@ -1848,6 +1864,7 @@ module.exports.clearPackingSession = (cid) => {
 module.exports.__packingScanTest = {
   acquireIncrementLock,
   getStoredScanPayload,
+  resolvePackingMutationKey,
   restorePackingSession,
   snapshotPackingSession,
   writeScanEvent,

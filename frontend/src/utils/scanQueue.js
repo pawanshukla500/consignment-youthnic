@@ -475,6 +475,9 @@ async function processOneScan(scan, sendScan, onResult) {
 
   try {
     const result = await sendScan(sending)
+    if (result?.retry) {
+      throw Object.assign(new Error(result.error || 'Scan persist failed'), { retry: true })
+    }
     if (isTerminalRejection(result)) {
       const rejected = await markServerTerminal(sending, SCAN_STATUS.SERVER_REJECTED, {
         apiConfirmedAt: Date.now(),
@@ -487,9 +490,6 @@ async function processOneScan(scan, sendScan, onResult) {
       diagnosticState.serverRejectedCount += 1
       onResult?.(rejected, result, null)
       return { ok: false, offline: false, terminal: true }
-    }
-    if (result?.retry) {
-      throw Object.assign(new Error(result.error || 'Scan persist failed'), { retry: true })
     }
     const confirmed = await markServerTerminal(sending, SCAN_STATUS.SERVER_CONFIRMED, {
       apiConfirmedAt: Date.now(),
