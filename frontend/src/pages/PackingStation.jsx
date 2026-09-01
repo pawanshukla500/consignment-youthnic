@@ -187,10 +187,8 @@ export default function PackingStation() {
   const [currentVideoUpload, setCurrentVideoUpload] = useState(null);
   /** Live per-box upload statuses from the background worker (queued→…→completed/failed). */
   const [boxVideoStatuses, setBoxVideoStatuses] = useState([]);
-  const [pendingScanJobs, setPendingScanJobs] = useState(0);
   const [pendingSaveJobs, setPendingSaveJobs] = useState(0);
   const [failedSyncJobs, setFailedSyncJobs] = useState(0);
-  const [scanDiagnostics, setScanDiagnostics] = useState(null);
   const [consignmentList,setConsignmentList] = useState([]);
   const [loadMeta, setLoadMeta] = useState(null);
   const cidRef = useRef(null);
@@ -214,10 +212,7 @@ export default function PackingStation() {
       .then((res) => setPackingAllowPaste(Boolean(res.data?.packingAllowPaste)))
       .catch(() => {});
     sfx.init();
-    void warmScanQueueDb();
   }, [zone]);
-
-  useEffect(() => subscribeScanDiagnostics(setScanDiagnostics), []);
 
   useEffect(() => {
     gridEnabledRef.current = gridEnabled;
@@ -365,8 +360,8 @@ export default function PackingStation() {
     window.addEventListener('video-upload-done', onDone);
     window.addEventListener('video-upload-error', onError);
 
-    Promise.all([getPendingScanCount(), getPendingSyncJobCount(), getQueueCount()])
-      .then(([scans, saveJobs, videos]) => { if (scans + saveJobs + videos > 0) runPendingSync(false); });
+    Promise.all([getPendingSyncJobCount(), getQueueCount()])
+      .then(([saveJobs, videos]) => { if (saveJobs + videos > 0) runPendingSync(false); });
     return () => {
       clearInterval(si);
       unsubVideo();
@@ -378,12 +373,6 @@ export default function PackingStation() {
       window.removeEventListener('video-upload-error', onError);
     };
   }, []);
-
-  useEffect(() => {
-    if (syncState !== 'pending' && syncState !== 'failed') return undefined;
-
-    return () => clearInterval(timer);
-  }, [syncState]);
 
   // Refresh consignment picker when statuses change elsewhere — ignore own scan echoes
   useEffect(() => {
@@ -1372,17 +1361,16 @@ export default function PackingStation() {
   const retryFailedSync = async () => {
     const { resetFailedToPending, pruneDuplicateBoxVideos } = await import('../utils/videoQueue');
     await pruneDuplicateBoxVideos().catch(() => 0);
-    const [scans, saveJobs, videos] = await Promise.all([
-      resetFailedScans(),
+    const [saveJobs, videos] = await Promise.all([
       resetFailedSyncJobs(),
       resetFailedToPending(),
     ]);
-    if (scans + saveJobs + videos === 0) {
+    if (saveJobs + videos === 0) {
       await updatePendingCount();
       return;
     }
     setSyncState('pending');
-    toast(`Retrying ${scans + saveJobs + videos} failed sync item(s)`, 'info', 3000);
+    toast(`Retrying ${saveJobs + videos} failed sync item(s)`, 'info', 3000);
     await runPendingSync(true);
   };
 
@@ -1448,96 +1436,6 @@ export default function PackingStation() {
     await updatePendingCount();
   };
 
-  const showDurableLocalRejection = async (scan, rejection) => {
-    await markScanRejectedLocally(scan.id, rejection);
-    playScanSound(rejection.reason, rejection);
-    toast(
-      rejection.message || getScanMessage(rejection.reason, rejection),
-      'error',
-      rejection.reason === 'locked' || rejection.extra_item ? 4500 : 3000
-    );
-    flash('err');
-    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-    void updatePendingCount();
-    return { rejected: true, reason: rejection.reason };
-  };
-
-  const recoverPostDurabilityFailure = async (error, scan) => {
-    console.error('[PackingStation] post-durability scan application failed:', error);
-    sfx.err();
-    toast(
-      `SCAN ${scan?.barcode || ''} IS SAVED LOCALLY. Local reconciliation is required; DO NOT RESCAN this item.`,
-      'error',
-      9000
-    );
-    flash('err');
-    setSyncState('failed');
-    try {
-      await recoverUnadmittedScan(scan?.id);
-      kickScanQueue();
-    } catch (recoveryError) {
-      console.error('[PackingStation] durable scan recovery failed:', recoveryError);
-    }
-    return { durableButUiFailed: true };
-  };
-
-
-
-  const applyDurablyCapturedScan = async (scan) => {
-    const snapshot = stateRef.current;
-    const proxySnapshot = { ...snapshot, box: scan.boxNo, cid: scan.consignmentId };
-    const optimistic = applyOptimisticScan(proxySnapshot, scan.barcode, scan.qty);
-    if (!optimistic?.ok) return showDurableLocalRejection(scan, optimistic);
-
-    await admitDurableScanForSync(scan, {
-      uiApplied: true,
-      uiCommittedAt: Date.now(),
-      indexedDbCommittedAt: scan.indexedDbCommittedAt,
-      skuId: optimistic.scannedSku.id,
-      marketplaceSku: optimistic.scannedSku.marketplaceSku || optimistic.queueBarcode,
-      internalSku: optimistic.scannedSku.internalSku,
-    });
-
-    commitPackingState((latestState) => {
-      const boxItems = (latestState.boxes[scan.boxNo] || []).map((item) => ({ ...item }));
-      const existing = boxItems.find((item) => item.skuId === optimistic.scannedSku.id);
-      if (existing) {
-        existing.qty += scan.qty;
-      } else {
-        boxItems.push({
-          skuId: optimistic.scannedSku.id,
-          marketplaceBarcode: optimistic.queueBarcode,
-          barcode: optimistic.queueBarcode,
-          marketplaceSku: optimistic.scannedSku.marketplaceSku || optimistic.queueBarcode,
-          internalSku: optimistic.scannedSku.internalSku,
-          name: optimistic.scannedSku.internalSku,
-          qty: scan.qty,
-        });
-      }
-      return {
-        ...latestState,
-        boxes: { ...latestState.boxes, [scan.boxNo]: boxItems },
-      };
-    }, { syncSkus: true, flush: true });
-
-    setSyncState(navigator.onLine ? 'pending' : 'offline');
-    playScanSound('ok');
-    flash('ok');
-    if (navigator.vibrate) navigator.vibrate(40);
-    void updatePendingCount();
-    kickScanQueue();
-    return { locallyCaptured: true };
-  };
-
-  const handleScanCaptureFailure = (error) => {
-    console.error('[PackingStation] local scan capture failed:', error);
-    sfx.err();
-    toast('LOCAL STORAGE FAILED — this item was not counted. Scan it again.', 'error', 8000);
-    flash('err');
-    if (navigator.vibrate) navigator.vibrate([250, 100, 250]);
-    void updatePendingCount();
-    return { localFailed: true };
-  };
 
   const submitSkuInput = (overrideBarcode) => {
     const value = normalizeBarcodeInput(
@@ -1566,7 +1464,6 @@ export default function PackingStation() {
   };
 
   const doScan = (overrideBarcode) => {
-    const scannerReceivedAt = Date.now();
     const bc = normalizeBarcodeInput(
       overrideBarcode !== undefined ? overrideBarcode : inSkuRef.current?.value
     );
@@ -1594,18 +1491,14 @@ export default function PackingStation() {
       return;
     }
 
-    notePhysicalScan();
-
     const session = stateRef.current;
     if (!session.cid || !session.box) {
-      noteRejectedBeforePersist();
       scanToast('Load consignment and set box number before scanning', 'error');
       inSkuRef.current?.focus();
       return;
     }
 
     if (!isValidBarcode(bc)) {
-      noteRejectedBeforePersist();
       const message = barcodeValidationMessage(bc);
       inSkuRef.current.value = '';
       inSkuRef.current?.focus();
@@ -1674,9 +1567,7 @@ export default function PackingStation() {
     if (!session.cid || !session.box) return;
     const boxItems = session.boxes[session.box] || [];
     const item = boxItems.find((i) => i.marketplaceSku === marketplaceSku || i.skuId === marketplaceSku);
-    const bc = item?.barcode || item?.marketplaceBarcode || marketplaceSku;
     
-    const capturedCid = session.cid;
     const capturedBox = String(session.box);
     
     commitPackingState((latestState) => ({
@@ -2103,9 +1994,9 @@ export default function PackingStation() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <div onClick={retryFailedSync} className={`px-2.5 py-1 rounded-full text-[10px] font-semibold flex items-center gap-1.5 cursor-pointer ${syncState==='synced'?'bg-emerald-50 text-emerald-700 border border-emerald-200':syncState==='pending'?'bg-amber-50 text-amber-700 border border-amber-200':'bg-red-50 text-red-700 border border-red-200'}`} title={`${pendingScanJobs} scan(s), ${pendingSaveJobs} save-box job(s), ${pendingUploads} video(s), ${failedSyncJobs} failed; physical ${scanDiagnostics?.physicalScanCount || 0}, durable ${scanDiagnostics?.localDurableCount || 0}, confirmed ${scanDiagnostics?.serverConfirmedCount || 0}, rejected ${scanDiagnostics?.serverRejectedCount || 0}`}>
+          <div onClick={retryFailedSync} className={`px-2.5 py-1 rounded-full text-[10px] font-semibold flex items-center gap-1.5 cursor-pointer ${syncState==='synced'?'bg-emerald-50 text-emerald-700 border border-emerald-200':syncState==='pending'?'bg-amber-50 text-amber-700 border border-amber-200':'bg-red-50 text-red-700 border border-red-200'}`} title={`${pendingSaveJobs} save-box job(s), ${pendingUploads} video(s), ${failedSyncJobs} failed`}>
             <span className="w-1.5 h-1.5 rounded-full bg-current animate-[pulse_2s_infinite]" />
-            <span>{syncState==='synced'?'Synced':syncState==='pending'?(pendingScanJobs ? `${pendingScanJobs} syncing` : 'Pending Sync'):syncState==='failed'?'Failed Needs Retry':(pendingScanJobs ? `${pendingScanJobs} saved locally` : 'Offline')}</span>
+            <span>{syncState==='synced'?'Synced':syncState==='pending'?'Pending Sync':syncState==='failed'?'Failed Needs Retry':'Offline'}</span>
           </div>
           <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-[0.8px] border ${recState==='REC'?'bg-red-50 border-red-200 text-red-700':'bg-slate-50 border-slate-200 text-slate-500'}`}>
             <span className={`w-1.5 h-1.5 rounded-full ${recState==='REC'?'animate-[pulse_.8s_infinite] bg-red-500':'bg-slate-400'}`} />
@@ -2342,8 +2233,8 @@ export default function PackingStation() {
             <div className="mt-1.5 flex items-center justify-between text-[9px] text-slate-500" aria-live="polite">
               <span className="text-emerald-700 font-semibold">Scanner: Ready</span>
               <span>
-                {pendingScanJobs > 0
-                  ? (navigator.onLine ? `${pendingScanJobs} server pending` : `${pendingScanJobs} scans saved locally`)
+                {pendingSaveJobs > 0
+                  ? (navigator.onLine ? `${pendingSaveJobs} boxes pending` : `${pendingSaveJobs} boxes saved locally`)
                   : 'Local pending: 0'}
                 {failedSyncJobs > 0 ? ` · Failed: ${failedSyncJobs}` : ''}
               </span>
@@ -2593,7 +2484,7 @@ export default function PackingStation() {
         consignmentId={S.cid}
         boxNo={removalModal.boxNo}
         displayConsignmentId={S.intShip || S.cid}
-        mediaStream={removalModal.stream || streamRef.current}
+        mediaStream={removalModal.stream}
         toast={toast}
         onClose={() => setRemovalModal({ open: false, boxNo: null, stream: null })}
         onCompleted={async () => {
