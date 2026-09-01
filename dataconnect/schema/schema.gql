@@ -204,6 +204,8 @@ type ScanEvent @table(name: "scan_events", key: ["id"]) {
   stationId: String
   userId: String
   clientCreatedAt: Timestamp
+  sequenceNo: Int64
+  scannerReceivedAt: Timestamp
   payload: Any! @default(value: "{}")
   createdAt: Timestamp! @default(expr: "request.time")
 }

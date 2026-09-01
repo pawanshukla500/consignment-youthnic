@@ -1121,20 +1121,26 @@ export default function PackingStation() {
   };
 
   const autoSaveCurrentBox = async () => {
-    if (!S.cid || !S.box || !S.boxes[S.box]?.length) {
+    const current = stateRef.current;
+    if (!current.cid || !current.box || !current.boxes[current.box]?.length) {
       // Still finalize any open recorder so chunks are not left in a half-open session
       if (mediaRecorderRef.current?.state === 'recording' || recordingSessionIdRef.current) {
         await ensureBoxVideoSafe({ requireUploaded: false, silent: true });
       }
       return;
     }
-    const savedBox = S.box;
+    const savedBox = current.box;
     try {
       await runScanQueue();
-      await packingAPI.saveBox({ consignment_id: S.cid, box_no: savedBox });
+      await packingAPI.saveBox({ consignment_id: current.cid, box_no: savedBox });
       toast('Box ' + savedBox + ' auto-saved', 'success', 3000);
     } catch (e) {
-      await queueSaveBoxLocally(S.cid, savedBox, S.boxes[savedBox], `Box ${savedBox} pending sync. It is not confirmed on the server yet.`);
+      await queueSaveBoxLocally(
+        current.cid,
+        savedBox,
+        current.boxes[savedBox],
+        `Box ${savedBox} pending sync. It is not confirmed on the server yet.`
+      );
     }
     await ensureBoxVideoSafe({ requireUploaded: false, silent: true });
   };
@@ -2100,7 +2106,7 @@ export default function PackingStation() {
     const current = stateRef.current;
     if (current.box) {
       await handleBoxCompletion(() => {
-        commitPackingState((prev) => ({ ...prev, box: null }));
+        commitPackingState((prev) => ({ ...prev, box: null }), { flush: true });
         openFinishModal();
       });
       return;
@@ -2111,7 +2117,9 @@ export default function PackingStation() {
   const finishPacking = async () => {
     setShowMo(false);
     setLoading(true);
-    const finishedLabel = S.intShip || S.cid;
+    const finishing = stateRef.current;
+    const finishCid = finishing.cid;
+    const finishedLabel = finishing.intShip || finishCid;
     try {
       // Save leftover box + durable-finalize video locally (fast)
       await autoSaveCurrentBox();
@@ -2132,12 +2140,12 @@ export default function PackingStation() {
         console.warn('[Packing] Sync drain before finish:', err.message);
       }
 
-      const res = await packingAPI.finish({ consignment_id: S.cid });
+      const res = await packingAPI.finish({ consignment_id: finishCid });
       const summary = res.data.summary;
 
       if (isPosthogConfigured) {
         posthog.capture('consignment_finished', {
-          consignmentId: S.cid,
+          consignmentId: finishCid,
           fullyPacked: summary.fully_packed,
           totalRequired: summary.totalRequiredQty,
           totalPacked: summary.totalPackedQty,

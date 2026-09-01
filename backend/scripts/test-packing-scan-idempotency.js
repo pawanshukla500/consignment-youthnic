@@ -349,6 +349,13 @@ async function main() {
   assert.ok(migration.includes('sequence_no BIGINT'));
   assert.ok(migration.includes('scanner_received_at TIMESTAMPTZ'));
 
+  const dataConnectSchema = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'dataconnect', 'schema', 'schema.gql'),
+    'utf8'
+  );
+  assert.ok(dataConnectSchema.includes('sequenceNo: Int64'));
+  assert.ok(dataConnectSchema.includes('scannerReceivedAt: Timestamp'));
+
   console.log('Packing scan idempotency/concurrency tests passed.');
 }
 
