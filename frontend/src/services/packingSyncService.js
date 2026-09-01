@@ -9,8 +9,7 @@ import {
   resetFailedSyncJobs,
 } from '../utils/packingSyncQueue'
 import { processVideoUploadQueue } from './videoUploadService'
-import { packingAPI } from './api'
-import { processSaveBoxJob, isMissingPackingSession, ensurePackingSession } from '../utils/saveBoxSyncHelper'
+import { processSaveBoxJob } from '../utils/saveBoxSyncHelper'
 
 let intervalId = null
 let running = false
@@ -109,6 +108,6 @@ export function stopPackingSyncService() {
 }
 
 export async function getOutboundPendingCount() {
-  const [scans, jobs] = await Promise.all([getPendingScanCount(), getPendingSyncJobCount()])
-  return scans + jobs
+  const jobs = await getPendingSyncJobCount()
+  return jobs
 }
