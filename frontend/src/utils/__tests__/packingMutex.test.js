@@ -111,27 +111,6 @@ describe('Packing Station post-durability coordinator', () => {
     expect(durableFailure).toBe(1)
   })
 
-  it('gives 15 unique durable scans exactly 10 accepts and 5 explicit rejections', async () => {
-    const coordinator = createScanCaptureCoordinator()
-    const context = { consignmentId: 'C1', boxNo: '1' }
-    let accepted = 0
-    let rejected = 0
-    coordinator.openBox(context)
-    for (let index = 0; index < 15; index += 1) {
-      coordinator.registerScan({
-        context,
-        capture: () => Promise.resolve(Object.freeze({ id: `scan-${index}`, sequenceNo: index + 1 })),
-        afterDurable: () => {
-          if (accepted < 10) accepted += 1
-          else rejected += 1
-        },
-      })
-    }
-    await coordinator.flushAcceptedScansForBox(context)
-    expect(accepted).toBe(10)
-    expect(rejected).toBe(5)
-  })
-
   it('does not mutate the live box row during optimistic validation', () => {
     const liveItems = [{ skuId: 'sku-1', qty: 1 }]
     const validationItems = clonePackingBoxItems(liveItems)

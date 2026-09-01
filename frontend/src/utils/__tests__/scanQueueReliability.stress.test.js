@@ -14,6 +14,12 @@ import {
   recoverUnadmittedScans,
   resetScanDiagnosticsForTests,
 } from '../scanQueue'
+import { processPackingSyncQueues } from '../../services/packingSyncService'
+import { processVideoUploadQueue } from '../../services/videoUploadService'
+
+vi.mock('../../services/videoUploadService', () => ({
+  processVideoUploadQueue: vi.fn(async () => ({ done: true })),
+}))
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -248,15 +254,59 @@ describe('durable scan outbox stress and recovery', () => {
     expect(committedIds.size).toBe(1)
   })
 
-  it('does not wait for a video worker before becoming durable', async () => {
-    let finishVideo
-    const videoUpload = new Promise((resolve) => { finishVideo = resolve })
-    const captures = Promise.all(
-      Array.from({ length: 100 }, (_, index) => captureScan(envelope(index + 1)))
+  it('records 10 confirmations and 5 explicit over-limit rejections for 15 durable scans', async () => {
+    await Promise.all(
+      Array.from({ length: 15 }, (_, index) => captureReady(envelope(index + 1, 'CAPPED-SKU')))
     )
-    await captures
+
+    let accepted = 0
+    const outcomes = []
+    await drainScanQueue(
+      async () => {
+        if (accepted >= 10) {
+          return {
+            accepted: false,
+            over_limit: true,
+            error: 'Required quantity already packed',
+            packed: accepted,
+            required: 10,
+          }
+        }
+        accepted += 1
+        return { accepted: true, packed: accepted, required: 10 }
+      },
+      (scan, result) => outcomes.push({
+        id: scan.id,
+        status: scan.status,
+        reason: scan.rejection?.reason || null,
+        overLimit: Boolean(result?.over_limit),
+      })
+    )
+
+    const history = await getScanHistory()
+    expect(history).toHaveLength(15)
+    expect(new Set(history.map((scan) => scan.id)).size).toBe(15)
+    expect(history.filter((scan) => scan.status === SCAN_STATUS.SERVER_CONFIRMED)).toHaveLength(10)
+    expect(history.filter((scan) => scan.status === SCAN_STATUS.SERVER_REJECTED)).toHaveLength(5)
+    expect(outcomes.filter((outcome) => outcome.overLimit && outcome.reason === 'over_limit')).toHaveLength(5)
+    expect(await getPendingScanCount()).toBe(0)
+  })
+
+  it('does not wait for a video worker before becoming durable', async () => {
+    let finishVideoWorker
+    const blockedVideoWorker = new Promise((resolve) => { finishVideoWorker = resolve })
+    processVideoUploadQueue.mockReturnValueOnce(blockedVideoWorker)
+
+    const syncRun = processPackingSyncQueues()
+    await vi.waitFor(() => expect(processVideoUploadQueue).toHaveBeenCalledTimes(1))
+
+    await Promise.all(Array.from(
+      { length: 100 },
+      (_, index) => captureScan(envelope(index + 1))
+    ))
     expect(await getScanHistory()).toHaveLength(100)
-    finishVideo()
-    await videoUpload
+
+    finishVideoWorker({ done: true })
+    await syncRun
   })
 })
