@@ -9,6 +9,7 @@ import {
   getPendingScanCount,
   getScanDiagnostics,
   getScanHistory,
+  getScannerReceivedAtIso,
   markScanReadyForSync,
   recoverUnadmittedScans,
   resetScanDiagnosticsForTests,
@@ -100,6 +101,13 @@ describe('durable scan outbox stress and recovery', () => {
       boxNo: '3',
       sequenceNo: 1,
     })
+  })
+
+  it('formats legacy outbox rows without scannerReceivedAt so they remain drainable', () => {
+    expect(getScannerReceivedAtIso({ createdAt: 1_700_000_000_000 }))
+      .toBe('2023-11-14T22:13:20.000Z')
+    expect(getScannerReceivedAtIso({ capturedAt: '2024-01-02T03:04:05.000Z' }))
+      .toBe('2024-01-02T03:04:05.000Z')
   })
 
   it('preserves exact alternating A/B counts', async () => {

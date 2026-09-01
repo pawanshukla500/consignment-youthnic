@@ -32,6 +32,7 @@ import {
   drainScanQueue,
   getPendingScanCount,
   getFailedScanCount,
+  getScannerReceivedAtIso,
   markScanReadyForSync,
   markScanRejectedLocally,
   notePhysicalScan,
@@ -1458,7 +1459,7 @@ export default function PackingStation() {
         station_id: scan.stationSessionId,
         sequence_no: scan.sequenceNo,
         client_created_at: scan.capturedAt,
-        scanner_received_at: new Date(scan.scannerReceivedAt).toISOString(),
+        scanner_received_at: getScannerReceivedAtIso(scan),
       });
       if (response.data?.retry) {
         const retryErr = new Error(response.data.error || 'Scan persist failed');

@@ -120,6 +120,22 @@ export function getScanDiagnostics() {
   return diagnosticSnapshot()
 }
 
+/** Format current and legacy outbox timestamps without making old rows undrainable. */
+export function getScannerReceivedAtIso(scan) {
+  const candidates = [
+    scan?.scannerReceivedAt,
+    scan?.createdAt,
+    scan?.capturedAt,
+    scan?.scanEnvelopeCreatedAt,
+  ]
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === null || candidate === '') continue
+    const parsed = new Date(candidate)
+    if (Number.isFinite(parsed.getTime())) return parsed.toISOString()
+  }
+  return new Date().toISOString()
+}
+
 export function notePhysicalScan() {
   diagnosticState.physicalScanCount += 1
   notifyDiagnostics()

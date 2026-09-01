@@ -6,6 +6,7 @@ import {
   drainScanQueue,
   getPendingScanCount,
   getFailedScanCount,
+  getScannerReceivedAtIso,
   resetFailedScans,
   recoverUnadmittedScans,
   pruneTerminalScans,
@@ -67,7 +68,7 @@ async function sendQueuedScan(scan) {
       station_id: scan.stationSessionId,
       sequence_no: scan.sequenceNo,
       client_created_at: scan.capturedAt,
-      scanner_received_at: new Date(scan.scannerReceivedAt).toISOString(),
+      scanner_received_at: getScannerReceivedAtIso(scan),
     })
     return response.data
   } catch (error) {
@@ -82,7 +83,7 @@ async function sendQueuedScan(scan) {
       station_id: scan.stationSessionId,
       sequence_no: scan.sequenceNo,
       client_created_at: scan.capturedAt,
-      scanner_received_at: new Date(scan.scannerReceivedAt).toISOString(),
+      scanner_received_at: getScannerReceivedAtIso(scan),
     })
     return retry.data
   }
