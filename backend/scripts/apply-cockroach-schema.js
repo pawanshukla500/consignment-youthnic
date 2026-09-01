@@ -289,6 +289,8 @@ async function main() {
       station_id TEXT,
       user_id TEXT,
       client_created_at TIMESTAMPTZ,
+      sequence_no BIGINT,
+      scanner_received_at TIMESTAMPTZ,
       payload JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
@@ -311,6 +313,11 @@ async function main() {
   `);
 
   console.log('\n--- Additive columns ---');
+
+  await run(pool, 'scan_events.capture_metadata', `
+    ALTER TABLE scan_events ADD COLUMN IF NOT EXISTS sequence_no BIGINT;
+    ALTER TABLE scan_events ADD COLUMN IF NOT EXISTS scanner_received_at TIMESTAMPTZ
+  `);
 
   await run(pool, 'whatsapp_notification_outbox', `
     CREATE TABLE IF NOT EXISTS whatsapp_notification_outbox (

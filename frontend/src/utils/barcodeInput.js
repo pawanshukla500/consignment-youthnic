@@ -55,23 +55,30 @@ export function barcodeValidationMessage(value) {
   return ''
 }
 
-/** Detect hardware scanner bursts (very fast key entry ending with Enter). */
+/**
+ * Exactly-once submission gate for one populated input generation.
+ *
+ * This deliberately does not use timing or barcode-value debouncing. A new
+ * input event always permits another submission, including the same barcode.
+ * Duplicate Enter/CR/LF/TAB and keydown+form-submit paths share one generation.
+ */
 export function createScannerInputGuard() {
-  let lastKeyAt = 0
-  let burstCount = 0
+  let inputGeneration = 0
+  let submittedGeneration = -1
 
   return {
-    noteKeyDown() {
-      const now = Date.now()
-      burstCount = now - lastKeyAt < 40 ? burstCount + 1 : 0
-      lastKeyAt = now
+    noteInput() {
+      inputGeneration += 1
     },
-    isLikelyScanner() {
-      return burstCount >= 3
+    consumeSubmission(value) {
+      if (!normalizeBarcodeInput(value)) return false
+      if (submittedGeneration === inputGeneration) return false
+      submittedGeneration = inputGeneration
+      return true
     },
     reset() {
-      lastKeyAt = 0
-      burstCount = 0
+      inputGeneration += 1
+      submittedGeneration = -1
     },
   }
 }

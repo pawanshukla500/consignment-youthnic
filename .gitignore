@@ -66,6 +66,13 @@ backend/backups/
 *.dump
 *.dump.enc
 
+# Local SSH/VPS diagnostic helpers must never be committed
+backend/ssh_cmd.js
+backend/ssh_test.py
+
+# Supabase CLI local cache
+supabase/.temp/
+
 
 # Cursor IDE
 .cursor/

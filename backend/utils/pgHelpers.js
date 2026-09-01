@@ -26,8 +26,9 @@ function prepareDocumentPayload(collection, id, data) {
 }
 
 const pgHelpers = {
-  async getCollection(collection) {
-    const { rows } = await getPool().query(
+  async getCollection(collection, options = {}) {
+    const runner = options.client || getPool();
+    const { rows } = await runner.query(
       'SELECT data FROM documents WHERE collection = $1', [collection]
     );
     const docs = rows.map((row) => row.data).filter(isValidDocument);
@@ -72,16 +73,17 @@ const pgHelpers = {
     return true;
   },
 
-  async queryCollection(collection, fieldPath, opStr, value) {
+  async queryCollection(collection, fieldPath, opStr, value, options = {}) {
+    const runner = options.client || getPool();
     let docs;
     if (opStr === '==') {
-      const { rows } = await getPool().query(
+      const { rows } = await runner.query(
         `SELECT data FROM documents WHERE collection = $1 AND data->>$2 = $3`,
         [collection, fieldPath, String(value)]
       );
       docs = rows.map((row) => row.data).filter(isValidDocument);
     } else if (opStr === 'array-contains') {
-      const { rows } = await getPool().query(
+      const { rows } = await runner.query(
         `SELECT data FROM documents WHERE collection = $1 AND (data->$2) @> $3::jsonb`,
         [collection, fieldPath, JSON.stringify(value)]
       );
@@ -184,9 +186,10 @@ const pgHelpers = {
     }
   },
 
-  async batchGetDocuments(collection, ids) {
+  async batchGetDocuments(collection, ids, options = {}) {
     if (!ids?.length) return [];
-    const { rows } = await getPool().query(
+    const runner = options.client || getPool();
+    const { rows } = await runner.query(
       'SELECT data FROM documents WHERE collection = $1 AND id = ANY($2::text[])',
       [collection, ids]
     );

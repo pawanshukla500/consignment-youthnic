@@ -7,9 +7,13 @@ const { rebuildSessionSkuTotalsFromBoxes } = require('./packingQuantities');
 
 const draftTimers = new Map();
 
-async function loadDraft(consignmentId) {
+async function loadDraft(consignmentId, options = {}) {
   if (!consignmentId) return null;
-  return firestoreHelpers.getDocument('packing_drafts', consignmentId);
+  return firestoreHelpers.getDocument(
+    'packing_drafts',
+    consignmentId,
+    options.client ? { client: options.client } : undefined
+  );
 }
 
 async function saveDraft(consignmentId, session, userId, options = {}) {
@@ -26,6 +30,8 @@ async function saveDraft(consignmentId, session, userId, options = {}) {
       status: s.status,
     })),
     processedScanIds: session.processedScanIds || [],
+    status: session.status || 'active',
+    currentBox: session.currentBox || null,
     updatedAt: now(),
     userId: userId || '',
   }, options.client ? { client: options.client } : undefined);
@@ -93,6 +99,8 @@ function applyDraftToSession(session, draft) {
   }
   rebuildSessionSkuTotalsFromBoxes(session);
   session.processedScanIds = draft.processedScanIds || [];
+  session.status = draft.status || session.status || 'active';
+  session.currentBox = draft.currentBox ?? session.currentBox ?? null;
   session.scanResults = session.scanResults || {};
   return session;
 }

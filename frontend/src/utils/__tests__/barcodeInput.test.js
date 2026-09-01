@@ -50,20 +50,27 @@ describe('barcodeInput', () => {
   });
 
   describe('createScannerInputGuard', () => {
-    it('detects hardware scanner bursts', () => {
+    it('accepts keydown/form submission only once for one input generation', () => {
       const guard = createScannerInputGuard();
-      expect(guard.isLikelyScanner()).toBe(false);
+      guard.noteInput();
+      expect(guard.consumeSubmission('ABC-123')).toBe(true); // keydown Enter
+      expect(guard.consumeSubmission('ABC-123')).toBe(false); // duplicate form submit / LF
+      expect(guard.consumeSubmission('ABC-123')).toBe(false); // duplicate CRLF terminator
+    });
 
-      // Simulate fast keystrokes
-      guard.noteKeyDown();
-      guard.noteKeyDown();
-      guard.noteKeyDown();
-      guard.noteKeyDown();
-      
-      expect(guard.isLikelyScanner()).toBe(true);
-      
-      guard.reset();
-      expect(guard.isLikelyScanner()).toBe(false);
+    it('never debounces a legitimate repeated barcode value', () => {
+      const guard = createScannerInputGuard();
+      for (let i = 0; i < 100; i += 1) {
+        guard.noteInput();
+        expect(guard.consumeSubmission('SAME-123')).toBe(true);
+      }
+    });
+
+    it('allows one TAB-terminated submission and blocks its duplicate submit', () => {
+      const guard = createScannerInputGuard();
+      guard.noteInput();
+      expect(guard.consumeSubmission('TAB-123')).toBe(true);
+      expect(guard.consumeSubmission('TAB-123')).toBe(false);
     });
   });
 });
