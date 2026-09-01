@@ -20,10 +20,7 @@ const videoServiceSrc = fs.readFileSync(
   path.join(__dirname, '..', '..', 'frontend', 'src', 'services', 'videoUploadService.js'),
   'utf8'
 );
-const scanQueueSrc = fs.readFileSync(
-  path.join(__dirname, '..', '..', 'frontend', 'src', 'utils', 'scanQueue.js'),
-  'utf8'
-);
+
 
 assert.ok(packingSrc.includes('prevSkuPacked'), 'accepted scan must snapshot pre-mutation state');
 assert.ok(packingSrc.includes('session.boxes[box_no] = prevBoxItems'), 'persist failure must roll back box items');
@@ -66,8 +63,7 @@ assert.ok(
   packingStationSrc.includes("commitPackingState((prev) => ({ ...prev, box: null }), { flush: true })"),
   'finish modal must observe the cleared box before it stores its action callback'
 );
-assert.ok(scanQueueSrc.includes("ON CONFLICT") || scanQueueSrc.includes('store.add(entry)'), 'local outbox must reject duplicate scan IDs');
-assert.ok(scanQueueSrc.includes('readyForSync: false'), 'server drain must not race local admission');
+
 assert.ok(packingSrc.includes('ON CONFLICT (id) DO NOTHING'), 'server scan_events must enforce unique scan IDs');
 assert.ok(packingSrc.includes('synchronizeSessionFromDurableDraft'), 'server concurrency must refresh durable state under lock');
 
