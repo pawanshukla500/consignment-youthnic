@@ -1519,14 +1519,11 @@ router.post('/save-box', authenticateToken, async (req, res) => {
     const session = await getOrLoadSession(consignment_id);
     if (!session.skus || !session.skus.length || !box_no) return res.status(400).json({ error: 'Invalid session' });
 
-    let boxItems = normalizeBoxItems(session.boxes[box_no] || []);
-    if (!boxItems.length && Array.isArray(items) && items.length) {
-      boxItems = normalizeBoxItems(items);
-      session.boxes[box_no] = boxItems;
-      scheduleDraftSave(consignment_id, session, req.user.id);
-    }
-    if (!boxItems.length) return res.status(400).json({ error: 'Box is empty' });
+    let boxItems = Array.isArray(items) && items.length ? normalizeBoxItems(items) : normalizeBoxItems(session.boxes[box_no] || []);
     session.boxes[box_no] = boxItems;
+    scheduleDraftSave(consignment_id, session, req.user.id);
+    
+    if (!boxItems.length) return res.status(400).json({ error: 'Box is empty' });
     validateSessionQuantities(session);
 
     const boxId = `${consignment_id}_box_${box_no}`;

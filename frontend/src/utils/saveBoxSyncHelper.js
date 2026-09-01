@@ -5,7 +5,7 @@
 import { packingAPI } from '../services/api'
 import { uploadFileToStorage } from '../hooks/useStorageUpload'
 import { enqueueSaveBoxJob } from './packingSyncQueue'
-import { getPendingScanCountForConsignment } from './scanQueue'
+
 
 export function isMissingPackingSession(error) {
   const message = error?.response?.data?.error || error?.message || ''
@@ -23,12 +23,7 @@ export async function ensurePackingSession(consignmentId) {
 export async function processSaveBoxJob(job) {
   if (job.type !== 'save_box') return null
 
-  const pendingScans = await getPendingScanCountForConsignment(job.consignmentId)
-  if (pendingScans > 0) {
-    const defer = new Error('PENDING_SCANS')
-    defer.code = 'PENDING_SCANS'
-    throw defer
-  }
+
 
   let uploadedImageId = job.weightImageId || null
 
