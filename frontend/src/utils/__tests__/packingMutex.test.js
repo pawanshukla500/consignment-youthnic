@@ -1,112 +1,133 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vitest'
+import { createScanCaptureCoordinator } from '../scanCaptureCoordinator'
 
-describe('Packing Station Scan Mutex', () => {
-  it('should process 100 rapid consecutive scans strictly sequentially without lost wakeups', async () => {
-    // 1. Simulate the RAM State and Mutex
-    let scanMutex = Promise.resolve();
-    let state = { packed: 0 };
-    const scanLog = [];
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-    // Simulate an async enqueue to IndexedDB
-    const enqueueScan = async (barcode) => {
-      // Simulate network/disk delay
-      await new Promise(resolve => setTimeout(resolve, Math.random() * 5));
-      scanLog.push(barcode);
-    };
+describe('Packing Station post-durability coordinator', () => {
+  it('starts 100 durable captures synchronously without a pre-durability Promise queue', async () => {
+    const coordinator = createScanCaptureCoordinator()
+    const context = { consignmentId: 'C1', boxNo: '3' }
+    coordinator.openBox(context)
+    let captureStarted = 0
+    let durable = 0
+    let uiApplied = 0
 
-    // The handler exactly as structured in PackingStation.jsx
-    const queueScanOperation = (operationFn) => {
-      scanMutex = scanMutex.then(async () => {
-        try {
-          await operationFn();
-        } catch (err) {
-          // ignore
-        }
-      });
-    };
-
-    const handleBarcodeData = (barcode) => {
-      queueScanOperation(async () => {
-        // Evaluate snapshot
-        const snapshot = { ...state };
-        
-        // Optimistic evaluation (qty limit)
-        if (snapshot.packed >= 100) return;
-
-        // Persist durably
-        await enqueueScan(barcode);
-
-        // Commit increment ONLY AFTER persistence
-        state = { packed: state.packed + 1 };
-      });
-    };
-
-    // 2. Fire 100 rapid scans synchronously
-    for (let i = 0; i < 100; i++) {
-      handleBarcodeData(`BARCODE_${i}`);
+    for (let i = 0; i < 100; i += 1) {
+      coordinator.registerScan({
+        context,
+        capture: async () => {
+          captureStarted += 1
+          await wait(25)
+          durable += 1
+          return Object.freeze({ id: `scan-${i}`, boxNo: '3', sequenceNo: i + 1 })
+        },
+        afterDurable: () => { uiApplied += 1 },
+      })
     }
 
-    // Immediately after firing, state is still 0 because the Mutex chains them asynchronously
-    expect(state.packed).toBe(0);
+    expect(captureStarted).toBe(100)
+    expect(uiApplied).toBe(0)
+    expect(coordinator.getBoxState(context).maximumInFlight).toBe(100)
 
-    // 3. Wait for the Mutex to fully drain
-    await scanMutex;
+    await coordinator.flushAcceptedScansForBox(context)
+    expect(durable).toBe(100)
+    expect(uiApplied).toBe(100)
+    expect(coordinator.getBoxState(context).inFlight).toBe(0)
+  })
 
-    // 4. Verify no lost wakeups and perfect sequential processing
-    expect(state.packed).toBe(100);
-    expect(scanLog.length).toBe(100);
-    expect(scanLog[0]).toBe('BARCODE_0');
-    expect(scanLog[99]).toBe('BARCODE_99');
-  });
+  it('makes immediate SAVE BOX include the final locally accepted scan', async () => {
+    const coordinator = createScanCaptureCoordinator()
+    const context = { consignmentId: 'C1', boxNo: '7' }
+    const box = []
+    coordinator.openBox(context)
+    coordinator.registerScan({
+      context,
+      capture: async () => {
+        await wait(30)
+        return Object.freeze({ id: 'last-scan', consignmentId: 'C1', boxNo: '7' })
+      },
+      afterDurable: (scan) => box.push({ id: scan.id, qty: 1 }),
+    })
 
-  it('proves that a naive async queue loses wakeups (the old architecture)', async () => {
-    let state = { packed: 0 };
-    const scanQueueBuffer = [];
-    let isProcessing = false;
+    await coordinator.flushAcceptedScansForBox(context)
+    const savedSnapshot = box.map((item) => ({ ...item }))
+    expect(savedSnapshot).toEqual([{ id: 'last-scan', qty: 1 }])
+  })
 
-    const enqueueScan = async () => {
-      await new Promise(resolve => setTimeout(resolve, 1));
-    };
+  it('keeps an immediate NEXT BOX scan in the old immutable box context', async () => {
+    const coordinator = createScanCaptureCoordinator()
+    const oldContext = { consignmentId: 'C1', boxNo: '1' }
+    const newContext = { consignmentId: 'C1', boxNo: '2' }
+    const boxes = { '1': [], '2': [] }
+    const envelope = Object.freeze({ id: 'scan-old', consignmentId: 'C1', boxNo: '1' })
+    coordinator.openBox(oldContext)
+    coordinator.registerScan({
+      context: oldContext,
+      capture: async () => {
+        await wait(20)
+        return envelope
+      },
+      afterDurable: (scan) => boxes[scan.boxNo].push(scan.id),
+    })
 
-    const processScanQueue = async () => {
-      if (isProcessing) return;
-      isProcessing = true;
-      try {
-        while (scanQueueBuffer.length > 0) {
-          scanQueueBuffer.shift();
-          await enqueueScan();
-          state = { packed: state.packed + 1 };
-        }
-      } finally {
-        isProcessing = false;
-      }
-    };
+    await coordinator.flushAcceptedScansForBox(oldContext)
+    coordinator.openBox(newContext)
+    expect(boxes).toEqual({ '1': ['scan-old'], '2': [] })
+    expect(envelope.boxNo).toBe('1')
+  })
 
-    const handleBarcodeDataOld = (barcode) => {
-      scanQueueBuffer.push(barcode);
-      processScanQueue();
-    };
+  it('explicitly rejects scanner callbacks arriving after the box gate closes', async () => {
+    const coordinator = createScanCaptureCoordinator()
+    const context = { consignmentId: 'C1', boxNo: '1' }
+    coordinator.openBox(context)
+    coordinator.closeBox(context)
+    const registration = coordinator.registerScan({
+      context,
+      capture: () => Promise.resolve({ id: 'late' }),
+      afterDurable: () => {},
+    })
+    expect(registration).toEqual({ accepted: false, reason: 'box_closing' })
+  })
 
-    // Fire 2 rapid scans, but stagger them perfectly to hit the race condition
-    handleBarcodeDataOld('BC_1');
-    
-    // Wait JUST enough for the while loop to empty the buffer, but BEFORE finally block runs
-    await new Promise(resolve => setTimeout(resolve, 2));
+  it('never reports a post-durability UI failure as an uncaptured scan', async () => {
+    const coordinator = createScanCaptureCoordinator()
+    const context = { consignmentId: 'C1', boxNo: '1' }
+    let captureFailure = 0
+    let durableFailure = 0
+    coordinator.openBox(context)
+    coordinator.registerScan({
+      context,
+      capture: () => Promise.resolve(Object.freeze({ id: 'durable-1', boxNo: '1' })),
+      afterDurable: () => { throw new Error('UI commit failed') },
+      onCaptureFailure: () => { captureFailure += 1 },
+      onPostDurabilityFailure: (_error, scan) => {
+        expect(scan.id).toBe('durable-1')
+        durableFailure += 1
+      },
+    })
+    await coordinator.flushAcceptedScansForBox(context)
+    expect(captureFailure).toBe(0)
+    expect(durableFailure).toBe(1)
+  })
 
-    // Fire the second scan exactly while isProcessing is still true, but buffer was just emptied
-    // In a real app this is a microtask/event loop race. We simulate by manually setting isProcessing
-    isProcessing = true; 
-    handleBarcodeDataOld('BC_2');
-    
-    // BC_2 is added to buffer, but processScanQueue returns immediately because isProcessing = true.
-    // Then the original process completes and sets isProcessing = false.
-    isProcessing = false;
-
-    // Await all tasks
-    await new Promise(resolve => setTimeout(resolve, 10));
-
-    // BC_2 is stranded in the buffer!
-    expect(scanQueueBuffer.length).toBe(1);
-    expect(state.packed).toBe(1); // One scan was lost
-  });
-});
+  it('gives 15 unique durable scans exactly 10 accepts and 5 explicit rejections', async () => {
+    const coordinator = createScanCaptureCoordinator()
+    const context = { consignmentId: 'C1', boxNo: '1' }
+    let accepted = 0
+    let rejected = 0
+    coordinator.openBox(context)
+    for (let index = 0; index < 15; index += 1) {
+      coordinator.registerScan({
+        context,
+        capture: () => Promise.resolve(Object.freeze({ id: `scan-${index}`, sequenceNo: index + 1 })),
+        afterDurable: () => {
+          if (accepted < 10) accepted += 1
+          else rejected += 1
+        },
+      })
+    }
+    await coordinator.flushAcceptedScansForBox(context)
+    expect(accepted).toBe(10)
+    expect(rejected).toBe(5)
+  })
+})

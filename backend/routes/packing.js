@@ -190,9 +190,18 @@ async function queueScanPersistence({
   scanId,
   event,
   sku,
+  client: transactionClient = null,
 }) {
+  const durableConsignmentId = session?.cid || consignmentId;
   try {
-    if (pgEnabled()) {
+    if (transactionClient) {
+      await writeScanEvent({
+        ...event,
+        consignmentId: durableConsignmentId,
+        client: transactionClient,
+      });
+      await flushDraftSave(durableConsignmentId, session, userId, { client: transactionClient });
+    } else if (pgEnabled()) {
       const { getPool } = require('../config/database');
       const client = await getPool().connect();
       try {
@@ -200,9 +209,9 @@ async function queueScanPersistence({
         // Serialize durable scan/draft writes for this consignment across instances.
         // Postgres: advisory xact lock. Cockroach: row FOR UPDATE (no pg_advisory_xact_lock).
         const { acquireTxSerializationLock } = require('../utils/dbDialect');
-        await acquireTxSerializationLock(client, `packing:${consignmentId}`);
-        await writeScanEvent({ ...event, client });
-        await flushDraftSave(consignmentId, session, userId, { client });
+        await acquireTxSerializationLock(client, `packing:${durableConsignmentId}`);
+        await writeScanEvent({ ...event, consignmentId: durableConsignmentId, client });
+        await flushDraftSave(durableConsignmentId, session, userId, { client });
         await client.query('COMMIT');
       } catch (err) {
         await client.query('ROLLBACK');
@@ -211,8 +220,8 @@ async function queueScanPersistence({
         client.release();
       }
     } else {
-      await writeScanEvent(event);
-      await flushDraftSave(consignmentId, session, userId);
+      await writeScanEvent({ ...event, consignmentId: durableConsignmentId });
+      await flushDraftSave(durableConsignmentId, session, userId);
     }
     // Do not persist authoritative SKU/consignment packed totals on live scans (H3).
     void sku;
@@ -241,16 +250,28 @@ async function retryWithBackoff(fn, maxAttempts = 3, baseDelayMs = 500) {
 
 
 
-async function getStoredScanPayload(scanId) {
+async function getStoredScanPayload(scanId, options = {}) {
   if (!scanId) return null;
-  const event = await firestoreHelpers.getDocument('scan_events', scanId);
-  return event?.payload && typeof event.payload === 'object' ? event.payload : null;
+  const event = await firestoreHelpers.getDocument(
+    'scan_events',
+    scanId,
+    options.client ? { client: options.client } : undefined
+  );
+  if (event?.payload && typeof event.payload === 'object') return event.payload;
+  if (options.client && pgEnabled()) {
+    const { rows } = await options.client.query(
+      'SELECT payload FROM scan_events WHERE id = $1',
+      [scanId]
+    );
+    return rows[0]?.payload && typeof rows[0].payload === 'object' ? rows[0].payload : null;
+  }
+  return null;
 }
 
 async function writeScanEvent({ consignmentId, boxNo, sku, barcode, qty, result, req, scanId, payload = {}, client = null }) {
   const id = scanId || generateId();
   const marketplaceBarcode = getMarketplaceBarcode(sku) || barcode || null;
-  await firestoreHelpers.setDocument('scan_events', id, {
+  const eventData = {
     id,
     consignmentId,
     boxNo: boxNo ? String(boxNo) : null,
@@ -264,9 +285,51 @@ async function writeScanEvent({ consignmentId, boxNo, sku, barcode, qty, result,
     stationId: req.body?.station_id || req.headers['x-station-id'] || null,
     userId: req.user?.id || null,
     clientCreatedAt: req.body?.client_created_at || null,
+    sequenceNo: Number(req.body?.sequence_no) || null,
+    scannerReceivedAt: req.body?.scanner_received_at || null,
     createdAt: now(),
     updatedAt: now(),
     payload,
+  };
+
+  if (client && pgEnabled()) {
+    const inserted = await client.query(
+      `INSERT INTO scan_events (
+         id, consignment_id, box_no, sku_id, barcode, marketplace_sku,
+         internal_sku, qty_delta, result, station_id, user_id,
+         client_created_at, payload, created_at
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6,
+         $7, $8, $9, $10, $11,
+         $12, $13::jsonb, now()
+       )
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id`,
+      [
+        id,
+        consignmentId,
+        eventData.boxNo,
+        eventData.skuId,
+        eventData.barcode,
+        eventData.marketplaceSku,
+        eventData.internalSku,
+        eventData.qtyDelta,
+        result,
+        eventData.stationId,
+        eventData.userId,
+        eventData.clientCreatedAt,
+        JSON.stringify(payload),
+      ]
+    );
+    if (!inserted.rowCount) {
+      const duplicate = new Error('Scan ID was already durably processed');
+      duplicate.code = 'SCAN_ALREADY_PROCESSED';
+      duplicate.retryable = true;
+      throw duplicate;
+    }
+  }
+  await firestoreHelpers.setDocument('scan_events', id, {
+    ...eventData,
   }, client ? { client } : undefined);
   return id;
 }
@@ -332,6 +395,112 @@ async function getOrLoadSession(cid) {
 }
 
 function clearSession(cid) { delete MEM[cid]; }
+
+function createDeferredResponse() {
+  return {
+    statusCode: 200,
+    body: undefined,
+    headersSent: false,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body) {
+      this.body = body;
+      this.headersSent = true;
+      return this;
+    },
+  };
+}
+
+function snapshotPackingSession(session) {
+  if (!session) return null;
+  return JSON.parse(JSON.stringify({
+    boxes: session.boxes || {},
+    skus: session.skus || [],
+    processedScanIds: session.processedScanIds || [],
+    scanResults: session.scanResults || {},
+    status: session.status,
+    currentBox: session.currentBox,
+  }));
+}
+
+function restorePackingSession(session, snapshot) {
+  if (!session || !snapshot) return;
+  session.boxes = snapshot.boxes;
+  session.skus = snapshot.skus;
+  session.processedScanIds = snapshot.processedScanIds;
+  session.scanResults = snapshot.scanResults;
+  session.status = snapshot.status;
+  session.currentBox = snapshot.currentBox;
+  session.skuMap = {};
+  session.skus.forEach((sku) => {
+    getScanKeys(sku).forEach((key) => { session.skuMap[key] = sku; });
+  });
+  rebuildSessionSkuTotalsFromBoxes(session);
+}
+
+async function synchronizeSessionFromDurableDraft(consignmentId, client) {
+  if (!consignmentId) return null;
+  const session = await getOrLoadSession(consignmentId);
+  const draft = await loadDraft(consignmentId, { client });
+  if (!draft) return session;
+
+  // The transaction-level packing lock guarantees this is the latest committed
+  // draft across every Cloud Run instance. Replace, do not shallow-merge, so a
+  // durable removal to zero is also visible.
+  session.boxes = JSON.parse(JSON.stringify(draft.boxes || {}));
+  session.processedScanIds = Array.isArray(draft.processedScanIds)
+    ? [...draft.processedScanIds]
+    : [];
+  session.scanResults = session.scanResults || {};
+  rebuildSessionSkuTotalsFromBoxes(session);
+  return session;
+}
+
+async function runSerializedPackingMutation(req, res, handler) {
+  const consignmentId = req.body?.consignment_id;
+  const release = await acquireIncrementLock(consignmentId);
+  if (!pgEnabled()) {
+    try {
+      return await handler(req, res, {});
+    } finally {
+      release();
+    }
+  }
+
+  const { getPool } = require('../config/database');
+  const { acquireTxSerializationLock } = require('../utils/dbDialect');
+  const client = await getPool().connect();
+  const deferred = createDeferredResponse();
+  let session = null;
+  let sessionSnapshot = null;
+  try {
+    await client.query('BEGIN');
+    await acquireTxSerializationLock(client, `packing:${consignmentId}`);
+    session = await synchronizeSessionFromDurableDraft(consignmentId, client);
+    sessionSnapshot = snapshotPackingSession(session);
+    await handler(req, deferred, { client });
+    if (deferred.body === undefined) {
+      throw new Error('Packing mutation completed without a response payload');
+    }
+    if (deferred.statusCode >= 500) {
+      await client.query('ROLLBACK');
+      restorePackingSession(session, sessionSnapshot);
+    } else {
+      await client.query('COMMIT');
+    }
+    return res.status(deferred.statusCode).json(deferred.body);
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    restorePackingSession(session, sessionSnapshot);
+    if (!res.headersSent) return sendError(res, error);
+    return undefined;
+  } finally {
+    client.release();
+    release();
+  }
+}
 
 async function getSavedBoxes(consignment) {
   const byId = new Map();
@@ -547,18 +716,10 @@ router.post('/load', authenticateToken, async (req, res) => {
 });
 
 router.post('/increment', authenticateToken, async (req, res) => {
-  // Serialize concurrent scans per consignment in-process; durable writes use
-  // Durable scan writes serialize inside queueScanPersistence (advisory lock or FOR UPDATE).
-  // Respond only after those writes commit.
-  const release = await acquireIncrementLock(req.body?.consignment_id);
-  try {
-    await handleIncrement(req, res);
-  } finally {
-    release();
-  }
+  await runSerializedPackingMutation(req, res, handleIncrement);
 });
 
-async function handleIncrement(req, res) {
+async function handleIncrement(req, res, options = {}) {
   try {
     const { consignment_id, barcode, box_no, qty: rawQty = 1, scan_id } = req.body;
     
@@ -566,7 +727,7 @@ async function handleIncrement(req, res) {
     const isRemoval = Number(rawQty) < 0;
     if (isRemoval) {
       req.body.qty = Math.abs(Number(rawQty)); // Convert to positive for handleDecrement
-      return await handleDecrement(req, res);
+      return await handleDecrement(req, res, options);
     }
     
     const qty = parsePositiveQty(rawQty);
@@ -587,7 +748,7 @@ async function handleIncrement(req, res) {
       const cached = session.scanResults[scan_id];
       if (cached) return res.json(cached);
       // Drafts no longer store full scanResults — recover idempotent payload from scan_events.
-      const storedPayload = await getStoredScanPayload(scan_id);
+      const storedPayload = await getStoredScanPayload(scan_id, options);
       if (storedPayload) {
         cacheScanResult(session, scan_id, storedPayload);
         return res.json(storedPayload);
@@ -596,7 +757,7 @@ async function handleIncrement(req, res) {
 
     // DB idempotency for retries / after restart when scan_id is not yet in memory.
     if (scan_id && !session.processedScanIds.includes(scan_id)) {
-      const storedPayload = await getStoredScanPayload(scan_id);
+      const storedPayload = await getStoredScanPayload(scan_id, options);
       if (storedPayload) {
         cacheScanResult(session, scan_id, storedPayload);
         return res.json(storedPayload);
@@ -639,6 +800,7 @@ async function handleIncrement(req, res) {
           scanId: scan_id,
           payload,
         },
+        client: options.client,
       });
       res.json(payload);
       return;
@@ -669,6 +831,7 @@ async function handleIncrement(req, res) {
           scanId: scan_id,
           payload,
         },
+        client: options.client,
       });
       res.json(payload);
       return;
@@ -698,6 +861,7 @@ async function handleIncrement(req, res) {
           scanId: scan_id,
           payload,
         },
+        client: options.client,
       });
       res.json(payload);
       return;
@@ -769,6 +933,7 @@ async function handleIncrement(req, res) {
           scanId: scan_id,
           payload,
         },
+        client: options.client,
       });
     } catch (persistError) {
       console.error('[Packing] accepted scan persist failed:', persistError.message, scan_id || '');
@@ -794,38 +959,10 @@ async function handleIncrement(req, res) {
 }
 
 router.post('/decrement', authenticateToken, async (req, res) => {
-  if (!pgEnabled()) {
-    const release = await acquireIncrementLock(req.body?.consignment_id);
-    try {
-      return await handleDecrement(req, res);
-    } finally {
-      release();
-    }
-  }
-
-  const { getPool } = require('../config/database');
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    const { rows } = await client.query(
-      `SELECT 1 FROM documents WHERE collection = 'consignments' AND id = $1 FOR UPDATE`,
-      [req.body?.consignment_id]
-    );
-    if (!rows.length) throw new Error('Consignment not found');
-    
-    clearSession(req.body?.consignment_id);
-    await handleDecrement(req, res);
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('[Packing] decrement transaction error:', err);
-    if (!res.headersSent) sendError(res, err);
-  } finally {
-    client.release();
-  }
+  await runSerializedPackingMutation(req, res, handleDecrement);
 });
 
-async function handleDecrement(req, res) {
+async function handleDecrement(req, res, options = {}) {
   try {
     const { consignment_id, barcode, box_no, qty: rawQty = 1, scan_id } = req.body;
     const qty = parsePositiveQty(rawQty);
@@ -845,7 +982,7 @@ async function handleDecrement(req, res) {
     if (scan_id && session.processedScanIds.includes(scan_id)) {
       const cached = session.scanResults[scan_id];
       if (cached) return res.json(cached);
-      const storedPayload = await getStoredScanPayload(scan_id);
+      const storedPayload = await getStoredScanPayload(scan_id, options);
       if (storedPayload) {
         cacheScanResult(session, scan_id, storedPayload);
         return res.json(storedPayload);
@@ -853,7 +990,7 @@ async function handleDecrement(req, res) {
     }
 
     if (scan_id && !session.processedScanIds.includes(scan_id)) {
-      const storedPayload = await getStoredScanPayload(scan_id);
+      const storedPayload = await getStoredScanPayload(scan_id, options);
       if (storedPayload) {
         cacheScanResult(session, scan_id, storedPayload);
         return res.json(storedPayload);
@@ -866,16 +1003,67 @@ async function handleDecrement(req, res) {
     }
 
     const sku = findSkuByScanBarcode(session.skuMap, barcodeKey);
-    if (!sku) return res.json({ error: 'SKU not found' });
+    if (!sku) {
+      const payload = buildScanRejectionPayload(session, box_no, null, {
+        error: 'SKU not found in this consignment',
+        not_found: true,
+        scan_id: scan_id || null,
+      });
+      cacheScanResult(session, scan_id, payload);
+      await queueScanPersistence({
+        consignmentId: consignment_id,
+        session,
+        userId: req.user?.id,
+        scanId: scan_id,
+        event: {
+          consignmentId: consignment_id,
+          boxNo: box_no,
+          barcode,
+          qty: -qty,
+          result: 'not_found',
+          req,
+          scanId: scan_id,
+          payload,
+        },
+        client: options.client,
+      });
+      return res.json(payload);
+    }
 
-    if (session.boxes[box_no]) {
-      const existing = session.boxes[box_no].find(i => i.skuId === sku.id);
-      if (existing) {
-        existing.qty -= qty;
-        if (existing.qty <= 0) {
-          session.boxes[box_no] = session.boxes[box_no].filter(i => i.skuId !== sku.id);
-        }
-      }
+    const prevBoxItems = cloneBoxItems(session, box_no);
+    const existing = (session.boxes[box_no] || []).find(i => i.skuId === sku.id);
+    if (!existing || Number(existing.qty) < qty) {
+      const payload = buildScanRejectionPayload(session, box_no, sku, {
+        error: 'Nothing remains to remove from this box',
+        no_quantity: true,
+        scan_id: scan_id || null,
+      });
+      cacheScanResult(session, scan_id, payload);
+      await queueScanPersistence({
+        consignmentId: consignment_id,
+        session,
+        userId: req.user?.id,
+        scanId: scan_id,
+        sku,
+        event: {
+          consignmentId: consignment_id,
+          boxNo: box_no,
+          sku,
+          barcode,
+          qty: -qty,
+          result: 'no_quantity',
+          req,
+          scanId: scan_id,
+          payload,
+        },
+        client: options.client,
+      });
+      return res.json(payload);
+    }
+
+    existing.qty -= qty;
+    if (existing.qty <= 0) {
+      session.boxes[box_no] = session.boxes[box_no].filter(i => i.skuId !== sku.id);
     }
 
     rebuildSessionSkuTotalsFromBoxes(session);
@@ -889,41 +1077,58 @@ async function handleDecrement(req, res) {
       required: sku.required,
       remaining: sku.remaining,
       box_items: cloneBoxItems(session, box_no),
+      scan_id: scan_id || null,
     };
 
+    cacheScanResult(session, scan_id, payload);
     try {
-      await writeScanEvent({
+      await queueScanPersistence({
         consignmentId: consignment_id,
-        boxNo: box_no,
-        sku,
-        barcode,
-        qty: -qty,
-        result: 'decrement',
-        req,
+        session,
+        userId: req.user?.id,
         scanId: scan_id,
-        payload,
+        sku,
+        event: {
+          consignmentId: consignment_id,
+          boxNo: box_no,
+          sku,
+          barcode,
+          qty: -qty,
+          result: 'decrement',
+          req,
+          scanId: scan_id,
+          payload,
+        },
+        client: options.client,
       });
-      if (scan_id) {
-        cacheScanResult(session, scan_id, payload);
-      }
-      await flushDraftSave(consignment_id, session, req.user.id);
 
       // Recompute consignment status from session (includes saved boxes + draft).
       // Authoritative SKU packedQty is still owned by save-box; here we only correct status flags.
-      const consignment = await firestoreHelpers.getDocument('consignments', session.cid || consignment_id);
+      const consignment = await firestoreHelpers.getDocument(
+        'consignments',
+        session.cid || consignment_id,
+        options.client ? { client: options.client } : undefined
+      );
       if (consignment) {
         const allCompleted = (session.skus || []).every(
           (s) => (Number(s.remaining) || 0) <= 0 && (Number(s.required) || 0) > 0
         ) && (session.skus || []).length > 0;
         const statusUpdates = getQuantityReductionUpdates(consignment, allCompleted);
         if (statusUpdates) {
-          await firestoreHelpers.setDocument('consignments', consignment.id, statusUpdates);
+          await firestoreHelpers.setDocument(
+            'consignments',
+            consignment.id,
+            statusUpdates,
+            options.client ? { client: options.client } : undefined
+          );
         }
       }
 
       await emitPackingProgress(consignment_id, session, 'packing_decrement');
     } catch (persistError) {
       console.error('[Packing] decrement persist failed:', persistError.message);
+      session.boxes[box_no] = prevBoxItems;
+      rebuildSessionSkuTotalsFromBoxes(session);
       return res.status(503).json({
         error: 'Could not save quantity change — please retry',
         retry: true,
@@ -1639,4 +1844,11 @@ module.exports = router;
 module.exports.getSessionCount = () => Object.keys(MEM).length;
 module.exports.clearPackingSession = (cid) => {
   if (cid) delete MEM[cid];
+};
+module.exports.__packingScanTest = {
+  acquireIncrementLock,
+  getStoredScanPayload,
+  restorePackingSession,
+  snapshotPackingSession,
+  writeScanEvent,
 };

@@ -66,6 +66,10 @@ backend/backups/
 *.dump
 *.dump.enc
 
+# Local SSH/VPS diagnostic helpers must never be committed
+backend/ssh_cmd.js
+backend/ssh_test.py
+
 
 # Cursor IDE
 .cursor/

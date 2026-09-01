@@ -7,6 +7,8 @@ import {
   getPendingScanCount,
   getFailedScanCount,
   resetFailedScans,
+  recoverUnadmittedScans,
+  pruneTerminalScans,
 } from '../utils/scanQueue'
 import {
   drainPackingSyncQueue,
@@ -62,6 +64,10 @@ async function sendQueuedScan(scan) {
       box_no: scan.boxNo,
       qty: scan.qty,
       scan_id: scan.id,
+      station_id: scan.stationSessionId,
+      sequence_no: scan.sequenceNo,
+      client_created_at: scan.capturedAt,
+      scanner_received_at: new Date(scan.scannerReceivedAt).toISOString(),
     })
     return response.data
   } catch (error) {
@@ -73,6 +79,10 @@ async function sendQueuedScan(scan) {
       box_no: scan.boxNo,
       qty: scan.qty,
       scan_id: scan.id,
+      station_id: scan.stationSessionId,
+      sequence_no: scan.sequenceNo,
+      client_created_at: scan.capturedAt,
+      scanner_received_at: new Date(scan.scannerReceivedAt).toISOString(),
     })
     return retry.data
   }
@@ -109,7 +119,15 @@ export async function initPackingSyncService() {
     const { pruneDuplicateBoxVideos } = await import('../utils/videoQueue')
     const pruned = await pruneDuplicateBoxVideos().catch(() => 0)
     if (pruned > 0) console.log(`[PackingSync] Pruned ${pruned} duplicate local video(s)`)
-    const [scans, jobs] = await Promise.all([resetFailedScans(), resetFailedSyncJobs()])
+    const [recovered, scans, jobs] = await Promise.all([
+      recoverUnadmittedScans(),
+      resetFailedScans(),
+      resetFailedSyncJobs(),
+      pruneTerminalScans().catch(() => 0),
+    ])
+    if (recovered > 0) {
+      console.log(`[PackingSync] Recovered ${recovered} durably captured scan(s) after refresh`)
+    }
     if (scans + jobs > 0) {
       console.log(`[PackingSync] Reset ${scans} failed scan(s), ${jobs} failed save-box job(s)`)
     }

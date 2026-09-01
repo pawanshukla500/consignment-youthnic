@@ -41,9 +41,10 @@ async function putJob(job) {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite')
-    const req = tx.objectStore(STORE).put(job)
-    req.onsuccess = () => resolve(job)
-    req.onerror = () => reject(req.error)
+    tx.oncomplete = () => resolve(job)
+    tx.onerror = () => reject(tx.error || new Error('Packing sync transaction failed'))
+    tx.onabort = () => reject(tx.error || new Error('Packing sync transaction aborted'))
+    tx.objectStore(STORE).put(job)
   })
 }
 
@@ -51,9 +52,10 @@ async function deleteJob(id) {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite')
-    const req = tx.objectStore(STORE).delete(id)
-    req.onsuccess = () => resolve()
-    req.onerror = () => reject(req.error)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error || new Error('Packing sync transaction failed'))
+    tx.onabort = () => reject(tx.error || new Error('Packing sync transaction aborted'))
+    tx.objectStore(STORE).delete(id)
   })
 }
 
@@ -134,6 +136,7 @@ export async function drainPackingSyncQueue(sendJob, onResult) {
     return { skipped: true }
   }
   draining = true
+  let deferredForScans = false
   try {
     do {
       drainAgain = false
@@ -145,7 +148,9 @@ export async function drainPackingSyncQueue(sendJob, onResult) {
           onResult?.(job, result, null)
         } catch (err) {
           if (err?.code === 'PENDING_SCANS') {
-            drainAgain = true
+            // A later worker pass will run after the scan outbox drains. Do not
+            // spin here: this worker must never compete with scanner capture.
+            deferredForScans = true
             break
           }
           const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
@@ -167,9 +172,10 @@ export async function drainPackingSyncQueue(sendJob, onResult) {
           }
         }
       }
+      if (deferredForScans) break
     } while (drainAgain)
   } finally {
     draining = false
   }
-  return { done: true }
+  return { done: !deferredForScans, deferred: deferredForScans }
 }

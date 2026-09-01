@@ -7,9 +7,13 @@ const { rebuildSessionSkuTotalsFromBoxes } = require('./packingQuantities');
 
 const draftTimers = new Map();
 
-async function loadDraft(consignmentId) {
+async function loadDraft(consignmentId, options = {}) {
   if (!consignmentId) return null;
-  return firestoreHelpers.getDocument('packing_drafts', consignmentId);
+  return firestoreHelpers.getDocument(
+    'packing_drafts',
+    consignmentId,
+    options.client ? { client: options.client } : undefined
+  );
 }
 
 async function saveDraft(consignmentId, session, userId, options = {}) {

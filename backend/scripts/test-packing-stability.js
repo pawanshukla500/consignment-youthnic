@@ -20,6 +20,10 @@ const videoServiceSrc = fs.readFileSync(
   path.join(__dirname, '..', '..', 'frontend', 'src', 'services', 'videoUploadService.js'),
   'utf8'
 );
+const scanQueueSrc = fs.readFileSync(
+  path.join(__dirname, '..', '..', 'frontend', 'src', 'utils', 'scanQueue.js'),
+  'utf8'
+);
 
 assert.ok(packingSrc.includes('prevSkuPacked'), 'accepted scan must snapshot pre-mutation state');
 assert.ok(packingSrc.includes('session.boxes[box_no] = prevBoxItems'), 'persist failure must roll back box items');
@@ -50,6 +54,14 @@ assert.ok(workerSrc.includes('uploadedIds'), 'worker drain response must include
 assert.ok(packingStationSrc.includes('inspectChunkWriteSettlements'), 'must inspect IndexedDB chunk write settlements');
 assert.ok(packingStationSrc.includes('storage_failed') || packingStationSrc.includes('STORAGE_FAILED'), 'must surface storage_failed');
 assert.ok(videoServiceSrc.includes('removeEventListener'), 'video service must remove listeners on stop');
+assert.ok(!packingStationSrc.includes('scanMutexRef'), 'physical scans must not wait in a pre-durability Promise mutex');
+assert.ok(packingStationSrc.includes('createScanEnvelope'), 'scan identity must be created at physical-event time');
+assert.ok(packingStationSrc.includes('captureScan(envelope)'), 'each event must immediately start durable capture');
+assert.ok(packingStationSrc.includes('flushAcceptedScansForBox'), 'box transition must use a local durability barrier');
+assert.ok(scanQueueSrc.includes("ON CONFLICT") || scanQueueSrc.includes('store.add(entry)'), 'local outbox must reject duplicate scan IDs');
+assert.ok(scanQueueSrc.includes('readyForSync: false'), 'server drain must not race local admission');
+assert.ok(packingSrc.includes('ON CONFLICT (id) DO NOTHING'), 'server scan_events must enforce unique scan IDs');
+assert.ok(packingSrc.includes('synchronizeSessionFromDurableDraft'), 'server concurrency must refresh durable state under lock');
 
 // Continuous packing / large-video reliability contracts
 const videoConfigSrc = fs.readFileSync(
