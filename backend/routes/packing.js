@@ -269,12 +269,6 @@ async function retryWithBackoff(fn, maxAttempts = 3, baseDelayMs = 500) {
 
 async function getStoredScanRecord(scanId, options = {}) {
   if (!scanId) return null;
-  const event = await firestoreHelpers.getDocument(
-    'scan_events',
-    scanId,
-    options.client ? { client: options.client } : undefined
-  );
-  if (event) return event;
   if (options.client && pgEnabled()) {
     const { rows } = await options.client.query(
       `SELECT id, consignment_id, box_no, barcode, qty_delta, payload
@@ -282,7 +276,11 @@ async function getStoredScanRecord(scanId, options = {}) {
       [scanId]
     );
     if (!rows[0]) return null;
+    const event = await firestoreHelpers.getDocument('scan_events', scanId, {
+      client: options.client,
+    });
     return {
+      ...(event || {}),
       id: rows[0].id,
       consignmentId: rows[0].consignment_id,
       boxNo: rows[0].box_no,
@@ -291,7 +289,7 @@ async function getStoredScanRecord(scanId, options = {}) {
       payload: rows[0].payload,
     };
   }
-  return null;
+  return firestoreHelpers.getDocument('scan_events', scanId);
 }
 
 async function getStoredScanPayload(scanId, options = {}) {

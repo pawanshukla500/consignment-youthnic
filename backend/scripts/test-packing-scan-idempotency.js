@@ -186,6 +186,20 @@ async function main() {
   );
 
   clearDurableLedger();
+  documents.set('scan_events::document-only', {
+    id: 'document-only',
+    consignmentId: 'consignment-1',
+    boxNo: '3',
+    qtyDelta: 1,
+    payload: { scan_id: 'document-only', packed: 99 },
+  });
+  assert.strictEqual(
+    await getStoredScanPayload('document-only', { client: fakeClient }),
+    null,
+    'a document-only mirror row must not authorize idempotent replay'
+  );
+  documents.delete('scan_events::document-only');
+
   const duplicateProcessor = createProcessor(0);
   const duplicateResults = await Promise.all(
     Array.from({ length: 10 }, () => duplicateProcessor.process({ scanId: 'same-id', required: 10 }))
