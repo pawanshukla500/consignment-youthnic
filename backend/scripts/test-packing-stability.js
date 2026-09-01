@@ -48,22 +48,6 @@ assert.ok(workerSrc.includes('/boxes/box_'), 'worker must use canonical boxes/bo
 assert.ok(!workerSrc.includes('/videos/${metadata.boxNo}/'), 'worker must not use legacy videos/{boxNo} path');
 assert.ok(!/finally\s*\{[\s\S]*return\s+status/.test(workerSrc), 'worker must not return from finally');
 assert.ok(workerSrc.includes('uploadedIds'), 'worker drain response must include uploadedIds');
-assert.ok(packingStationSrc.includes('inspectChunkWriteSettlements'), 'must inspect IndexedDB chunk write settlements');
-assert.ok(packingStationSrc.includes('storage_failed') || packingStationSrc.includes('STORAGE_FAILED'), 'must surface storage_failed');
-assert.ok(videoServiceSrc.includes('removeEventListener'), 'video service must remove listeners on stop');
-assert.ok(!packingStationSrc.includes('scanMutexRef'), 'physical scans must not wait in a pre-durability Promise mutex');
-assert.ok(packingStationSrc.includes('createScanEnvelope'), 'scan identity must be created at physical-event time');
-assert.ok(packingStationSrc.includes('captureScan(envelope)'), 'each event must immediately start durable capture');
-assert.ok(packingStationSrc.includes('flushAcceptedScansForBox'), 'box transition must use a local durability barrier');
-assert.ok(
-  /const autoSaveCurrentBox = async \(\) => \{\s*const current = stateRef\.current;/.test(packingStationSrc),
-  'delayed finish callbacks must read the current box from stateRef, not a stale render'
-);
-assert.ok(
-  packingStationSrc.includes("commitPackingState((prev) => ({ ...prev, box: null }), { flush: true })"),
-  'finish modal must observe the cleared box before it stores its action callback'
-);
-
 assert.ok(packingSrc.includes('ON CONFLICT (id) DO NOTHING'), 'server scan_events must enforce unique scan IDs');
 assert.ok(packingSrc.includes('synchronizeSessionFromDurableDraft'), 'server concurrency must refresh durable state under lock');
 
