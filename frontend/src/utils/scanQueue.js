@@ -381,13 +381,16 @@ async function getScan(id) {
   })
 }
 
-async function updateScan(entry) {
+async function updateScan(entry, options = {}) {
   const db = await openDB()
+  if (typeof options.beforeTransaction === 'function') {
+    await options.beforeTransaction(entry)
+  }
   await runTransaction(db, 'readwrite', (store) => store.put(entry))
   return entry
 }
 
-export async function markScanReadyForSync(id, fields = {}) {
+export async function markScanReadyForSync(id, fields = {}, options = {}) {
   const scan = await getScan(id)
   if (!scan || TERMINAL_STATUSES.has(scan.status)) return scan
   return updateScan(mergeLifecycleFields(scan, {
@@ -395,7 +398,7 @@ export async function markScanReadyForSync(id, fields = {}) {
     status: SCAN_STATUS.LOCAL_CAPTURED,
     readyForSync: true,
     updatedAt: Date.now(),
-  }))
+  }), options)
 }
 
 export async function markScanRejectedLocally(id, rejection = {}) {
@@ -426,14 +429,21 @@ export async function markScanRejectedLocally(id, rejection = {}) {
  */
 export async function recoverUnadmittedScans() {
   const scans = (await getOutstandingScans()).filter((scan) => scan.readyForSync === false)
-  await Promise.all(scans.map((scan) => updateScan({
-    ...scan,
+  await Promise.all(scans.map((scan) => recoverUnadmittedScan(scan.id)))
+  return scans.length
+}
+
+/** Recover exactly one durable row without admitting newer in-flight scans. */
+export async function recoverUnadmittedScan(id, fields = {}) {
+  const scan = await getScan(id)
+  if (!scan || TERMINAL_STATUSES.has(scan.status) || scan.readyForSync !== false) return scan
+  return updateScan(mergeLifecycleFields(scan, {
+    ...fields,
     status: SCAN_STATUS.LOCAL_CAPTURED,
     readyForSync: true,
     recoveredAfterRefresh: true,
     updatedAt: Date.now(),
-  })))
-  return scans.length
+  }))
 }
 
 function backoffMs(retries) {

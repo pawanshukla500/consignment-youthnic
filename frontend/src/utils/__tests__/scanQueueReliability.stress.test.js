@@ -11,6 +11,7 @@ import {
   getScanHistory,
   getScannerReceivedAtIso,
   markScanReadyForSync,
+  recoverUnadmittedScan,
   recoverUnadmittedScans,
   resetScanDiagnosticsForTests,
 } from '../scanQueue'
@@ -173,6 +174,32 @@ describe('durable scan outbox stress and recovery', () => {
     expect(afterRefresh).toHaveLength(50)
     expect(serverIds.size).toBe(50)
     expect(afterRefresh.every((scan) => scan.status === SCAN_STATUS.SERVER_CONFIRMED)).toBe(true)
+  })
+
+  it('recovers an aborted admission update and sends the original scan ID exactly once', async () => {
+    const scan = envelope(1, 'ADMISSION-RETRY')
+    await captureScan(scan)
+    await expect(markScanReadyForSync(scan.id, {}, {
+      beforeTransaction: () => { throw new Error('simulated admission transaction abort') },
+    })).rejects.toThrow('simulated admission transaction abort')
+
+    let [stored] = await getScanHistory()
+    expect(stored.readyForSync).toBe(false)
+
+    await recoverUnadmittedScan(scan.id, { uiApplied: true, uiCommittedAt: Date.now() })
+    const sentIds = []
+    await drainScanQueue(async (queued) => {
+      sentIds.push(queued.id)
+      return { packed: 1, required: 1, scan_id: queued.id }
+    })
+    await drainScanQueue(async (queued) => {
+      sentIds.push(queued.id)
+      return { packed: 1, required: 1, scan_id: queued.id }
+    })
+
+    ;[stored] = await getScanHistory()
+    expect(sentIds).toEqual([scan.id])
+    expect(stored.status).toBe(SCAN_STATUS.SERVER_CONFIRMED)
   })
 
   it('keeps additional offline scans and syncs every ID once on reconnect', async () => {

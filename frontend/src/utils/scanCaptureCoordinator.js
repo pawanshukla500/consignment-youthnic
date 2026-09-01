@@ -17,6 +17,7 @@ export function createScanCaptureCoordinator() {
         closing: false,
         applyTail: Promise.resolve(),
         inFlight: new Set(),
+        postDurabilityFailures: new Map(),
         maximumInFlight: 0,
       })
     }
@@ -62,10 +63,17 @@ export function createScanCaptureCoordinator() {
       }
       try {
         return await afterDurable(durableScan)
-      } catch (error) {
-        return onPostDurabilityFailure
-          ? onPostDurabilityFailure(error, durableScan)
-          : Promise.reject(error)
+      } catch (caughtError) {
+        let finalError = caughtError
+        if (onPostDurabilityFailure) {
+          try {
+            await onPostDurabilityFailure(finalError, durableScan)
+          } catch (recoveryError) {
+            finalError = recoveryError
+          }
+        }
+        state.postDurabilityFailures.set(durableScan?.id || Symbol('scan'), finalError)
+        throw finalError
       }
     })
 
@@ -85,6 +93,13 @@ export function createScanCaptureCoordinator() {
     state.closing = true
     await state.applyTail
     if (state.inFlight.size) await Promise.allSettled([...state.inFlight])
+    if (state.postDurabilityFailures.size) {
+      const error = new Error(
+        `${state.postDurabilityFailures.size} locally saved scan(s) still require reconciliation before closing this box`
+      )
+      error.code = 'SCAN_APPLICATION_INCOMPLETE'
+      throw error
+    }
     return {
       localDurabilityFlushed: true,
       inFlight: state.inFlight.size,
@@ -97,6 +112,7 @@ export function createScanCaptureCoordinator() {
     return {
       closing: state.closing,
       inFlight: state.inFlight.size,
+      postDurabilityFailures: state.postDurabilityFailures.size,
       maximumInFlight: state.maximumInFlight,
     }
   }

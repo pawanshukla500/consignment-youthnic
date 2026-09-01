@@ -30,6 +30,8 @@ async function saveDraft(consignmentId, session, userId, options = {}) {
       status: s.status,
     })),
     processedScanIds: session.processedScanIds || [],
+    status: session.status || 'active',
+    currentBox: session.currentBox || null,
     updatedAt: now(),
     userId: userId || '',
   }, options.client ? { client: options.client } : undefined);
@@ -97,6 +99,8 @@ function applyDraftToSession(session, draft) {
   }
   rebuildSessionSkuTotalsFromBoxes(session);
   session.processedScanIds = draft.processedScanIds || [];
+  session.status = draft.status || session.status || 'active';
+  session.currentBox = draft.currentBox ?? session.currentBox ?? null;
   session.scanResults = session.scanResults || {};
   return session;
 }

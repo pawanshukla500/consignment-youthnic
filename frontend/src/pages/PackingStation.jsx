@@ -37,7 +37,7 @@ import {
   markScanRejectedLocally,
   notePhysicalScan,
   noteRejectedBeforePersist,
-  recoverUnadmittedScans,
+  recoverUnadmittedScan,
   resetFailedScans,
   subscribeScanDiagnostics,
   warmScanQueueDb,
@@ -1602,7 +1602,7 @@ export default function PackingStation() {
     return { rejected: true, reason: rejection.reason };
   };
 
-  const recoverPostDurabilityFailure = (error, scan) => {
+  const recoverPostDurabilityFailure = async (error, scan) => {
     console.error('[PackingStation] post-durability scan application failed:', error);
     sfx.err();
     toast(
@@ -1612,13 +1612,33 @@ export default function PackingStation() {
     );
     flash('err');
     setSyncState('failed');
-    void recoverUnadmittedScans()
-      .then(() => runScanQueue())
-      .then(() => scan?.consignmentId && refreshPackingSession(scan.consignmentId))
-      .catch((recoveryError) => {
-        console.error('[PackingStation] durable scan recovery failed:', recoveryError);
-      });
+    try {
+      await recoverUnadmittedScan(scan?.id);
+      kickScanQueue();
+    } catch (recoveryError) {
+      console.error('[PackingStation] durable scan recovery failed:', recoveryError);
+    }
     return { durableButUiFailed: true };
+  };
+
+  const admitDurableScanForSync = async (scan, fields) => {
+    const requireAdmitted = (stored) => {
+      if (stored?.readyForSync === true) return stored;
+      const error = new Error('Durable scan could not be admitted to the sync queue');
+      error.code = 'SCAN_ADMISSION_FAILED';
+      throw error;
+    };
+    try {
+      return requireAdmitted(await markScanReadyForSync(scan.id, fields));
+    } catch (firstError) {
+      try {
+        return requireAdmitted(await recoverUnadmittedScan(scan.id, fields));
+      } catch (recoveryError) {
+        recoveryError.code = recoveryError.code || 'SCAN_ADMISSION_FAILED';
+        recoveryError.cause = recoveryError.cause || firstError;
+        throw recoveryError;
+      }
+    }
   };
 
   const applyDurablyCapturedScan = async (scan) => {
@@ -1627,19 +1647,14 @@ export default function PackingStation() {
     const optimistic = applyOptimisticScan(proxySnapshot, scan.barcode, scan.qty);
     if (!optimistic?.ok) return showDurableLocalRejection(scan, optimistic);
 
-    let admissionError = null;
-    try {
-      await markScanReadyForSync(scan.id, {
-        uiApplied: true,
-        uiCommittedAt: Date.now(),
-        indexedDbCommittedAt: scan.indexedDbCommittedAt,
-        skuId: optimistic.scannedSku.id,
-        marketplaceSku: optimistic.scannedSku.marketplaceSku || optimistic.queueBarcode,
-        internalSku: optimistic.scannedSku.internalSku,
-      });
-    } catch (error) {
-      admissionError = error;
-    }
+    await admitDurableScanForSync(scan, {
+      uiApplied: true,
+      uiCommittedAt: Date.now(),
+      indexedDbCommittedAt: scan.indexedDbCommittedAt,
+      skuId: optimistic.scannedSku.id,
+      marketplaceSku: optimistic.scannedSku.marketplaceSku || optimistic.queueBarcode,
+      internalSku: optimistic.scannedSku.internalSku,
+    });
 
     commitPackingState((latestState) => {
       const boxItems = (latestState.boxes[scan.boxNo] || []).map((item) => ({ ...item }));
@@ -1668,8 +1683,7 @@ export default function PackingStation() {
     flash('ok');
     if (navigator.vibrate) navigator.vibrate(40);
     void updatePendingCount();
-    if (admissionError) recoverPostDurabilityFailure(admissionError, scan);
-    else kickScanQueue();
+    kickScanQueue();
     return { locallyCaptured: true };
   };
 
@@ -1829,16 +1843,11 @@ export default function PackingStation() {
             message: 'Nothing remains to remove from this box',
           });
         }
-        let admissionError = null;
-        try {
-          await markScanReadyForSync(scan.id, {
-            uiApplied: true,
-            uiCommittedAt: Date.now(),
-            indexedDbCommittedAt: scan.indexedDbCommittedAt,
-          });
-        } catch (error) {
-          admissionError = error;
-        }
+        await admitDurableScanForSync(scan, {
+          uiApplied: true,
+          uiCommittedAt: Date.now(),
+          indexedDbCommittedAt: scan.indexedDbCommittedAt,
+        });
         commitPackingState((latestState) => ({
           ...latestState,
           boxes: {
@@ -1856,8 +1865,7 @@ export default function PackingStation() {
         setSyncState(navigator.onLine ? 'pending' : 'offline');
         toast('Removed locally — syncing', 'info');
         void updatePendingCount();
-        if (admissionError) recoverPostDurabilityFailure(admissionError, scan);
-        else kickScanQueue();
+        kickScanQueue();
         return { locallyCaptured: true };
       },
       onCaptureFailure: handleScanCaptureFailure,

@@ -64,7 +64,24 @@ function sendError(res, error) {
   const status = error.statusCode || 500;
   const body = { error: error.message || 'Request failed' };
   if (error.code) body.code = error.code;
+  if (error.retryable) body.retry = true;
   return res.status(status).json(body);
+}
+
+function assertDurableScanLedgerAvailable(scanId, postgresAvailable = pgEnabled()) {
+  if (!scanId) {
+    const error = new Error('scan_id is required for every packing quantity mutation');
+    error.statusCode = 400;
+    error.code = 'SCAN_ID_REQUIRED';
+    throw error;
+  }
+  if (!postgresAvailable) {
+    const error = new Error('Durable scan ledger unavailable — quantity was not changed');
+    error.statusCode = 503;
+    error.code = 'DURABLE_SCAN_LEDGER_UNAVAILABLE';
+    error.retryable = true;
+    throw error;
+  }
 }
 
 function mapChange(consignment, updates = {}) {
@@ -250,22 +267,71 @@ async function retryWithBackoff(fn, maxAttempts = 3, baseDelayMs = 500) {
 
 
 
-async function getStoredScanPayload(scanId, options = {}) {
+async function getStoredScanRecord(scanId, options = {}) {
   if (!scanId) return null;
   const event = await firestoreHelpers.getDocument(
     'scan_events',
     scanId,
     options.client ? { client: options.client } : undefined
   );
-  if (event?.payload && typeof event.payload === 'object') return event.payload;
+  if (event) return event;
   if (options.client && pgEnabled()) {
     const { rows } = await options.client.query(
-      'SELECT payload FROM scan_events WHERE id = $1',
+      `SELECT id, consignment_id, box_no, barcode, qty_delta, payload
+       FROM scan_events WHERE id = $1`,
       [scanId]
     );
-    return rows[0]?.payload && typeof rows[0].payload === 'object' ? rows[0].payload : null;
+    if (!rows[0]) return null;
+    return {
+      id: rows[0].id,
+      consignmentId: rows[0].consignment_id,
+      boxNo: rows[0].box_no,
+      barcode: rows[0].barcode,
+      qtyDelta: rows[0].qty_delta,
+      payload: rows[0].payload,
+    };
   }
   return null;
+}
+
+async function getStoredScanPayload(scanId, options = {}) {
+  const event = await getStoredScanRecord(scanId, options);
+  return event?.payload && typeof event.payload === 'object' ? event.payload : null;
+}
+
+function assertStoredScanMatches(event, expected = {}) {
+  if (!event) return;
+  const mismatches = [];
+  if (expected.consignmentId && event.consignmentId
+      && String(expected.consignmentId) !== String(event.consignmentId)) {
+    mismatches.push('consignmentId');
+  }
+  if (expected.boxNo != null && event.boxNo != null
+      && String(expected.boxNo) !== String(event.boxNo)) {
+    mismatches.push('boxNo');
+  }
+  if (expected.qtyDelta != null && event.qtyDelta != null
+      && Number(expected.qtyDelta) !== Number(event.qtyDelta)) {
+    mismatches.push('qty');
+  }
+  if (expected.receivedBarcode && event.receivedBarcode
+      && clean(expected.receivedBarcode) !== clean(event.receivedBarcode)) {
+    mismatches.push('barcode');
+  }
+  if (mismatches.length) {
+    const error = new Error(`scan_id was already used for a different ${mismatches.join(', ')}`);
+    error.statusCode = 409;
+    error.code = 'SCAN_ID_PAYLOAD_MISMATCH';
+    throw error;
+  }
+}
+
+async function getIdempotentReplayPayload(scanId, expected, options = {}) {
+  if (!scanId) return null;
+  const event = await getStoredScanRecord(scanId, options);
+  if (!event) return null;
+  assertStoredScanMatches(event, expected);
+  return event.payload && typeof event.payload === 'object' ? event.payload : null;
 }
 
 async function writeScanEvent({ consignmentId, boxNo, sku, barcode, qty, result, req, scanId, payload = {}, client = null }) {
@@ -281,6 +347,7 @@ async function writeScanEvent({ consignmentId, boxNo, sku, barcode, qty, result,
     marketplaceSku: sku?.marketplaceSku || null,
     internalSku: sku?.internalSku || null,
     qtyDelta: Number(qty) || 1,
+    receivedBarcode: clean(req.body?.barcode || barcode),
     result,
     stationId: req.body?.station_id || req.headers['x-station-id'] || null,
     userId: req.user?.id || null,
@@ -324,9 +391,13 @@ async function writeScanEvent({ consignmentId, boxNo, sku, barcode, qty, result,
       ]
     );
     if (!inserted.rowCount) {
+      const storedRecord = await getStoredScanRecord(id, { client });
+      assertStoredScanMatches(storedRecord, eventData);
       const duplicate = new Error('Scan ID was already durably processed');
       duplicate.code = 'SCAN_ALREADY_PROCESSED';
-      duplicate.retryable = true;
+      duplicate.storedPayload = storedRecord?.payload || null;
+      duplicate.statusCode = duplicate.storedPayload ? 409 : 503;
+      duplicate.retryable = !duplicate.storedPayload;
       throw duplicate;
     }
   }
@@ -444,19 +515,47 @@ function restorePackingSession(session, snapshot) {
 
 async function synchronizeSessionFromDurableDraft(consignmentId, client) {
   if (!consignmentId) return null;
-  const session = await getOrLoadSession(consignmentId);
-  const draft = await loadDraft(consignmentId, { client });
-  if (!draft) return session;
+  const consignment = await firestoreHelpers.getDocument(
+    'consignments',
+    consignmentId,
+    { client }
+  );
+  if (!consignment) {
+    const error = new Error('Consignment not found');
+    error.statusCode = 404;
+    throw error;
+  }
 
-  // The transaction-level packing lock guarantees this is the latest committed
-  // draft across every Cloud Run instance. Replace, do not shallow-merge, so a
-  // durable removal to zero is also visible.
-  session.boxes = JSON.parse(JSON.stringify(draft.boxes || {}));
-  session.processedScanIds = Array.isArray(draft.processedScanIds)
-    ? [...draft.processedScanIds]
-    : [];
-  session.scanResults = session.scanResults || {};
-  rebuildSessionSkuTotalsFromBoxes(session);
+  // Rebuild from documents inside the same locked transaction. Process memory
+  // must never supply stale SKU requirements, status, or saved box contents.
+  const [rawSkus, rawBoxes, draft] = await Promise.all([
+    consignment.skuIds?.length
+      ? firestoreHelpers.batchGetDocuments('skus', consignment.skuIds, { client })
+      : Promise.resolve([]),
+    getSavedBoxes(consignment, { client }),
+    loadDraft(consignmentId, { client }),
+  ]);
+  const previous = MEM[consignmentId];
+  const session = {
+    cid: consignment.id,
+    skus: buildSkuViews(rawSkus, rawBoxes),
+    boxes: buildBoxesMap(rawBoxes),
+    boxUpdatedAt: {},
+    currentBox: null,
+    skuMap: {},
+    processedScanIds: [],
+    scanResults: previous?.scanResults || {},
+    status: 'active',
+    lastActivity: Date.now(),
+  };
+  rawBoxes.filter(Boolean).forEach((box) => {
+    if (box.boxNo != null) session.boxUpdatedAt[String(box.boxNo)] = box.updatedAt || box.createdAt || null;
+  });
+  applyDraftToSession(session, draft);
+  session.skus.forEach((sku) => {
+    getScanKeys(sku).forEach((key) => { session.skuMap[key] = sku; });
+  });
+  MEM[consignment.id] = session;
   return session;
 }
 
@@ -471,6 +570,7 @@ async function runSerializedPackingMutation(req, res, handler) {
   const requestedConsignmentId = req.body?.consignment_id;
   let consignmentId;
   try {
+    assertDurableScanLedgerAvailable(req.body?.scan_id);
     consignmentId = await resolvePackingMutationKey(requestedConsignmentId);
   } catch (error) {
     return sendError(res, error);
@@ -510,6 +610,9 @@ async function runSerializedPackingMutation(req, res, handler) {
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     restorePackingSession(session, sessionSnapshot);
+    if (error.code === 'SCAN_ALREADY_PROCESSED' && error.storedPayload) {
+      return res.json(error.storedPayload);
+    }
     if (!res.headersSent) return sendError(res, error);
     return undefined;
   } finally {
@@ -518,14 +621,20 @@ async function runSerializedPackingMutation(req, res, handler) {
   }
 }
 
-async function getSavedBoxes(consignment) {
+async function getSavedBoxes(consignment, options = {}) {
   const byId = new Map();
   const boxIds = consignment?.boxIds || [];
   if (boxIds.length) {
-    const docs = await firestoreHelpers.batchGetDocuments('boxes', boxIds);
+    const docs = await firestoreHelpers.batchGetDocuments('boxes', boxIds, options);
     docs.filter(Boolean).forEach(box => byId.set(box.id, box));
   }
-  const queried = await firestoreHelpers.queryCollection('boxes', 'consignmentId', '==', consignment.id);
+  const queried = await firestoreHelpers.queryCollection(
+    'boxes',
+    'consignmentId',
+    '==',
+    consignment.id,
+    options
+  );
   queried.filter(Boolean).forEach(box => byId.set(box.id, box));
   return Array.from(byId.values());
 }
@@ -760,20 +869,15 @@ async function handleIncrement(req, res, options = {}) {
     if (!session.processedScanIds) session.processedScanIds = [];
     if (!session.scanResults) session.scanResults = {};
 
-    if (scan_id && session.processedScanIds.includes(scan_id)) {
-      const cached = session.scanResults[scan_id];
-      if (cached) return res.json(cached);
-      // Drafts no longer store full scanResults — recover idempotent payload from scan_events.
-      const storedPayload = await getStoredScanPayload(scan_id, options);
-      if (storedPayload) {
-        cacheScanResult(session, scan_id, storedPayload);
-        return res.json(storedPayload);
-      }
-    }
-
-    // DB idempotency for retries / after restart when scan_id is not yet in memory.
-    if (scan_id && !session.processedScanIds.includes(scan_id)) {
-      const storedPayload = await getStoredScanPayload(scan_id, options);
+    // The durable event is authoritative even when an in-process cache entry exists.
+    // This also validates that a reused scan_id still describes the same envelope.
+    if (scan_id) {
+      const storedPayload = await getIdempotentReplayPayload(scan_id, {
+        consignmentId: consignment_id,
+        boxNo: box_no,
+        qtyDelta: qty,
+        receivedBarcode: barcode,
+      }, options);
       if (storedPayload) {
         cacheScanResult(session, scan_id, storedPayload);
         return res.json(storedPayload);
@@ -958,6 +1062,8 @@ async function handleIncrement(req, res, options = {}) {
       sku.status = prevSkuStatus;
       session.boxes[box_no] = prevBoxItems;
       rebuildSessionSkuTotalsFromBoxes(session);
+      if (persistError.code === 'SCAN_ALREADY_PROCESSED'
+          || persistError.code === 'SCAN_ID_PAYLOAD_MISMATCH') throw persistError;
       return res.status(503).json({
         error: 'Scan could not be saved — please retry',
         retry: true,
@@ -970,6 +1076,7 @@ async function handleIncrement(req, res, options = {}) {
     res.json(payload);
   } catch (error) {
     console.error('[Packing] increment error:', error.message);
+    if (error.code === 'SCAN_ALREADY_PROCESSED') throw error;
     sendError(res, error);
   }
 }
@@ -995,18 +1102,13 @@ async function handleDecrement(req, res, options = {}) {
     if (!session.processedScanIds) session.processedScanIds = [];
     if (!session.scanResults) session.scanResults = {};
 
-    if (scan_id && session.processedScanIds.includes(scan_id)) {
-      const cached = session.scanResults[scan_id];
-      if (cached) return res.json(cached);
-      const storedPayload = await getStoredScanPayload(scan_id, options);
-      if (storedPayload) {
-        cacheScanResult(session, scan_id, storedPayload);
-        return res.json(storedPayload);
-      }
-    }
-
-    if (scan_id && !session.processedScanIds.includes(scan_id)) {
-      const storedPayload = await getStoredScanPayload(scan_id, options);
+    if (scan_id) {
+      const storedPayload = await getIdempotentReplayPayload(scan_id, {
+        consignmentId: consignment_id,
+        boxNo: box_no,
+        qtyDelta: -qty,
+        receivedBarcode: barcode,
+      }, options);
       if (storedPayload) {
         cacheScanResult(session, scan_id, storedPayload);
         return res.json(storedPayload);
@@ -1145,6 +1247,8 @@ async function handleDecrement(req, res, options = {}) {
       console.error('[Packing] decrement persist failed:', persistError.message);
       session.boxes[box_no] = prevBoxItems;
       rebuildSessionSkuTotalsFromBoxes(session);
+      if (persistError.code === 'SCAN_ALREADY_PROCESSED'
+          || persistError.code === 'SCAN_ID_PAYLOAD_MISMATCH') throw persistError;
       return res.status(503).json({
         error: 'Could not save quantity change — please retry',
         retry: true,
@@ -1153,6 +1257,7 @@ async function handleDecrement(req, res, options = {}) {
 
     res.json(payload);
   } catch (error) {
+    if (error.code === 'SCAN_ALREADY_PROCESSED') throw error;
     sendError(res, error);
   }
 }
@@ -1863,9 +1968,13 @@ module.exports.clearPackingSession = (cid) => {
 };
 module.exports.__packingScanTest = {
   acquireIncrementLock,
+  assertDurableScanLedgerAvailable,
+  assertStoredScanMatches,
   getStoredScanPayload,
+  getIdempotentReplayPayload,
   resolvePackingMutationKey,
   restorePackingSession,
   snapshotPackingSession,
+  synchronizeSessionFromDurableDraft,
   writeScanEvent,
 };

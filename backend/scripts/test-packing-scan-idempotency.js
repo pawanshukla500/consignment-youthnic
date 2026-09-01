@@ -16,6 +16,10 @@ const fakeClient = {
       if (relationalEvents.has(id)) return { rowCount: 0, rows: [] };
       relationalEvents.set(id, {
         id,
+        consignmentId: params[1],
+        boxNo: params[2],
+        barcode: params[4],
+        qtyDelta: params[7],
         sequenceNo: params[12],
         scannerReceivedAt: params[13],
         payload: JSON.parse(params[14]),
@@ -29,13 +33,40 @@ const fakeClient = {
       documents.set(key, saved);
       return { rowCount: 1, rows: [{ data: saved }] };
     }
+    if (normalized.startsWith('SELECT data FROM documents') && normalized.includes('id = ANY')) {
+      const ids = new Set(params[1] || []);
+      const rows = [...documents.entries()]
+        .filter(([key]) => key.startsWith(`${params[0]}::`))
+        .map(([, data]) => data)
+        .filter((data) => ids.has(data.id))
+        .map((data) => ({ data }));
+      return { rowCount: rows.length, rows };
+    }
+    if (normalized.startsWith('SELECT data FROM documents') && normalized.includes('data->>$2 = $3')) {
+      const rows = [...documents.entries()]
+        .filter(([key]) => key.startsWith(`${params[0]}::`))
+        .map(([, data]) => data)
+        .filter((data) => String(data[params[1]]) === String(params[2]))
+        .map((data) => ({ data }));
+      return { rowCount: rows.length, rows };
+    }
     if (normalized.startsWith('SELECT data FROM documents')) {
       const saved = documents.get(`${params[0]}::${params[1]}`);
       return { rowCount: saved ? 1 : 0, rows: saved ? [{ data: saved }] : [] };
     }
-    if (normalized.startsWith('SELECT payload FROM scan_events')) {
+    if (normalized.includes('FROM scan_events WHERE id = $1')) {
       const saved = relationalEvents.get(params[0]);
-      return { rowCount: saved ? 1 : 0, rows: saved ? [{ payload: saved.payload }] : [] };
+      return {
+        rowCount: saved ? 1 : 0,
+        rows: saved ? [{
+          id: saved.id,
+          consignment_id: saved.consignmentId,
+          box_no: saved.boxNo,
+          barcode: saved.barcode,
+          qty_delta: saved.qtyDelta,
+          payload: saved.payload,
+        }] : [],
+      };
     }
     throw new Error(`Unexpected fake SQL: ${normalized.slice(0, 80)}`);
   },
@@ -55,10 +86,14 @@ require.cache[databasePath] = {
 const packingRouter = require('../routes/packing');
 const {
   acquireIncrementLock,
+  assertDurableScanLedgerAvailable,
+  assertStoredScanMatches,
   getStoredScanPayload,
+  getIdempotentReplayPayload,
   resolvePackingMutationKey,
   restorePackingSession,
   snapshotPackingSession,
+  synchronizeSessionFromDurableDraft,
   writeScanEvent,
 } = packingRouter.__packingScanTest;
 
@@ -134,6 +169,22 @@ function createProcessor(initialQuantity = 0) {
 }
 
 async function main() {
+  let unsafeMutations = 0;
+  const withoutLedger = await Promise.allSettled(Array.from({ length: 10 }, async () => {
+    assertDurableScanLedgerAvailable('same-id', false);
+    unsafeMutations += 1;
+  }));
+  assert.strictEqual(unsafeMutations, 0, 'no quantity mutation may run without PostgreSQL idempotency');
+  assert.ok(withoutLedger.every((result) => (
+    result.status === 'rejected'
+    && result.reason.code === 'DURABLE_SCAN_LEDGER_UNAVAILABLE'
+    && result.reason.retryable === true
+  )));
+  assert.throws(
+    () => assertDurableScanLedgerAvailable('', true),
+    (error) => error.code === 'SCAN_ID_REQUIRED'
+  );
+
   clearDurableLedger();
   const duplicateProcessor = createProcessor(0);
   const duplicateResults = await Promise.all(
@@ -154,6 +205,44 @@ async function main() {
   const afterRestart = await restartedProcessor.process({ scanId: 'same-id', required: 10 });
   assert.strictEqual(restartedProcessor.quantity, 1, 'retry after restart must not mutate quantity');
   assert.strictEqual(afterRestart.scan_id, 'same-id');
+
+  const duplicateRequest = {
+    ...request,
+    body: { ...request.body, barcode: 'SKU-1' },
+  };
+  await assert.rejects(
+    () => writeScanEvent({
+      consignmentId: 'consignment-1',
+      boxNo: '3',
+      sku,
+      barcode: 'SKU-1',
+      qty: 1,
+      result: 'accepted',
+      req: duplicateRequest,
+      scanId: 'same-id',
+      payload: { scan_id: 'same-id', packed: 999 },
+      client: fakeClient,
+    }),
+    (error) => (
+      error.code === 'SCAN_ALREADY_PROCESSED'
+      && error.storedPayload?.scan_id === 'same-id'
+      && error.storedPayload?.packed === 1
+    )
+  );
+  assert.throws(
+    () => assertStoredScanMatches(
+      { consignmentId: 'consignment-1', boxNo: '3', qtyDelta: 1, receivedBarcode: 'SKU-1' },
+      { consignmentId: 'other-consignment', boxNo: '3', qtyDelta: 1, receivedBarcode: 'SKU-1' }
+    ),
+    (error) => error.code === 'SCAN_ID_PAYLOAD_MISMATCH'
+  );
+  const replay = await getIdempotentReplayPayload('same-id', {
+    consignmentId: 'consignment-1',
+    boxNo: '3',
+    qtyDelta: 1,
+    receivedBarcode: 'SKU-1',
+  }, { client: fakeClient });
+  assert.strictEqual(replay.packed, 1, 'final conflict must return the first durable payload');
 
   clearDurableLedger();
   const exactProcessor = createProcessor(0);
@@ -210,6 +299,34 @@ async function main() {
     'database rollback must also restore in-memory SKU totals');
   assert.deepStrictEqual(rollbackSession.processedScanIds, ['before'],
     'an uncommitted scan ID must not remain cached after rollback');
+
+  documents.set('consignments::consignment-1', {
+    id: 'consignment-1',
+    skuIds: ['sku-1'],
+  });
+  documents.set('skus::sku-1', {
+    id: 'sku-1',
+    marketplaceBarcode: 'SKU-1',
+    marketplaceSku: 'SKU-1',
+    internalSku: 'SKU-1',
+    requiredQty: 5,
+    packedQty: 0,
+  });
+  documents.set('packing_drafts::consignment-1', {
+    id: 'consignment-1',
+    consignmentId: 'consignment-1',
+    boxes: { 3: [{ skuId: 'sku-1', qty: 2 }] },
+    processedScanIds: ['draft-scan'],
+    status: 'active',
+    currentBox: '3',
+  });
+  const synchronized = await synchronizeSessionFromDurableDraft('consignment-1', fakeClient);
+  assert.strictEqual(synchronized.skus[0].required, 5,
+    'locked refresh must reload current SKU requirements from durable documents');
+  assert.strictEqual(synchronized.skus[0].packed, 2,
+    'locked refresh must rebuild quantities from the latest durable draft');
+  assert.deepStrictEqual(synchronized.processedScanIds, ['draft-scan']);
+  assert.strictEqual(synchronized.currentBox, '3');
 
   const source = fs.readFileSync(path.join(__dirname, '..', 'routes', 'packing.js'), 'utf8');
   assert.ok(source.includes('acquireTxSerializationLock(client, `packing:${consignmentId}`)'),

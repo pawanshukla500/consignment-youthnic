@@ -106,9 +106,12 @@ describe('Packing Station post-durability coordinator', () => {
         durableFailure += 1
       },
     })
-    await coordinator.flushAcceptedScansForBox(context)
+    await expect(coordinator.flushAcceptedScansForBox(context)).rejects.toMatchObject({
+      code: 'SCAN_APPLICATION_INCOMPLETE',
+    })
     expect(captureFailure).toBe(0)
     expect(durableFailure).toBe(1)
+    expect(coordinator.getBoxState(context).postDurabilityFailures).toBe(1)
   })
 
   it('does not mutate the live box row during optimistic validation', () => {
