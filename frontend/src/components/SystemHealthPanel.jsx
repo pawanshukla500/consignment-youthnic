@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { Activity, CheckCircle2, AlertTriangle, RefreshCw, HardDrive, Database, ShieldCheck, Cloud, UploadCloud, Radio, Trash2 } from 'lucide-react'
 import { settingsAPI } from '../services/api'
-import { getPendingScanCount, getFailedScanCount, resetFailedScans, clearFailedScans } from '../utils/scanQueue'
+
 import { getPendingSyncJobCount, getFailedSyncJobCount, resetFailedSyncJobs, clearFailedSyncJobs } from '../utils/packingSyncQueue'
 import { getQueueCount, getFailedCount, resetFailedToPending, clearFailedVideos, pruneDuplicateBoxVideos, clearLocalVideoCache } from '../utils/videoQueue'
 import { processPackingSyncQueues } from '../services/packingSyncService'
@@ -65,22 +65,18 @@ export default function SystemHealthPanel() {
     try {
       const res = await settingsAPI.getSystemHealth()
       setHealth(res.data)
-      const [pendingScans, failedScans, pendingSaveJobs, failedSaveJobs, pendingVideos, failedVideos] = await Promise.all([
-        getPendingScanCount().catch(() => 0),
-        getFailedScanCount().catch(() => 0),
+      const [pendingSaveJobs, failedSaveJobs, pendingVideos, failedVideos] = await Promise.all([
         getPendingSyncJobCount().catch(() => 0),
         getFailedSyncJobCount().catch(() => 0),
         getQueueCount().catch(() => 0),
         getFailedCount().catch(() => 0),
       ])
       setLocalSync({
-        pendingScans,
         pendingVideos,
         pendingSaveJobs,
-        failedScans,
         failedSaveJobs,
         failedVideos,
-        failedJobs: failedScans + failedSaveJobs + failedVideos,
+        failedJobs: failedSaveJobs + failedVideos,
       })
     } catch {
       setHealth(null)
@@ -94,7 +90,6 @@ export default function SystemHealthPanel() {
     try {
       await pruneDuplicateBoxVideos().catch(() => 0)
       await Promise.all([
-        resetFailedScans(),
         resetFailedSyncJobs(),
         resetFailedToPending(),
       ])
@@ -123,13 +118,12 @@ export default function SystemHealthPanel() {
   }
 
   const clearFailedLocalCaches = async () => {
-    if (!window.confirm('Discard all failed local sync jobs (scans, boxes, videos) from this browser? Cloud data is not deleted.')) {
+    if (!window.confirm('Discard all failed local sync jobs (boxes, videos) from this browser? Cloud data is not deleted.')) {
       return
     }
     setClearing(true)
     try {
       await Promise.all([
-        clearFailedScans(),
         clearFailedSyncJobs(),
         clearFailedVideos(),
       ])
@@ -250,13 +244,12 @@ export default function SystemHealthPanel() {
           status={<StatusPill ok={localSync.failedJobs === 0} label={localSync.failedJobs ? 'Needs retry' : 'Ready'} />}
         >
           <dl className="space-y-2 text-xs">
-            <div className="flex justify-between gap-2"><dt className="text-slate-500">Pending scans</dt><dd className="font-bold text-slate-900">{localSync.pendingScans}</dd></div>
             <div className="flex justify-between gap-2"><dt className="text-slate-500">Pending videos</dt><dd className="font-bold text-slate-900">{localSync.pendingVideos}</dd></div>
             <div className="flex justify-between gap-2"><dt className="text-slate-500">Pending boxes</dt><dd className="font-bold text-slate-900">{localSync.pendingSaveJobs}</dd></div>
-            <div className="flex justify-between gap-2"><dt className="text-slate-500">Failed scans / boxes / videos</dt><dd className={`font-bold ${localSync.failedJobs ? 'text-red-600' : 'text-emerald-600'}`}>{localSync.failedScans || 0} / {localSync.failedSaveJobs || 0} / {localSync.failedVideos || 0}</dd></div>
+            <div className="flex justify-between gap-2"><dt className="text-slate-500">Failed boxes / videos</dt><dd className={`font-bold ${localSync.failedJobs ? 'text-red-600' : 'text-emerald-600'}`}>{localSync.failedSaveJobs || 0} / {localSync.failedVideos || 0}</dd></div>
             <p className="text-[10px] text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2">Counts are from this browser IndexedDB. Pending videos upload directly to Cloudflare R2 in parallel chunks. Use Upload now if a clip is stuck after a network blip.</p>
             <div className="flex flex-col gap-1.5 pt-1">
-              {(localSync.failedJobs > 0 || localSync.pendingVideos > 0 || localSync.pendingScans > 0 || localSync.pendingSaveJobs > 0) && (
+              {(localSync.failedJobs > 0 || localSync.pendingVideos > 0 || localSync.pendingSaveJobs > 0) && (
                 <button
                   type="button"
                   onClick={retryFailedLocalSync}

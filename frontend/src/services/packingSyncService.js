@@ -3,15 +3,6 @@
  * Ensures queued work completes after navigation, refresh, or brief disconnects.
  */
 import {
-  drainScanQueue,
-  getPendingScanCount,
-  getFailedScanCount,
-  getScannerReceivedAtIso,
-  resetFailedScans,
-  recoverUnadmittedScans,
-  pruneTerminalScans,
-} from '../utils/scanQueue'
-import {
   drainPackingSyncQueue,
   getPendingSyncJobCount,
   getFailedSyncJobCount,
@@ -25,16 +16,12 @@ let intervalId = null
 let running = false
 const listeners = new Set()
 
-let pendingScans = 0
 let pendingJobs = 0
-let failedScans = 0
 let failedJobs = 0
 
 function notify() {
   const payload = {
-    pendingScans,
     pendingJobs,
-    failedScans,
     failedJobs,
     running,
   }
@@ -43,61 +30,24 @@ function notify() {
 
 export function subscribePackingSyncStatus(fn) {
   listeners.add(fn)
-  fn({ pendingScans, pendingJobs, failedScans, failedJobs, running })
+  fn({ pendingJobs, failedJobs, running })
   return () => listeners.delete(fn)
 }
 
 async function refreshCounts() {
-  ;[pendingScans, pendingJobs, failedScans, failedJobs] = await Promise.all([
-    getPendingScanCount(),
+  ;[pendingJobs, failedJobs] = await Promise.all([
     getPendingSyncJobCount(),
-    getFailedScanCount(),
     getFailedSyncJobCount(),
   ])
   notify()
 }
 
-async function sendQueuedScan(scan) {
-  try {
-    const response = await packingAPI.increment({
-      consignment_id: scan.consignmentId,
-      barcode: scan.barcode,
-      box_no: scan.boxNo,
-      qty: scan.qty,
-      scan_id: scan.id,
-      station_id: scan.stationSessionId,
-      sequence_no: scan.sequenceNo,
-      client_created_at: scan.capturedAt,
-      scanner_received_at: getScannerReceivedAtIso(scan),
-    })
-    return response.data
-  } catch (error) {
-    if (!isMissingPackingSession(error)) throw error
-    await ensurePackingSession(scan.consignmentId)
-    const retry = await packingAPI.increment({
-      consignment_id: scan.consignmentId,
-      barcode: scan.barcode,
-      box_no: scan.boxNo,
-      qty: scan.qty,
-      scan_id: scan.id,
-      station_id: scan.stationSessionId,
-      sequence_no: scan.sequenceNo,
-      client_created_at: scan.capturedAt,
-      scanner_received_at: getScannerReceivedAtIso(scan),
-    })
-    return retry.data
-  }
-}
-
 export async function processPackingSyncQueues() {
-  if (running) return { skipped: true }
+  if (running) return
   running = true
   notify()
 
   try {
-    await drainScanQueue(sendQueuedScan, (scan, _result, err) => {
-      if (err) console.warn('[PackingSync] Scan retry:', scan.barcode, err?.message)
-    })
     await drainPackingSyncQueue(processSaveBoxJob, (job, _result, err) => {
       if (err) console.warn('[PackingSync] Save-box retry:', job.boxNo, err?.message)
     })
@@ -120,17 +70,12 @@ export async function initPackingSyncService() {
     const { pruneDuplicateBoxVideos } = await import('../utils/videoQueue')
     const pruned = await pruneDuplicateBoxVideos().catch(() => 0)
     if (pruned > 0) console.log(`[PackingSync] Pruned ${pruned} duplicate local video(s)`)
-    const [recovered, scans, jobs] = await Promise.all([
-      recoverUnadmittedScans(),
-      resetFailedScans(),
+    
+    const [jobs] = await Promise.all([
       resetFailedSyncJobs(),
-      pruneTerminalScans().catch(() => 0),
     ])
-    if (recovered > 0) {
-      console.log(`[PackingSync] Recovered ${recovered} durably captured scan(s) after refresh`)
-    }
-    if (scans + jobs > 0) {
-      console.log(`[PackingSync] Reset ${scans} failed scan(s), ${jobs} failed save-box job(s)`)
+    if (jobs > 0) {
+      console.log(`[PackingSync] Reset ${jobs} failed save-box job(s)`)
     }
   } catch (e) {
     console.warn('[PackingSync] Init recovery error:', e)

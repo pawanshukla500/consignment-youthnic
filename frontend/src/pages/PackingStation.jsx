@@ -26,23 +26,6 @@ import {
   MIN_RECOMMENDED_FREE_MB,
 } from '../utils/browserStorage';
 import { escapeHtml, openEscapedPrintWindow } from '../utils/printHtml';
-import {
-  captureScan,
-  createScanEnvelope,
-  drainScanQueue,
-  getPendingScanCount,
-  getFailedScanCount,
-  getScannerReceivedAtIso,
-  markScanReadyForSync,
-  markScanRejectedLocally,
-  notePhysicalScan,
-  noteRejectedBeforePersist,
-  recoverUnadmittedScan,
-  resetFailedScans,
-  subscribeScanDiagnostics,
-  warmScanQueueDb,
-} from '../utils/scanQueue';
-import { createScanCaptureCoordinator } from '../utils/scanCaptureCoordinator';
 import { enqueueSaveBoxJob, drainPackingSyncQueue, getPendingSyncJobCount, getFailedSyncJobCount, resetFailedSyncJobs } from '../utils/packingSyncQueue';
 import { processSaveBoxJob } from '../utils/saveBoxSyncHelper';
 import { useConsignmentSync } from '../context/ConsignmentSyncContext';
@@ -63,7 +46,6 @@ import {
   isValidBarcode,
   barcodeValidationMessage,
   normalizeBarcodeInput,
-  createScannerInputGuard,
   resolveQueueBarcode,
   getMarketplaceBarcode,
   barcodeMatchesSku,
@@ -264,8 +246,7 @@ export default function PackingStation() {
   const inSkuRef = useRef(null);
   const composeFrameRef = useRef(null);
   const uploadingQueueRef = useRef(false);
-  const scannerGuardRef = useRef(createScannerInputGuard());
-  const scanCaptureCoordinatorRef = useRef(createScanCaptureCoordinator());
+
   const boxClosePendingRef = useRef(false);
   const scanToastDedupRef = useRef({ message: '', at: 0 });
   const { pendingChanges } = useConsignmentSync();
@@ -329,7 +310,7 @@ export default function PackingStation() {
   useEffect(() => {
     checkResume();
     fetchConsignments();
-    updatePendingCount();
+
     const si = setInterval(() => checkSyncStatus(cidRef.current), 8000);
     const unsubVideo = subscribeVideoUploadStatus(({ pending, current, uploading, items }) => {
       setPendingUploads(pending);
@@ -400,7 +381,7 @@ export default function PackingStation() {
 
   useEffect(() => {
     if (syncState !== 'pending' && syncState !== 'failed') return undefined;
-    const timer = setInterval(() => { void updatePendingCount(); }, 2000);
+
     return () => clearInterval(timer);
   }, [syncState]);
 
@@ -418,22 +399,19 @@ export default function PackingStation() {
 
   const updatePendingCount = async () => {
     try {
-      const [{ getFailedCount }, videos, scans, saveJobs, failedScans, failedSaveJobs] = await Promise.all([
+      const [{ getFailedCount }, videos, saveJobs, failedSaveJobs] = await Promise.all([
         import('../utils/videoQueue'),
         getQueueCount(),
-        getPendingScanCount(),
         getPendingSyncJobCount(),
-        getFailedScanCount(),
         getFailedSyncJobCount(),
       ]);
       const failedVideos = await getFailedCount();
       setPendingUploads(videos);
-      setPendingScanJobs(scans);
       setPendingSaveJobs(saveJobs);
-      setFailedSyncJobs(failedScans + failedSaveJobs + failedVideos);
+      setFailedSyncJobs(failedSaveJobs + failedVideos);
       if (!navigator.onLine) setSyncState('offline');
-      else if (failedScans + failedSaveJobs + failedVideos > 0) setSyncState('failed');
-      else if (videos + scans + saveJobs > 0) setSyncState('pending');
+      else if (failedSaveJobs + failedVideos > 0) setSyncState('failed');
+      else if (videos + saveJobs > 0) setSyncState('pending');
       else setSyncState('synced');
     } catch (e) {
       console.warn('[Sync] Could not read pending queues:', e.message);
@@ -504,8 +482,7 @@ export default function PackingStation() {
           totalRequiredQty: r.data.totals?.totalRequiredQty ?? c.totalRequiredQty,
           boxCount: r.data.totals?.boxCount ?? 0,
         }));
-        const pendingScans = await getPendingScanCount();
-        if (r.data.skus?.length && pendingScans === 0) {
+        if (r.data.skus?.length) {
           commitPackingState((prev) => {
             if (prev.cid !== consignmentId) return prev;
             const mergedBoxes = { ...(r.data.boxes || {}), ...prev.boxes };
@@ -1131,7 +1108,6 @@ export default function PackingStation() {
     }
     const savedBox = current.box;
     try {
-      await runScanQueue();
       await packingAPI.saveBox({ consignment_id: current.cid, box_no: savedBox });
       toast('Box ' + savedBox + ' auto-saved', 'success', 3000);
     } catch (e) {
@@ -1261,11 +1237,7 @@ export default function PackingStation() {
       boxes: { ...prev.boxes, [v]: prev.boxes[v] || [] },
     }));
     const activeCid = cidRef.current || stateRef.current.cid;
-    if (activeCid) {
-      scanCaptureCoordinatorRef.current.openBox({ consignmentId: activeCid, boxNo: v });
-    }
     boxClosePendingRef.current = false;
-    scannerGuardRef.current.reset();
     sfx.box();
     toast('Box ' + v + ' active', 'success');
     setZoneState(3);
@@ -1297,69 +1269,6 @@ export default function PackingStation() {
         boxes,
       };
     });
-  };
-
-  const reverseLocallyAppliedScan = (scan) => {
-    if (!scan?.uiApplied) return;
-    const targetBox = String(scan.boxNo);
-    const reverseDelta = -(Number(scan.qty) || 1);
-    commitPackingState((prev) => {
-      const boxItems = (prev.boxes[targetBox] || []).map((item) => ({ ...item }));
-      const match = (item) => (
-        (scan.skuId && item.skuId === scan.skuId)
-        || item.barcode === scan.barcode
-        || item.marketplaceBarcode === scan.barcode
-        || item.marketplaceSku === scan.marketplaceSku
-      );
-      const existing = boxItems.find(match);
-      if (existing) {
-        existing.qty += reverseDelta;
-      } else if (reverseDelta > 0) {
-        boxItems.push({
-          skuId: scan.skuId,
-          marketplaceBarcode: scan.barcode,
-          barcode: scan.barcode,
-          marketplaceSku: scan.marketplaceSku || scan.barcode,
-          internalSku: scan.internalSku || scan.barcode,
-          name: scan.internalSku || scan.barcode,
-          qty: reverseDelta,
-        });
-      }
-      return {
-        ...prev,
-        boxes: {
-          ...prev.boxes,
-          [targetBox]: boxItems.filter((item) => Number(item.qty) > 0),
-        },
-      };
-    }, { syncSkus: true, flush: true });
-  };
-
-  const handleQueuedScanResult = async (scan, result, err) => {
-    if (err) {
-      sfx.err();
-      toast(`Scan failed (${scan.barcode}) — will retry`, 'error');
-      if (scan.status === 'failed' && cidRef.current) {
-        void refreshPackingSession(cidRef.current);
-      }
-      await updatePendingCount();
-      return;
-    }
-    if (result?.not_found || result?.over_limit || result?.locked || result?.error) {
-      reverseLocallyAppliedScan(scan);
-      const reason = result.not_found ? 'not_found' : result.locked ? 'locked' : result.over_limit ? 'over_limit' : 'rejected';
-      const message = result.message || result.error || getScanMessage(reason, { ...result, barcode: scan.barcode });
-      playScanSound(reason, result);
-      toast(`SERVER REJECTED: ${message}`, 'error', 7000);
-      flash('err');
-      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-      if (cidRef.current) void refreshPackingSession(cidRef.current);
-      await updatePendingCount();
-      return;
-    }
-    // Local UI already acknowledged the durable event. Never replace it with an
-    // earlier server box snapshot while newer local scans are still pending.
-    await updatePendingCount();
   };
 
   const applyOptimisticScan = (prev, barcode, qty = 1) => {
@@ -1403,8 +1312,6 @@ export default function PackingStation() {
       };
     }
 
-    // Validation must never mutate the live state row; the durable commit below
-    // applies the quantity exactly once.
     const boxItems = clonePackingBoxItems(prev.boxes[prev.box] || []);
     const existing = boxItems.find((i) => i.skuId === sku.id);
     const marketplaceBarcode = getMarketplaceBarcode(sku) || normalized;
@@ -1447,60 +1354,7 @@ export default function PackingStation() {
     };
   };
 
-  const isMissingPackingSession = (error) => {
-    const message = error?.response?.data?.error || error?.message || '';
-    return error?.response?.status === 400 && /No consignment loaded|Invalid session/i.test(message);
-  };
-
-  const ensurePackingSession = async (consignmentId) => {
-    await refreshPackingSession(consignmentId);
-  };
-
-  const sendQueuedScan = async (scan) => {
-    const postIncrement = async () => {
-      const response = await packingAPI.increment({
-        consignment_id: scan.consignmentId,
-        barcode: scan.barcode,
-        box_no: scan.boxNo,
-        qty: scan.qty,
-        scan_id: scan.id,
-        station_id: scan.stationSessionId,
-        sequence_no: scan.sequenceNo,
-        client_created_at: scan.capturedAt,
-        scanner_received_at: getScannerReceivedAtIso(scan),
-      });
-      if (response.data?.retry) {
-        const retryErr = new Error(response.data.error || 'Scan persist failed');
-        retryErr.retry = true;
-        throw retryErr;
-      }
-      return response.data;
-    };
-    try {
-      return await postIncrement();
-    } catch (error) {
-      if (error?.response?.status === 503 || error?.retry) {
-        const retryErr = new Error(error?.response?.data?.error || error.message || 'Scan persist failed');
-        retryErr.retry = true;
-        throw retryErr;
-      }
-      if (!isMissingPackingSession(error)) throw error;
-      await ensurePackingSession(scan.consignmentId);
-      return postIncrement();
-    }
-  };
-
-  const runScanQueue = async () => {
-    await drainScanQueue(sendQueuedScan, handleQueuedScanResult);
-    await updatePendingCount();
-  };
-
-  const kickScanQueue = () => {
-    void drainScanQueue(sendQueuedScan, handleQueuedScanResult).then(() => updatePendingCount());
-  };
-
   const runPendingSync = async (showLog = false) => {
-    await runScanQueue();
     await drainPackingSyncQueue(
       processSaveBoxJob,
       (job, result, err) => {
@@ -1627,25 +1481,7 @@ export default function PackingStation() {
     return { durableButUiFailed: true };
   };
 
-  const admitDurableScanForSync = async (scan, fields) => {
-    const requireAdmitted = (stored) => {
-      if (stored?.readyForSync === true) return stored;
-      const error = new Error('Durable scan could not be admitted to the sync queue');
-      error.code = 'SCAN_ADMISSION_FAILED';
-      throw error;
-    };
-    try {
-      return requireAdmitted(await markScanReadyForSync(scan.id, fields));
-    } catch (firstError) {
-      try {
-        return requireAdmitted(await recoverUnadmittedScan(scan.id, fields));
-      } catch (recoveryError) {
-        recoveryError.code = recoveryError.code || 'SCAN_ADMISSION_FAILED';
-        recoveryError.cause = recoveryError.cause || firstError;
-        throw recoveryError;
-      }
-    }
-  };
+
 
   const applyDurablyCapturedScan = async (scan) => {
     const snapshot = stateRef.current;
@@ -1707,7 +1543,6 @@ export default function PackingStation() {
     const value = normalizeBarcodeInput(
       overrideBarcode !== undefined ? overrideBarcode : inSkuRef.current?.value
     );
-    if (!scannerGuardRef.current.consumeSubmission(value)) return;
     doScan(value);
   };
 
@@ -1725,9 +1560,8 @@ export default function PackingStation() {
     inSkuRef.current.value = cleaned;
     inSkuRef.current.focus();
     try {
-      inSkuRef.current.setSelectionRange(0, cleaned.length);
-    } catch {}
-    scannerGuardRef.current.noteInput();
+      inSkuRef.current.select();
+    } catch (e) {}
     submitSkuInput(cleaned);
   };
 
@@ -1782,36 +1616,57 @@ export default function PackingStation() {
       return;
     }
 
-    inSkuRef.current.value = '';
-    inSkuRef.current?.focus();
+    if (inSkuRef.current) {
+      inSkuRef.current.value = bc;
+      inSkuRef.current.focus();
+      try {
+        inSkuRef.current.select();
+      } catch (e) {}
+    }
 
     const capturedCid = session.cid;
     const capturedBox = String(session.box);
     const localSku = session.skus.find((sku) => barcodeMatchesSku(sku, bc));
     const queueBarcode = localSku ? resolveQueueBarcode(localSku, bc) : bc;
-    const envelope = createScanEnvelope({
-      barcode: queueBarcode,
-      consignmentId: capturedCid,
-      boxNo: capturedBox,
-      qty: 1,
-      scannerReceivedAt,
-      skuId: localSku?.id || null,
-      marketplaceSku: localSku?.marketplaceSku || null,
-      internalSku: localSku?.internalSku || null,
-    });
-
-    const registration = scanCaptureCoordinatorRef.current.registerScan({
-      context: { consignmentId: capturedCid, boxNo: capturedBox },
-      capture: () => captureScan(envelope),
-      afterDurable: applyDurablyCapturedScan,
-      onCaptureFailure: handleScanCaptureFailure,
-      onPostDurabilityFailure: recoverPostDurabilityFailure,
-    });
-    if (!registration.accepted) {
-      noteRejectedBeforePersist();
-      sfx.warn();
-      toast(`Box ${capturedBox} is closing — this item was not counted. Scan it in the active box.`, 'error', 6000);
+    
+    const proxySnapshot = { ...session, box: capturedBox, cid: capturedCid };
+    const optimistic = applyOptimisticScan(proxySnapshot, queueBarcode, 1);
+    
+    if (!optimistic?.ok) {
+      const reason = optimistic?.reason || 'rejected';
+      const message = optimistic?.message || getScanMessage(reason, optimistic);
+      playScanSound(reason, optimistic);
+      toast(message, 'error', 2500);
+      flash('err');
+      if (navigator.vibrate) navigator.vibrate([250, 100, 250]);
+      return;
     }
+
+    commitPackingState((latestState) => {
+      const boxItems = (latestState.boxes[capturedBox] || []).map((item) => ({ ...item }));
+      const existing = boxItems.find((item) => item.skuId === optimistic.scannedSku.id);
+      if (existing) {
+        existing.qty += 1;
+      } else {
+        boxItems.push({
+          skuId: optimistic.scannedSku.id,
+          marketplaceBarcode: optimistic.queueBarcode,
+          barcode: optimistic.queueBarcode,
+          marketplaceSku: optimistic.scannedSku.marketplaceSku || optimistic.queueBarcode,
+          internalSku: optimistic.scannedSku.internalSku,
+          name: optimistic.scannedSku.internalSku,
+          qty: 1,
+        });
+      }
+      return {
+        ...latestState,
+        boxes: { ...latestState.boxes, [capturedBox]: boxItems },
+      };
+    }, { syncSkus: true, flush: true });
+
+    playScanSound('ok');
+    flash('ok');
+    if (navigator.vibrate) navigator.vibrate(40);
   };
 
   const removeItem = async (marketplaceSku) => {
@@ -1823,63 +1678,23 @@ export default function PackingStation() {
     
     const capturedCid = session.cid;
     const capturedBox = String(session.box);
-    const envelope = createScanEnvelope({
-      barcode: bc,
-      consignmentId: capturedCid,
-      boxNo: capturedBox,
-      qty: -1,
-      skuId: item?.skuId || null,
-      marketplaceSku: item?.marketplaceSku || marketplaceSku,
-      internalSku: item?.internalSku || null,
-    });
-
-    const registration = scanCaptureCoordinatorRef.current.registerScan({
-      context: { consignmentId: capturedCid, boxNo: capturedBox },
-      capture: () => captureScan(envelope),
-      afterDurable: async (scan) => {
-        const latestItems = stateRef.current.boxes[capturedBox] || [];
-        const stillPresent = latestItems.some((row) => (
-          row.skuId === scan.skuId
-          || row.barcode === scan.barcode
-          || row.marketplaceBarcode === scan.barcode
-        ));
-        if (!stillPresent) {
-          return showDurableLocalRejection(scan, {
-            reason: 'no_quantity',
-            message: 'Nothing remains to remove from this box',
-          });
-        }
-        await admitDurableScanForSync(scan, {
-          uiApplied: true,
-          uiCommittedAt: Date.now(),
-          indexedDbCommittedAt: scan.indexedDbCommittedAt,
-        });
-        commitPackingState((latestState) => ({
-          ...latestState,
-          boxes: {
-            ...latestState.boxes,
-            [capturedBox]: (latestState.boxes[capturedBox] || [])
-              .map((row) => {
-                const match = row.skuId === scan.skuId
-                  || row.barcode === scan.barcode
-                  || row.marketplaceBarcode === scan.barcode;
-                return match ? { ...row, qty: row.qty - 1 } : row;
-              })
-              .filter((row) => row.qty > 0),
-          },
-        }), { syncSkus: true, flush: true });
-        setSyncState(navigator.onLine ? 'pending' : 'offline');
-        toast('Removed locally — syncing', 'info');
-        void updatePendingCount();
-        kickScanQueue();
-        return { locallyCaptured: true };
+    
+    commitPackingState((latestState) => ({
+      ...latestState,
+      boxes: {
+        ...latestState.boxes,
+        [capturedBox]: (latestState.boxes[capturedBox] || [])
+          .map((row) => {
+            const match = row.skuId === item?.skuId
+              || row.barcode === item?.barcode
+              || row.marketplaceBarcode === item?.marketplaceBarcode;
+            return match ? { ...row, qty: row.qty - 1 } : row;
+          })
+          .filter((row) => row.qty > 0),
       },
-      onCaptureFailure: handleScanCaptureFailure,
-      onPostDurabilityFailure: recoverPostDurabilityFailure,
-    });
-    if (!registration.accepted) {
-      toast(`Box ${capturedBox} is closing — removal was not applied`, 'error', 5000);
-    }
+    }), { syncSkus: true, flush: true });
+    
+    toast('Removed locally', 'info');
   };
 
   const saveBoxWithWeight = async (boxNo, weight, unit, imageFileOrBlob, itemsSnapshot) => {
@@ -1889,11 +1704,8 @@ export default function PackingStation() {
     const afterSave = async () => {
       void packingAPI.generateLabel({ consignment_id: cid, box_no: boxNo }).catch(() => {});
       void checkSyncStatus(cid);
-      void runScanQueue()
-        .catch((err) => console.warn('[Packing] Pending scan drain after save failed:', err.message))
-        .then(() => drainPackingSyncQueue(processSaveBoxJob, () => {}))
-        .then(() => updatePendingCount())
-        .catch((err) => console.warn('[Packing] Save-box queue drain after scans failed:', err.message));
+      void drainPackingSyncQueue(processSaveBoxJob, () => {})
+        .catch((err) => console.warn('[Packing] Save-box queue drain failed:', err.message));
       return true;
     };
 
@@ -1962,21 +1774,7 @@ export default function PackingStation() {
 
     const context = { consignmentId: started.cid, boxNo: String(started.box) };
     boxClosePendingRef.current = true;
-    scanCaptureCoordinatorRef.current.closeBox(context);
     setLoading(true);
-    try {
-      // Local-only barrier: every registered physical event has committed to
-      // IndexedDB and its UI application/rejection has settled. Cloud upload is
-      // intentionally not part of this barrier.
-      await scanCaptureCoordinatorRef.current.flushAcceptedScansForBox(context);
-    } catch (error) {
-      scanCaptureCoordinatorRef.current.openBox(context);
-      boxClosePendingRef.current = false;
-      toast(error.message || 'Could not finalize local scans for this box', 'error', 7000);
-      return;
-    } finally {
-      setLoading(false);
-    }
 
     const settled = stateRef.current;
     const itemsSnapshot = (settled.boxes[context.boxNo] || []).map((item) => ({ ...item }));
@@ -1988,7 +1786,6 @@ export default function PackingStation() {
         }
         await actionAfterSave();
       } catch (err) {
-        scanCaptureCoordinatorRef.current.openBox(context);
         toast(err.message || 'Could not save box video locally', 'error', 7000);
       } finally {
         boxClosePendingRef.current = false;
@@ -1998,7 +1795,6 @@ export default function PackingStation() {
     }
 
     const reopenAfterFailure = () => {
-      scanCaptureCoordinatorRef.current.openBox(context);
       boxClosePendingRef.current = false;
     };
     setWeightModalData({
@@ -2531,9 +2327,8 @@ export default function PackingStation() {
                 spellCheck={false}
                 inputMode={packingAllowPaste ? 'text' : 'none'}
                 className="w-full px-4 py-4 border-2 rounded-xl outline-none transition-all text-lg font-bold bg-slate-50 border-slate-300 text-slate-900 font-mono focus:ring-4 focus:ring-emerald-500/20 focus:border-emerald-500 placeholder:text-slate-400 placeholder:font-normal"
-                onFocus={() => sfx.init()}
+                onFocus={(e) => { sfx.init(); e.target.select(); }}
                 onPointerDown={() => sfx.init()}
-                onInput={() => scannerGuardRef.current.noteInput()}
                 onKeyDown={(e) => {
                   sfx.init();
                   if (e.key === 'Enter' || e.key === 'Tab') {
