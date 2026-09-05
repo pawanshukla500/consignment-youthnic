@@ -47,6 +47,7 @@ import {
   isValidBarcode,
   barcodeValidationMessage,
   normalizeBarcodeInput,
+  createScannerInputGuard,
   resolveQueueBarcode,
   getMarketplaceBarcode,
   barcodeMatchesSku,
@@ -254,6 +255,9 @@ export default function PackingStation() {
   const desktopPendingBytesRef = useRef(0);
   const desktopProofRef = useRef(null);
   const desktopOperationRef = useRef(null);
+  // Exactly-once gate for one scanner input generation. Hardware scanners often
+  // send Enter plus a form submit / CR+LF; without this, Zone 3 double-counts.
+  const scannerGuardRef = useRef(createScannerInputGuard());
 
   const boxClosePendingRef = useRef(false);
   const scanToastDedupRef = useRef({ message: '', at: 0 });
@@ -1294,13 +1298,6 @@ export default function PackingStation() {
     setLoading(false);
   };
 
-  const queueSaveBoxLocally = async (consignmentId, boxNo, items, message = 'Box saved locally and will sync when online') => {
-    await enqueueSaveBoxJob({ consignmentId, boxNo, items: items || [] });
-    setSyncState(navigator.onLine ? 'pending' : 'offline');
-    await updatePendingCount();
-    toast(message, 'warning', 5000);
-  };
-
   const autoSaveCurrentBox = async () => {
     if (isDesktopPacking && stateRef.current.box) {
       throw new Error('Use Save Box or Next Box to confirm the current box before continuing.');
@@ -1314,23 +1311,26 @@ export default function PackingStation() {
       return;
     }
     const savedBox = current.box;
-    if (isDesktopPacking) {
-      await ensureBoxVideoSafe({ requireUploaded: false, silent: true });
-      const committed = await commitDesktopBoxLocally(savedBox, null, null, null, current.boxes[savedBox]);
-      if (committed?.localSafe) toast(`Box ${savedBox} saved locally`, 'success', 3000);
-      return;
-    }
+    const items = (current.boxes[savedBox] || []).map((item) => ({ ...item }));
+    // Scans live in local box state only. save-box without `items` hits an empty
+    // server session and either 400s or overwrites with stale packed qty.
+    await enqueueSaveBoxJob({
+      consignmentId: current.cid,
+      boxNo: savedBox,
+      items,
+    });
+    setSyncState(navigator.onLine ? 'pending' : 'offline');
     try {
-      await packingAPI.saveBox({ consignment_id: current.cid, box_no: savedBox });
-      toast('Box ' + savedBox + ' auto-saved', 'success', 3000);
-    } catch (e) {
-      await queueSaveBoxLocally(
-        current.cid,
-        savedBox,
-        current.boxes[savedBox],
-        `Box ${savedBox} pending sync. It is not confirmed on the server yet.`
+      await drainPackingSyncQueue(
+        processSaveBoxJob,
+        (job, _result, err) => {
+          if (err) toast(`Box ${job.boxNo} still pending sync`, 'warning', 4000);
+        }
       );
+    } catch (e) {
+      toast(`Box ${savedBox} pending sync. It is not confirmed on the server yet.`, 'warning', 5000);
     }
+    await updatePendingCount();
     await ensureBoxVideoSafe({ requireUploaded: false, silent: true });
   };
 
@@ -1476,6 +1476,7 @@ export default function PackingStation() {
       boxes: { ...prev.boxes, [v]: prev.boxes[v] || [] },
     }));
     boxClosePendingRef.current = false;
+    scannerGuardRef.current.reset();
     sfx.box();
     toast('Box ' + v + ' active', 'success');
     setZoneState(3);
@@ -1703,6 +1704,7 @@ export default function PackingStation() {
     const value = normalizeBarcodeInput(
       overrideBarcode !== undefined ? overrideBarcode : inSkuRef.current?.value
     );
+    if (!scannerGuardRef.current.consumeSubmission(value)) return;
     doScan(value);
   };
 
@@ -1722,6 +1724,7 @@ export default function PackingStation() {
     try {
       inSkuRef.current.select();
     } catch (e) {}
+    scannerGuardRef.current.noteInput();
     submitSkuInput(cleaned);
   };
 
@@ -1966,10 +1969,14 @@ export default function PackingStation() {
     }
 
     const afterSave = async () => {
-      void packingAPI.generateLabel({ consignment_id: cid, box_no: boxNo }).catch(() => {});
       void checkSyncStatus(cid);
-      void drainPackingSyncQueue(processSaveBoxJob, () => {})
-        .catch((err) => console.warn('[Packing] Save-box queue drain failed:', err.message));
+      try {
+        await drainPackingSyncQueue(processSaveBoxJob, () => {});
+      } catch (err) {
+        console.warn('[Packing] Save-box queue drain failed:', err.message);
+      }
+      await updatePendingCount();
+      void processVideoUploadQueue({ wait: false, forceNow: true });
       return true;
     };
 
@@ -1993,6 +2000,14 @@ export default function PackingStation() {
 
       toast(`Box ${boxNo} saved locally — server sync pending`, 'success', 3500);
       const videoOk = await afterSave();
+      const pending = await getPendingSyncJobCount();
+      toast(
+        pending === 0
+          ? `Box ${boxNo} saved and synced`
+          : `Box ${boxNo} saved locally — server sync pending`,
+        pending === 0 ? 'success' : 'warning',
+        3500,
+      );
       return videoOk;
     } catch (err) {
       console.error('Local save-box failed:', err);
@@ -2021,11 +2036,9 @@ export default function PackingStation() {
         boxNo,
         weight,
         unit,
-        isOnline: false,
+        isOnline: navigator.onLine,
       })
     }
-
-    toast(`Box ${boxNo} saved locally and queued for sync`, 'info', 5000);
   };
 
   const handleBoxCompletion = async (actionAfterSave) => {
@@ -2620,6 +2633,7 @@ export default function PackingStation() {
                 className="w-full px-4 py-4 border-2 rounded-xl outline-none transition-all text-lg font-bold bg-slate-50 border-slate-300 text-slate-900 font-mono focus:ring-4 focus:ring-emerald-500/20 focus:border-emerald-500 placeholder:text-slate-400 placeholder:font-normal"
                 onFocus={(e) => { sfx.init(); e.target.select(); }}
                 onPointerDown={() => sfx.init()}
+                onInput={() => scannerGuardRef.current.noteInput()}
                 onKeyDown={(e) => {
                   sfx.init();
                   if (e.key === 'Enter' || e.key === 'Tab') {

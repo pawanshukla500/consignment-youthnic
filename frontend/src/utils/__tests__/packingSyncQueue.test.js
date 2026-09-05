@@ -26,6 +26,24 @@ describe('durable save-box queue', () => {
     expect(job.items).toEqual([{ skuId: 'sku-1', barcode: 'ABC-1', qty: 1 }])
   })
 
+  it('drains a save-box job with its local items snapshot', async () => {
+    const items = [{ skuId: 'sku-1', barcode: 'ABC-1', qty: 2 }]
+    await enqueueSaveBoxJob({
+      consignmentId: 'C1',
+      boxNo: '4',
+      items,
+    })
+    const sent = []
+    const result = await drainPackingSyncQueue(async (job) => {
+      sent.push(job)
+      return { ok: true }
+    })
+    expect(result).toEqual({ done: true, deferred: false })
+    expect(sent).toHaveLength(1)
+    expect(sent[0].items).toEqual(items)
+    expect(await getPendingSyncJobs()).toHaveLength(0)
+  })
+
   it('defers once without a busy loop when accepted scans are still pending', async () => {
     await enqueueSaveBoxJob({
       consignmentId: 'C1',

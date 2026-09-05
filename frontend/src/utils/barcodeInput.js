@@ -23,19 +23,26 @@ export function resolveQueueBarcode(sku, scannedInput) {
   return canonical || scanned
 }
 
-export function barcodeMatchesSku(sku, barcode) {
-  const key = normalizeBarcodeInput(barcode).toLowerCase()
-  if (!key || !sku) return false
-  return [
+/**
+ * Marketplace scan identifiers only. Internal SKU is display/report data and
+ * must never count as a packing barcode (mirrors backend getScanKeys).
+ */
+export function getScanKeys(sku = {}) {
+  return Array.from(new Set([
     sku.marketplaceBarcode,
     sku.skuBarcode,
     sku.scanBarcode,
     sku.barcode,
     sku.marketplaceSku,
-    sku.internalSku,
   ]
-    .filter(Boolean)
-    .some((value) => String(value).trim().toLowerCase() === key)
+    .map((value) => normalizeBarcodeInput(value))
+    .filter(Boolean)))
+}
+
+export function barcodeMatchesSku(sku, barcode) {
+  const key = normalizeBarcodeInput(barcode).toLowerCase()
+  if (!key || !sku) return false
+  return getScanKeys(sku).some((value) => value.toLowerCase() === key)
 }
 
 export function isValidBarcode(value) {

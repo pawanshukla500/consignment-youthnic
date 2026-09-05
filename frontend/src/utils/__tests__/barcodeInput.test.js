@@ -4,6 +4,7 @@ import {
   barcodeValidationMessage,
   normalizeBarcodeInput,
   barcodeMatchesSku,
+  getScanKeys,
   createScannerInputGuard,
 } from '../barcodeInput';
 
@@ -42,10 +43,21 @@ describe('barcodeInput', () => {
   });
 
   describe('barcodeMatchesSku', () => {
-    it('matches against sku fields case-insensitively', () => {
-      const sku = { marketplaceBarcode: 'SKU-ABC' };
+    it('matches against marketplace scan fields case-insensitively', () => {
+      const sku = { marketplaceBarcode: 'SKU-ABC', internalSku: 'INT-ABC' };
       expect(barcodeMatchesSku(sku, 'sku-abc')).toBe(true);
       expect(barcodeMatchesSku(sku, 'SKU-DEF')).toBe(false);
+    });
+
+    it('does not treat internal SKU as a packing barcode', () => {
+      const sku = {
+        marketplaceBarcode: 'X001234567',
+        marketplaceSku: 'MKT-1',
+        internalSku: 'INT-1',
+      };
+      expect(barcodeMatchesSku(sku, 'INT-1')).toBe(false);
+      expect(barcodeMatchesSku(sku, 'X001234567')).toBe(true);
+      expect(getScanKeys(sku)).toEqual(['X001234567', 'MKT-1']);
     });
   });
 
