@@ -2,13 +2,16 @@ const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const { requirePermission } = require('../utils/permissions');
+const { isElevatedRole } = require('../utils/permissions');
 const { generateId, now, addAuditLog, firestoreHelpers } = require('../utils/helpers');
 const { enrichConsignment, buildMarketplaceMap } = require('../utils/dispatchPlanning');
 const { getPackingLoadUpdates, getSaveBoxUpdates, getPackingFinishUpdates, getQuantityReductionUpdates } = require('../utils/shipmentStatus');
 const { loadDraft, saveDraft, scheduleDraftSave, flushDraftSave, clearDraft, applyDraftToSession } = require('../utils/packingDraft');
 const { emitConsignmentChange } = require('../utils/syncBus');
-const { pgEnabled } = require('../config/database');
+const { getPool, pgEnabled } = require('../config/database');
 const { saveBoxWithPostgresTransaction } = require('../utils/packingPersistence');
+const { buildBoxOperationHash } = require('../utils/packingOperation');
+const { assertPackingStationAccess } = require('../utils/packingLease');
 const { getMarketplaceBarcode, getScanKeys, findSkuByScanBarcode, clean } = require('../utils/skuIdentity');
 const { resolveConsignmentByKey } = require('../utils/resolveConsignment');
 const { resolveStoragePath, getSignedReadUrl } = require('../utils/storage');
@@ -29,6 +32,178 @@ const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const incrementLocks = new Map();
 
 router.use(authenticateToken, requirePermission('packing', 'use the packing station'));
+router.use(async (req, res, next) => {
+  if (req.method !== 'POST' || req.path.startsWith('/lease')) return next();
+  try {
+    if (req.body?.consignment_id) {
+      const cid = req.path === '/load' ? (await resolveConsignmentByKey(req.body.consignment_id))?.id : req.body.consignment_id;
+      await assertPackingStationAccess(cid, req.body.station_id || req.headers['x-station-id'], req.user.id);
+    }
+    next();
+  } catch (error) { res.status(error.statusCode || 503).json({ error: error.message, code: error.code || 'PACKING_LEASE_CHECK_FAILED' }); }
+});
+
+function requirePostgresForDesktop(res) {
+  if (pgEnabled()) return true;
+  res.status(503).json({
+    error: 'Desktop packing requires the durable PostgreSQL backend.',
+    code: 'DESKTOP_POSTGRES_REQUIRED',
+    retry: true,
+  });
+  return false;
+}
+
+// V1 allows one active offline-capable station to own a consignment. The
+// station id is generated once by Electron and is never inferred from IP.
+router.post('/lease/claim', async (req, res) => {
+  if (!requirePostgresForDesktop(res)) return;
+  const {
+    consignment_id: consignmentId,
+    station_id: stationId,
+    station_name: stationName,
+    warehouse,
+  } = req.body || {};
+  if (!consignmentId || !stationId) {
+    return res.status(400).json({ error: 'consignment_id and station_id are required' });
+  }
+
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: consignmentRows } = await client.query(
+      `SELECT id FROM documents WHERE collection = 'consignments' AND id = $1 FOR UPDATE`,
+      [consignmentId]
+    );
+    if (!consignmentRows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Consignment not found' });
+    }
+
+    const { rows: leaseRows } = await client.query(
+      `SELECT * FROM packing_station_leases
+       WHERE consignment_id = $1 AND status = 'active'
+       FOR UPDATE`,
+      [consignmentId]
+    );
+    const current = leaseRows[0];
+    if (current && (current.station_id !== String(stationId) || current.user_id !== String(req.user.id))) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `Consignment currently assigned to ${current.station_name || current.station_id}.`,
+        code: 'PACKING_LEASE_CONFLICT',
+        lease: {
+          leaseId: current.lease_id,
+          stationId: current.station_id,
+          stationName: current.station_name,
+          userId: current.user_id,
+          claimedAt: current.claimed_at,
+          heartbeatAt: current.heartbeat_at,
+        },
+      });
+    }
+
+    const leaseId = current?.lease_id || generateId();
+    const { rows } = await client.query(
+      `INSERT INTO packing_station_leases
+        (lease_id, consignment_id, station_id, station_name, warehouse, user_id, status, claimed_at, heartbeat_at, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, 'active', COALESCE((SELECT claimed_at FROM packing_station_leases WHERE lease_id = $1), now()), now(), $7::jsonb)
+       ON CONFLICT (lease_id) DO UPDATE SET
+         station_name = EXCLUDED.station_name,
+         warehouse = EXCLUDED.warehouse,
+         user_id = EXCLUDED.user_id,
+         status = 'active',
+         heartbeat_at = now(),
+         released_at = NULL,
+         released_by = NULL,
+         metadata = EXCLUDED.metadata
+       RETURNING *`,
+      [leaseId, consignmentId, String(stationId), stationName || null, warehouse || null, String(req.user.id), JSON.stringify({ app: 'youthnic-packing-station-desktop' })]
+    );
+    await client.query('COMMIT');
+    const lease = rows[0];
+    return res.json({
+      ok: true,
+      lease: {
+        leaseId: lease.lease_id,
+        consignmentId: lease.consignment_id,
+        stationId: lease.station_id,
+        stationName: lease.station_name,
+        warehouse: lease.warehouse,
+        claimedAt: lease.claimed_at,
+        heartbeatAt: lease.heartbeat_at,
+      },
+    });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('Error claiming packing station lease:', error);
+    return sendError(res, error);
+  } finally {
+    client.release();
+  }
+});
+
+router.post('/lease/renew', async (req, res) => {
+  if (!requirePostgresForDesktop(res)) return;
+  const { consignment_id: consignmentId, station_id: stationId, lease_id: leaseId } = req.body || {};
+  if (!consignmentId || !stationId || !leaseId) {
+    return res.status(400).json({ error: 'consignment_id, station_id, and lease_id are required' });
+  }
+  const { rowCount } = await getPool().query(
+    `UPDATE packing_station_leases
+     SET heartbeat_at = now()
+     WHERE lease_id = $1 AND consignment_id = $2 AND station_id = $3 AND user_id = $4 AND status = 'active'`,
+    [String(leaseId), consignmentId, String(stationId), String(req.user.id)]
+  );
+  if (!rowCount) return res.status(409).json({ error: 'Packing station lease is no longer active', code: 'PACKING_LEASE_NOT_ACTIVE' });
+  return res.json({ ok: true, renewedAt: now() });
+});
+
+router.get('/lease', async (req, res) => {
+  if (!requirePostgresForDesktop(res)) return;
+  const consignmentId = String(req.query.consignment_id || '');
+  if (!consignmentId) return res.status(400).json({ error: 'consignment_id is required' });
+  const { rows } = await getPool().query(
+    `SELECT * FROM packing_station_leases
+     WHERE consignment_id = $1 AND status = 'active'
+     ORDER BY claimed_at DESC LIMIT 1`,
+    [consignmentId]
+  );
+  const lease = rows[0];
+  return res.json({
+    active: Boolean(lease),
+    lease: lease ? {
+      leaseId: lease.lease_id,
+      stationId: lease.station_id,
+      stationName: lease.station_name,
+      userId: lease.user_id,
+      claimedAt: lease.claimed_at,
+      heartbeatAt: lease.heartbeat_at,
+    } : null,
+  });
+});
+
+router.post('/lease/release', async (req, res) => {
+  if (!requirePostgresForDesktop(res)) return;
+  const { consignment_id: consignmentId, station_id: stationId, lease_id: leaseId, force = false } = req.body || {};
+  if (!consignmentId) return res.status(400).json({ error: 'consignment_id is required' });
+  if (force && !isElevatedRole(req.user.role)) {
+    return res.status(403).json({ error: 'Only an elevated user can force-release a station lease' });
+  }
+  const values = [consignmentId];
+  let where = 'consignment_id = $1 AND status = \'active\'';
+  if (!force) {
+    values.push(String(stationId || ''), String(leaseId || ''), String(req.user.id));
+    where += ' AND station_id = $2 AND lease_id = $3 AND user_id = $4';
+  }
+  const { rowCount } = await getPool().query(
+    `UPDATE packing_station_leases
+     SET status = 'released', released_at = now(), released_by = $${values.length + 1}
+     WHERE ${where}`,
+    [...values, String(req.user.id)]
+  );
+  if (!rowCount) return res.status(404).json({ error: 'Active packing station lease not found' });
+  return res.json({ ok: true });
+});
 
 function acquireIncrementLock(consignmentId) {
   const key = String(consignmentId || '');
@@ -1515,7 +1690,29 @@ router.post('/quantity-removal/:id/complete', authenticateToken, async (req, res
 // Save box
 router.post('/save-box', authenticateToken, async (req, res) => {
   try {
-    const { consignment_id, box_no, weight, weight_unit, weight_image_id, items } = req.body;
+    const {
+      consignment_id,
+      box_no,
+      weight,
+      weight_unit,
+      weight_image_id,
+      items,
+      operation_id,
+      station_id,
+    } = req.body;
+    if (operation_id && !pgEnabled()) {
+      return res.status(503).json({
+        error: 'Idempotent desktop box commits require the durable PostgreSQL backend.',
+        code: 'DESKTOP_POSTGRES_REQUIRED',
+        retry: true,
+      });
+    }
+    if (operation_id && !station_id) {
+      return res.status(400).json({
+        error: 'station_id is required for desktop box commits.',
+        code: 'DESKTOP_STATION_ID_REQUIRED',
+      });
+    }
     const session = await getOrLoadSession(consignment_id);
     if (!session.skus || !session.skus.length || !box_no) return res.status(400).json({ error: 'Invalid session' });
 
@@ -1530,7 +1727,7 @@ router.post('/save-box', authenticateToken, async (req, res) => {
     const totalQty = boxItems.reduce((sum, i) => sum + i.qty, 0);
     const timestamp = now();
 
-    const boxData = {
+    let boxData = {
       id: boxId,
       consignmentId: consignment_id,
       boxNo: String(box_no),
@@ -1597,6 +1794,16 @@ router.post('/save-box', authenticateToken, async (req, res) => {
         boxData,
         userId: req.user.id,
         timestamp,
+        operationId: operation_id || null,
+        stationId: station_id || null,
+        operationPayload: {
+          consignmentId: consignment_id,
+          boxNo: box_no,
+          weight,
+          weightUnit: weight_unit,
+          weightImageId: weight_image_id,
+          items: boxItems,
+        },
         getStatusUpdates: ({ consignment, allCompleted }) => getSaveBoxUpdates(consignment, allCompleted) || {
           status: allCompleted ? 'completed' : 'in_progress',
           updatedAt: timestamp,
@@ -1604,6 +1811,12 @@ router.post('/save-box', authenticateToken, async (req, res) => {
         auditLog,
         productivityEvent,
       });
+
+      // Replays must return the originally committed immutable box response,
+      // including its original timestamps and payload.
+      if (transactionResult?.idempotentReplay && transactionResult.box) {
+        boxData = transactionResult.box;
+      }
 
       const resultBySkuId = new Map(transactionResult.skuResults.map((sku) => [sku.id, sku]));
       for (const sku of session.skus) {
@@ -1694,7 +1907,7 @@ router.post('/save-box', authenticateToken, async (req, res) => {
 
     res.json({
       success: true,
-      box: boxData,
+      box: transactionResult?.box || boxData,
       synced: true,
       totals: {
         totalPackedQty: refreshed?.totalPackedQty || 0,

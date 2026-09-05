@@ -54,6 +54,11 @@ function clearStoredSession() {
   clearSessionValidationCache()
 }
 
+function clearDesktopSession() {
+  const result = window.youthnicDesktop?.auth?.clearSession?.()
+  if (result?.catch) void result.catch(() => {})
+}
+
 function liveSyncTokenIsFresh() {
   const token = getStoredLiveToken()
   if (!token) return false
@@ -178,9 +183,13 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true)
   const authMutationSeqRef = useRef(0)
 
-  const persistSession = useCallback((token, sessionUser, mutationSeq = null) => {
+  const persistSession = useCallback(async (token, sessionUser, mutationSeq = null) => {
     if (mutationSeq !== null && mutationSeq !== authMutationSeqRef.current) {
       return sessionUser
+    }
+    if (window.youthnicDesktop) {
+      await window.youthnicDesktop.auth.setSession({ token, userId: sessionUser?.id })
+      if (mutationSeq !== null && mutationSeq !== authMutationSeqRef.current) return null
     }
     sessionStorage.setItem(APP_TOKEN_KEY, token)
     sessionStorage.setItem(USER_KEY, JSON.stringify(sessionUser))
@@ -188,6 +197,10 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem(USER_KEY)
     setUser(sessionUser)
     markSessionValidated(true)
+
+    // Electron keeps the application JWT in the OS-protected main process so
+    // its background sync can resume after a restart. The web app has no
+    // desktop bridge and continues using its existing session storage.
 
     if (isPosthogConfigured && sessionUser?.id) {
       posthog.identify(sessionUser.id, {
@@ -232,6 +245,7 @@ export const AuthProvider = ({ children }) => {
   }, [])
 
   const queueLiveSyncRefresh = useCallback((force = false) => {
+    if (window.youthnicDesktop) return
     // Non-critical for first paint — do not block login / session restore.
     void refreshLiveSyncToken({ force }).catch(() => {})
   }, [refreshLiveSyncToken])
@@ -245,7 +259,7 @@ export const AuthProvider = ({ children }) => {
     const res = await api.post('/auth/firebase-login', { idToken })
     const { token, user: sessionUser } = res.data
     if (mutationSeq !== null && mutationSeq !== authMutationSeqRef.current) return sessionUser
-    const storedUser = persistSession(token, sessionUser, mutationSeq)
+    const storedUser = await persistSession(token, sessionUser, mutationSeq)
     queueLiveSyncRefresh(true)
     return storedUser
   }, [persistSession, queueLiveSyncRefresh])
@@ -257,7 +271,9 @@ export const AuthProvider = ({ children }) => {
       try {
         return await refreshSessionFromProvider(false, mutationSeq)
       } catch {
+        if (mutationSeq !== null && mutationSeq !== authMutationSeqRef.current) return null
         clearStoredSession()
+        clearDesktopSession()
         setUser(null)
         return null
       }
@@ -267,14 +283,41 @@ export const AuthProvider = ({ children }) => {
       const response = await authAPI.me()
       const sessionUser = response.data.user
       if (mutationSeq !== null && mutationSeq !== authMutationSeqRef.current) return sessionUser
-      persistSession(token, sessionUser, mutationSeq)
+      await persistSession(token, sessionUser, mutationSeq)
       queueLiveSyncRefresh(false)
       return sessionUser
-    } catch {
+    } catch (validationError) {
+      if (window.youthnicDesktop && isBackendUnreachable(validationError)) {
+        const saved = await window.youthnicDesktop.auth.getSession()
+        if (saved?.token && saved?.user) {
+          if (mutationSeq !== null && mutationSeq !== authMutationSeqRef.current) return null
+          sessionStorage.setItem(USER_KEY, JSON.stringify(saved.user))
+          setUser(saved.user)
+          markSessionValidated(true)
+          return saved.user
+        }
+      }
       try {
-        return await refreshSessionFromProvider(true, mutationSeq)
-      } catch {
+        if (validationError?.response?.status === 403) throw validationError
+        const refreshed = await refreshSessionFromProvider(true, mutationSeq)
+        if (!refreshed && (mutationSeq === null || mutationSeq === authMutationSeqRef.current)) {
+          clearStoredSession(); clearDesktopSession(); setUser(null)
+        }
+        return refreshed
+      } catch (refreshError) {
+        if (window.youthnicDesktop && validationError?.response?.status !== 403 && (isBackendUnreachable(refreshError) || refreshError?.code === 'auth/network-request-failed')) {
+          const saved = await window.youthnicDesktop.auth.getSession()
+          if (saved?.token && saved?.user) {
+            if (mutationSeq !== null && mutationSeq !== authMutationSeqRef.current) return null
+            sessionStorage.setItem(USER_KEY, JSON.stringify(saved.user))
+            setUser(saved.user)
+            markSessionValidated(true)
+            return saved.user
+          }
+        }
+        if (mutationSeq !== null && mutationSeq !== authMutationSeqRef.current) return null
         clearStoredSession()
+        clearDesktopSession()
         try { if (fbAuth) await fbSignOut(fbAuth) } catch (_) {}
         setUser(null)
         return null
@@ -288,8 +331,27 @@ export const AuthProvider = ({ children }) => {
       const mutationSeq = authMutationSeqRef.current + 1
       authMutationSeqRef.current = mutationSeq
       try {
+        // Electron keeps the app JWT in the OS-protected main process. Hydrate
+        // it into the same session storage used by the web app before calling
+        // the normal /auth/me validation path, so the login is one-time per
+        // installation rather than one-time per process launch.
+        if (!getStoredToken()) {
+          const desktopSessionRequest = window.youthnicDesktop?.auth?.getSession?.()
+          if (desktopSessionRequest) {
+            const desktopSession = await withTimeout(desktopSessionRequest, 2000, 'Desktop session restore')
+            if (desktopSession?.token) {
+              sessionStorage.setItem(APP_TOKEN_KEY, desktopSession.token)
+              if (desktopSession.user) {
+                sessionStorage.setItem(USER_KEY, JSON.stringify(desktopSession.user))
+                setUser(desktopSession.user)
+                markSessionValidated(true)
+              }
+            }
+          }
+        }
+
         const liveToken = getStoredLiveToken()
-        if (liveToken) await withTimeout(applyLiveSyncToken(liveToken), 3000, 'Live sync token restore')
+        if (liveToken && !window.youthnicDesktop) await withTimeout(applyLiveSyncToken(liveToken), 3000, 'Live sync token restore')
 
         if (fbAuth) {
           try { await setPersistence(fbAuth, browserLocalPersistence) } catch (_) {}
@@ -313,7 +375,7 @@ export const AuthProvider = ({ children }) => {
   }, [validateSession])
 
   useEffect(() => {
-    if (!user) return undefined
+    if (!user || window.youthnicDesktop) return undefined
 
     let lastWrite = 0
     const markActive = () => {
@@ -351,7 +413,7 @@ export const AuthProvider = ({ children }) => {
     const res = await api.post('/auth/firebase-login', { idToken })
     const exchangeMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - exchangeStarted
     const { token, user: sessionUser, _timings: backendTimings } = res.data
-    const storedUser = persistSession(token, sessionUser)
+    const storedUser = await persistSession(token, sessionUser)
     sessionStorage.setItem(LAST_ACTIVE_KEY, String(Date.now()))
 
     if (isPosthogConfigured) {
@@ -455,19 +517,39 @@ export const AuthProvider = ({ children }) => {
   }
 
   const logout = async () => {
+    authMutationSeqRef.current += 1
     if (isPosthogConfigured && user?.id) {
       posthog.capture('user_logged_out', {
         userId: user.id,
       })
       posthog.reset()
     }
-    if (getStoredToken()) {
-      try { await authAPI.logout() } catch (_) {}
-    }
-    try { if (fbAuth) await fbSignOut(fbAuth) } catch (_) {}
+    const remoteLogout = getStoredToken() ? authAPI.logout().catch(() => {}) : Promise.resolve()
+    // Local sign-out must not wait for an unavailable network.
+    try { await window.youthnicDesktop?.auth?.clearSession?.() } catch (_) {}
     clearStoredSession()
     setUser(null)
+    try { if (fbAuth) await fbSignOut(fbAuth) } catch (_) {}
+    void remoteLogout
   }
+
+  useEffect(() => {
+    if (!window.youthnicDesktop || !user) return undefined
+    let refreshing = false
+    const refresh = async () => {
+      if (refreshing || !navigator.onLine) return
+      refreshing = true
+      try { await validateSession(authMutationSeqRef.current) } finally { refreshing = false }
+    }
+    const timer = window.setInterval(refresh, 45 * 60 * 1000)
+    window.addEventListener('online', refresh)
+    window.addEventListener('desktop-auth-refresh', refresh)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('online', refresh)
+      window.removeEventListener('desktop-auth-refresh', refresh)
+    }
+  }, [user, validateSession])
 
   const value = {
     user,

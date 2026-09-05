@@ -1,5 +1,6 @@
 const { getPool, pgEnabled } = require('../config/database');
 const { getMarketplaceBarcode } = require('./skuIdentity');
+const { buildBoxOperationHash, assertBoxOperationMatches } = require('./packingOperation');
 
 function withId(id, data) {
   return { ...data, id };
@@ -60,6 +61,9 @@ async function saveBoxWithPostgresTransaction({
   boxData,
   userId,
   timestamp,
+  operationId = null,
+  operationPayload = null,
+  stationId = null,
   getStatusUpdates,
   auditLog,
   productivityEvent,
@@ -76,6 +80,20 @@ async function saveBoxWithPostgresTransaction({
   try {
     await client.query('BEGIN');
 
+    const payloadHash = operationId
+      ? buildBoxOperationHash(operationPayload || {
+        consignmentId,
+        boxNo: boxData?.boxNo,
+        weight: boxData?.weight,
+        weightUnit: boxData?.weightUnit,
+        weightImageId: boxData?.weightImageId,
+        items: boxData?.items,
+      })
+      : null;
+
+    // Serialize all box operations for a consignment before checking the
+    // idempotency row. This closes the missing-row race where two retries
+    // could both pass the initial operation lookup and mutate quantities.
     const { rows: consignmentRows } = await client.query(
       `SELECT data
        FROM documents
@@ -91,6 +109,57 @@ async function saveBoxWithPostgresTransaction({
     }
 
     const consignment = consignmentRows[0].data;
+    if (!operationId) {
+      const { assertPackingStationAccess } = require('./packingLease');
+      await assertPackingStationAccess(consignmentId, stationId, userId, client);
+    }
+
+    // The operation row is checked before any box/SKU mutation. If the client
+    // lost the response after commit, replay the exact committed result rather
+    // than applying quantities a second time.
+    if (operationId) {
+      const { rows: operationRows } = await client.query(
+        `SELECT operation_id, consignment_id, box_id, payload_hash, result
+         FROM packing_box_operations
+         WHERE operation_id = $1
+         FOR UPDATE`,
+        [operationId]
+      );
+      if (operationRows.length) {
+        const operation = operationRows[0];
+        assertBoxOperationMatches(operation, {
+          consignmentId,
+          boxId,
+          payloadHash,
+        });
+        await client.query('COMMIT');
+        return {
+          ...(operation.result || {}),
+          idempotentReplay: true,
+        };
+      }
+    }
+
+    if (operationId) {
+      const { rows: leaseRows } = await client.query(
+        `SELECT lease_id
+         FROM packing_station_leases
+         WHERE consignment_id = $1
+           AND station_id = $2
+           AND user_id = $3
+           AND status = 'active'
+         LIMIT 1`,
+        [consignmentId, String(stationId || ''), String(userId)]
+      );
+      if (!leaseRows.length) {
+        const error = new Error('Packing station lease is no longer active. Reclaim the consignment and retry sync.');
+        error.statusCode = 409;
+        error.code = 'PACKING_LEASE_NOT_ACTIVE';
+        error.retryable = true;
+        throw error;
+      }
+    }
+
     await upsertDocument(client, 'boxes', boxId, boxData);
 
     const existingBoxIds = Array.isArray(consignment.boxIds) ? consignment.boxIds : [];
@@ -217,9 +286,7 @@ async function saveBoxWithPostgresTransaction({
       await upsertDocument(client, 'productivity', productivityEvent.id, productivityEvent);
     }
 
-    await client.query('COMMIT');
-
-    return {
+    const result = {
       consignment: updatedConsignment,
       box: boxData,
       boxIds: mergedBoxIds,
@@ -229,6 +296,19 @@ async function saveBoxWithPostgresTransaction({
       allCompleted,
       statusUpdates: finalStatusUpdates,
     };
+
+    if (operationId) {
+      await client.query(
+        `INSERT INTO packing_box_operations
+          (operation_id, consignment_id, box_id, payload_hash, result, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, now(), now())`,
+        [operationId, consignmentId, boxId, payloadHash, JSON.stringify(result)]
+      );
+    }
+
+    await client.query('COMMIT');
+
+    return result;
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     if (!error.statusCode) {

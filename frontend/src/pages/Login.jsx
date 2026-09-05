@@ -115,7 +115,7 @@ const Login = () => {
           {/* Live Status Badge */}
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10.5px] font-bold tracking-wide">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            All Systems Operational
+            {window.youthnicDesktop ? 'Secure warehouse sign-in' : 'Youthnic Operations'}
           </div>
           <p className="text-[11px] text-slate-500 font-medium">© 2026 Youthnic Exports Pvt. Ltd.</p>
         </div>
@@ -224,7 +224,7 @@ const Login = () => {
             </button>
           </form>
 
-          <div className="my-6 flex items-center gap-3">
+          {!window.youthnicDesktop && <><div className="my-6 flex items-center gap-3">
             <div className="h-px flex-1 bg-slate-200" />
             <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Or continue with</span>
             <div className="h-px flex-1 bg-slate-200" />
@@ -265,8 +265,9 @@ const Login = () => {
               <span>Microsoft</span>
             </button>
           </div>
-          <p className="mt-3 text-[11px] text-slate-400 leading-relaxed">
-            Passwords are managed in Firebase Authentication. Use Forgot password or sign in with Google if your admin enabled it.
+          </>}
+          <p className="mt-3 text-[11px] text-slate-500 leading-relaxed">
+            {window.youthnicDesktop ? 'Sign in online once. This computer remembers your session so downloaded packing work remains available offline. Use Forgot password if needed.' : 'Use your company account. Use Forgot password or sign in with Google if your admin enabled it.'}
           </p>
         </div>
 

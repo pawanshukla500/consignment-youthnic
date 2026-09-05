@@ -4,6 +4,9 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Electron loads the compiled renderer from file://, so its assets must be
+  // relative to renderer/index.html. Keep the normal web build rooted at /.
+  base: globalThis.process?.env?.VITE_DESKTOP_BUILD === 'true' ? './' : '/',
   plugins: [react(), tailwindcss()],
   build: {
     rollupOptions: {

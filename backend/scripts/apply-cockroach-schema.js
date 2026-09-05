@@ -296,6 +296,51 @@ async function main() {
     )
   `);
 
+  await run(pool, 'packing_box_operations', `
+    CREATE TABLE IF NOT EXISTS packing_box_operations (
+      operation_id TEXT PRIMARY KEY,
+      consignment_id TEXT NOT NULL,
+      box_id TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      result JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+
+  await run(pool, 'packing_box_operations.consignment_index', `
+    CREATE INDEX IF NOT EXISTS idx_packing_box_operations_consignment
+      ON packing_box_operations(consignment_id, created_at DESC)
+  `);
+
+  await run(pool, 'packing_station_leases', `
+    CREATE TABLE IF NOT EXISTS packing_station_leases (
+      lease_id TEXT PRIMARY KEY,
+      consignment_id TEXT NOT NULL,
+      station_id TEXT NOT NULL,
+      station_name TEXT,
+      warehouse TEXT,
+      user_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'released', 'expired')),
+      claimed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      released_at TIMESTAMPTZ,
+      released_by TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+  `);
+
+  await run(pool, 'packing_station_leases.one_active', `
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_packing_station_one_active_lease
+      ON packing_station_leases(consignment_id)
+      WHERE status = 'active'
+  `);
+
+  await run(pool, 'packing_station_leases.station_index', `
+    CREATE INDEX IF NOT EXISTS idx_packing_station_leases_station
+      ON packing_station_leases(station_id, status, heartbeat_at DESC)
+  `);
+
   await run(pool, 'oms_guru_upload_logs', `
     CREATE TABLE IF NOT EXISTS oms_guru_upload_logs (
       id TEXT PRIMARY KEY,

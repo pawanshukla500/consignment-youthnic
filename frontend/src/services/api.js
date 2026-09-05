@@ -1,9 +1,13 @@
 import axios from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL || '';
+const API_URL = window.youthnicDesktop?.app?.apiUrl || import.meta.env.VITE_API_URL || '';
+// Axios' XHR adapter rejects an absolute app: scheme before sending anything.
+// Same-origin relative URLs use Electron's secure protocol handler correctly.
+const API_BASE_URL = window.location.protocol === 'app:' ? '/api' : (API_URL.endsWith('/api') ? API_URL : `${API_URL}/api`);
 
 const api = axios.create({
-  baseURL: `${API_URL}/api`,
+  baseURL: API_BASE_URL,
+  timeout: window.youthnicDesktop ? 10000 : 0,
   headers: {
     'Content-Type': 'application/json'
   }
@@ -18,6 +22,18 @@ const clearSessionTokens = () => {
   localStorage.removeItem('token');
   localStorage.removeItem('user');
   localStorage.removeItem('supabaseRealtimeToken');
+};
+
+const isLoginLocation = () => window.youthnicDesktop
+  ? window.location.hash.startsWith('#/login')
+  : window.location.pathname.startsWith('/login');
+
+const redirectToLogin = () => {
+  if (window.youthnicDesktop) {
+    window.location.hash = '#/login';
+    return;
+  }
+  window.location.href = '/login';
 };
 
 // Request interceptor to add auth token
@@ -39,9 +55,11 @@ api.interceptors.response.use(
   // Only force login when a request was sent with a token that the server rejected.
   // Bare 401s during session refresh (token briefly absent) must not eject the user.
     const hadAuthHeader = Boolean(error.config?.headers?.Authorization);
-    if (error.response?.status === 401 && hadAuthHeader && !window.location.pathname.startsWith('/login')) {
+    if (error.response?.status === 401 && window.youthnicDesktop) {
+      if (!String(error.config?.url).includes('/auth/')) window.dispatchEvent(new Event('desktop-auth-refresh'));
+    } else if (error.response?.status === 401 && hadAuthHeader && !isLoginLocation()) {
       clearSessionTokens();
-      window.location.href = '/login';
+      redirectToLogin();
     }
     return Promise.reject(error);
   }
@@ -142,7 +160,7 @@ export const docketCompaniesAPI = {
 
 // Packing API
 export const packingAPI = {
-  load: (data) => api.post('/packing/load', data),
+  load: (data, config = {}) => api.post('/packing/load', data, config),
   increment: (data) => api.post('/packing/increment', data),
   decrement: (data) => api.post('/packing/decrement', data),
   checkDuplicateBox: (data) => api.post('/packing/check-duplicate-box', data),
@@ -151,6 +169,10 @@ export const packingAPI = {
   attachQuantityRemovalVideo: (id, data) => api.post(`/packing/quantity-removal/${id}/attach-video`, data),
   completeQuantityRemoval: (id, data) => api.post(`/packing/quantity-removal/${id}/complete`, data || {}),
   saveBox: (data) => api.post('/packing/save-box', data),
+  claimLease: (data) => api.post('/packing/lease/claim', data),
+  renewLease: (data) => api.post('/packing/lease/renew', data),
+  getLease: (params) => api.get('/packing/lease', { params }),
+  releaseLease: (data) => api.post('/packing/lease/release', data),
   generateLabel: (data) => api.post('/packing/generate-label', data),
   finish: (data) => api.post('/packing/finish', data),
   resumeSession: () => api.get('/packing/resume-session'),

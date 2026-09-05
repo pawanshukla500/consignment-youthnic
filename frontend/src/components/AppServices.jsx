@@ -23,6 +23,16 @@ export default function AppServices() {
 
   useEffect(() => {
     if (!isAuthenticated) return undefined
+    if (window.youthnicDesktop) {
+      const desktop = window.youthnicDesktop
+      void desktop.sync.start()
+      const reconnect = () => { void desktop.sync.retry() }
+      const unsubscribe = desktop.sync.onStatus((status) => {
+        if (status.authRequired) window.dispatchEvent(new Event('desktop-auth-refresh'))
+      })
+      window.addEventListener('online', reconnect)
+      return () => { unsubscribe(); window.removeEventListener('online', reconnect) }
+    }
     initVideoUploadService()
     initPackingSyncService()
 

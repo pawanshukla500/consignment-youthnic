@@ -15,6 +15,8 @@ const allowed = [
 
 assert.strictEqual(isOriginAllowed(undefined, allowed), true);
 assert.strictEqual(isOriginAllowed('https://consignment.youthnic.shop', allowed), true);
+assert.strictEqual(isOriginAllowed('app://youthnic', allowed), true);
+assert.strictEqual(isOriginAllowed('app://evil-youthnic', allowed), false);
 assert.strictEqual(isOriginAllowed('https://evil-app-xyz.run.app', allowed), false);
 assert.strictEqual(isOriginAllowed('https://consignment.youthnic.shop.evil.com', allowed), false);
 assert.strictEqual(isOriginAllowed('https://lookalike-youthnic.shop', allowed), false);

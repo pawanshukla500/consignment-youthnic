@@ -1,0 +1,61 @@
+name: Youthnic Packing Station Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'desktop/**'
+      - 'frontend/**'
+      - 'package.json'
+      - 'frontend/package-lock.json'
+      - 'desktop/package-lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+          - os: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Install desktop dependencies
+        run: npm ci
+      - name: Run desktop durability tests
+        run: npm test
+      - name: Build installer/package
+        run: npm run package
+        env:
+          # The backend URL is read by the packaged main process at runtime.
+          # No database, Firebase service account, or R2 secret is bundled.
+          YOUTHNIC_PACKING_API_URL: ${{ vars.YOUTHNIC_PACKING_API_URL }}
+      - name: Verify live desktop backend before distributing artifacts
+        # Never distribute a desktop client ahead of its server contract.
+        # A simultaneous backend deploy can be followed by a manual rerun.
+        run: node ../backend/scripts/verify-desktop-deployment.cjs
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: youthnic-packing-station-${{ matrix.platform }}
+          path: desktop/release/*
+          if-no-files-found: error

@@ -1,6 +1,8 @@
 /**
  * Exact CORS origin allowlist — no suffix / wildcard matching.
  */
+const DESKTOP_ORIGIN = 'app://youthnic';
+
 function parseAllowedOrigins(raw = process.env.ALLOWED_ORIGINS || '') {
   return String(raw)
     .split(',')
@@ -20,7 +22,7 @@ function buildDevOrigins() {
 
 function isOriginAllowed(origin, allowedList = null) {
   if (!origin) return true; // non-browser / same-origin tooling
-  const allowed = new Set([...(allowedList || parseAllowedOrigins()), ...buildDevOrigins()]);
+  const allowed = new Set([DESKTOP_ORIGIN, ...(allowedList || parseAllowedOrigins()), ...buildDevOrigins()]);
   return allowed.has(origin);
 }
 

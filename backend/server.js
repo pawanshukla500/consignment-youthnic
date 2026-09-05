@@ -267,6 +267,17 @@ app.get('/brand-logo.png', (req, res) => {
 });
 
 // Health check — includes database status for load balancers / monitoring
+// Public, read-only version/schema contract. No user data or DB credentials.
+const desktopStatus = async (_req, res) => {
+  const { checkDesktopSchema } = require('./utils/desktopSchema');
+  const { getPool } = require('./config/database');
+  const status = await checkDesktopSchema(pgEnabled() ? getPool() : null);
+  res.set('Cache-Control', 'no-store');
+  res.status(status.ready ? 200 : 503).json(status);
+};
+app.get('/api/desktop/status', desktopStatus);
+app.post('/api/desktop/status', desktopStatus);
+
 app.get('/api/health', async (req, res) => {
   let database = 'not_configured';
   let databaseError = null;
@@ -318,6 +329,10 @@ app.get('/api/health', async (req, res) => {
 });
 
 // In development, port 5000 is API-only — redirect root to Vite frontend
+// Unknown API endpoints must not fall into the SPA handler (which previously
+// left unknown GET requests hanging in production).
+app.use('/api', (req, res) => res.status(404).json({ error: 'Application endpoint not found. Check the deployed server version.', code: 'API_ROUTE_NOT_FOUND' }));
+
 if (process.env.NODE_ENV !== 'production') {
   app.get('/', (req, res) => {
     res.redirect(302, process.env.APP_URL || 'http://localhost:5173');

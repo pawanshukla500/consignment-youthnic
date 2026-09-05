@@ -425,6 +425,12 @@ jobs:
           curl -fsS --max-time 25 "${SERVICE_URL}/api/auth/status" | tee /tmp/auth-status.json
           echo "Health and auth status checks passed"
 
+          # General health is insufficient for desktop releases. Require the
+          # desktop route, actual schema and unique active-station index on both
+          # the service and the operator-facing custom domain.
+          node backend/scripts/verify-desktop-deployment.cjs "${SERVICE_URL}"
+          node backend/scripts/verify-desktop-deployment.cjs "${CUSTOM_DOMAIN}"
+
           verify_firebase_assets() {
             local base_url="$1"
             local label="$2"

@@ -362,7 +362,7 @@ router.post('/multipart/sign-parts', authenticateToken, requirePermission('packi
 
 router.post('/multipart/complete', authenticateToken, requirePermission('packing', 'register uploads'), async (req, res) => {
   try {
-    const { storagePath, uploadId, consignmentId, parts } = req.body;
+    const { storagePath, uploadId, consignmentId, parts, expectedSize } = req.body;
     if (!storagePath || !uploadId || !consignmentId) {
       return res.status(400).json({ error: 'storagePath, uploadId, and consignmentId are required.' });
     }
@@ -372,7 +372,7 @@ router.post('/multipart/complete', authenticateToken, requirePermission('packing
         code: 'STORAGE_PATH_MISMATCH',
       });
     }
-    const result = await completeMultipartUpload(storagePath, uploadId, parts);
+    const result = await completeMultipartUpload(storagePath, uploadId, parts, expectedSize);
     res.json(result);
   } catch (error) {
     console.error('Error completing multipart upload:', error);

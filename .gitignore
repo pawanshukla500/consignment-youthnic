@@ -11,6 +11,14 @@ backend/.env
 frontend/.env
 frontend/.env.production
 
+# Electron desktop build/runtime output
+desktop/node_modules/
+desktop/renderer/
+desktop/release/
+desktop/YouthnicPacking/
+.electron-builder-cache/
+.tmp-electron-builder-cache/
+
 # Firebase service account keys (NEVER commit these)
 backend/serviceAccountKey.json
 *firebase-adminsdk*.json

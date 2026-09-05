@@ -249,6 +249,14 @@ async function initSchema() {
       `);
     }
 
+    // Desktop tables must ship with the backend, not only a manual migration.
+    // A failed additive migration is reported by the desktop readiness probe;
+    // existing web operations are not silently replaced by a memory database.
+    try {
+      await require('../utils/desktopSchema').ensureDesktopSchema(pool, { isCockroach });
+    } catch (error) {
+      console.error('[Desktop] Schema upgrade required:', error.code || 'SCHEMA_INIT_FAILED');
+    }
     recordQuerySuccess();
     console.log(`[Postgres] Schema ready${isCockroach ? ' (cockroach)' : ''}.`);
     return true;

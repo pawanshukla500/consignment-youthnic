@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { flushSync } from 'react-dom';
-import { useNavigate } from 'react-router';
+import { useLocation, useNavigate } from 'react-router';
 import { packingAPI, settingsAPI, uploadsAPI } from '../services/api';
 import api from '../services/api';
 import {
@@ -31,6 +31,7 @@ import { processSaveBoxJob } from '../utils/saveBoxSyncHelper';
 import { useConsignmentSync } from '../context/ConsignmentSyncContext';
 import { getShipmentPriority, sortByPriority, formatAppointmentDate, formatDispatchDate } from '../utils/priority';
 import { getCriticalityCardClass, getDisplayLabel } from '../utils/criticalityUi';
+import { isDesktopPacking, getDesktopPacking, blobToArrayBuffer, createDesktopOperationId } from '../platform/desktopPacking';
 import UnitsProgressCell from '../components/UnitsProgressCell';
 import QuantityRemovalModal from '../components/QuantityRemovalModal';
 import { ArrowLeft, Boxes, Upload, X, Loader2 } from 'lucide-react';
@@ -154,6 +155,7 @@ function Modal({ show, title, children, onClose, actions, wide }) {
 /* ═══ MAIN COMPONENT ═══ */
 export default function PackingStation() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { toasts, toast, removeToast } = useToasts();
   const { progress: weightUploadProgress, uploading: weightUploading } = useStorageUpload();
 
@@ -163,6 +165,8 @@ export default function PackingStation() {
   const [S, setS] = useState({ cid: null, intShip: null, box: null, skus: [], boxes: {} });
   const [skuFilter, setSkuFilter] = useState('all');
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [loadNotice, setLoadNotice] = useState('');
   const [showMo, setShowMo] = useState(false);
   const [moConfig, setMoConfig] = useState({ title: '', body: '', actions: null, wide: false });
   const [removalModal, setRemovalModal] = useState({ open: false, boxNo: null, stream: null });
@@ -226,6 +230,8 @@ export default function PackingStation() {
   const recordingSessionIdRef = useRef(null);
   const chunkIndexRef = useRef(0);
   const pendingChunkWritesRef = useRef([]);
+  const desktopRecordingRef = useRef(null);
+  const desktopFinalizedVideoRef = useRef(null);
   const recordedBytesRef = useRef(0);
   const sizeWarnRef = useRef(null);
   const recTimerRef = useRef(null);
@@ -241,6 +247,13 @@ export default function PackingStation() {
   const inSkuRef = useRef(null);
   const composeFrameRef = useRef(null);
   const uploadingQueueRef = useRef(false);
+  const desktopStatusRef = useRef(null);
+  const desktopScanChainRef = useRef(Promise.resolve());
+  const desktopChunkErrorRef = useRef(null);
+  const desktopChunkChainRef = useRef(Promise.resolve());
+  const desktopPendingBytesRef = useRef(0);
+  const desktopProofRef = useRef(null);
+  const desktopOperationRef = useRef(null);
 
   const boxClosePendingRef = useRef(false);
   const scanToastDedupRef = useRef({ message: '', at: 0 });
@@ -305,6 +318,34 @@ export default function PackingStation() {
   useEffect(() => {
     checkResume();
     fetchConsignments();
+
+    let unsubscribeDesktop = null;
+    if (isDesktopPacking) {
+      const desktop = getDesktopPacking();
+      desktop.sync.start();
+      unsubscribeDesktop = desktop.sync.onStatus?.((status) => {
+        desktopStatusRef.current = status;
+        setPendingSaveJobs(Number(status.pendingJobs) || 0);
+        setFailedSyncJobs(Number(status.failedJobs) || 0);
+        setPendingUploads(Number(status.pendingVideos) || 0);
+        if (status.online === false) setSyncState('offline');
+        else if ((status.failedJobs || 0) > 0) setSyncState('failed');
+        else if ((status.pendingJobs || 0) > 0 || (status.pendingVideos || 0) > 0) setSyncState('pending');
+        else if (status.online === true) setSyncState('synced');
+      });
+      desktop.storage.health().catch(() => {});
+      desktop.video.recover?.().then((recovered) => {
+        if (Array.isArray(recovered) && recovered.length) {
+          toast(`${recovered.length} unfinished desktop recording(s) found — review before finishing`, 'warning', 7000);
+        }
+      }).catch(() => {});
+      const wake = () => { void desktop.sync.retry(); };
+      const offline = () => setSyncState('offline');
+      window.addEventListener('online', wake);
+      window.addEventListener('offline', offline);
+      if (location.state?.consignmentId && inCidRef.current) inCidRef.current.value = location.state.consignmentId;
+      return () => { unsubscribeDesktop?.(); window.removeEventListener('online', wake); window.removeEventListener('offline', offline); };
+    }
 
     const si = setInterval(() => checkSyncStatus(cidRef.current), 8000);
     const unsubVideo = subscribeVideoUploadStatus(({ pending, current, uploading, items }) => {
@@ -371,6 +412,7 @@ export default function PackingStation() {
       window.removeEventListener('video-upload-status', onStatus);
       window.removeEventListener('video-upload-done', onDone);
       window.removeEventListener('video-upload-error', onError);
+      unsubscribeDesktop?.();
     };
   }, []);
 
@@ -388,6 +430,18 @@ export default function PackingStation() {
 
   const updatePendingCount = async () => {
     try {
+      if (isDesktopPacking) {
+        const status = await getDesktopPacking().sync.status();
+        desktopStatusRef.current = status;
+        setPendingUploads(Number(status.pendingVideos) || 0);
+        setPendingSaveJobs(Number(status.pendingJobs) || 0);
+        setFailedSyncJobs(Number(status.failedJobs) || 0);
+        if (status.online === false) setSyncState('offline');
+        else if ((status.failedJobs || 0) > 0) setSyncState('failed');
+        else if ((status.pendingJobs || 0) > 0 || (status.pendingVideos || 0) > 0) setSyncState('pending');
+        else setSyncState('synced');
+        return;
+      }
       const [{ getFailedCount }, videos, saveJobs, failedSaveJobs] = await Promise.all([
         import('../utils/videoQueue'),
         getQueueCount(),
@@ -452,6 +506,17 @@ export default function PackingStation() {
 
   const checkSyncStatus = async (consignmentId) => {
     try {
+      if (isDesktopPacking) {
+        const status = await getDesktopPacking().packing.status(consignmentId || null);
+        desktopStatusRef.current = status;
+        setPendingUploads(Number(status.pendingVideos) || 0);
+        setPendingSaveJobs(Number(status.pendingJobs) || 0);
+        setFailedSyncJobs(Number(status.failedJobs) || 0);
+        if (status.failedJobs > 0) setSyncState('failed');
+        else if (status.pendingJobs > 0 || status.pendingVideos > 0) setSyncState(navigator.onLine ? 'pending' : 'offline');
+        else setSyncState(navigator.onLine ? 'synced' : 'offline');
+        return;
+      }
       const r = await packingAPI.syncStatus(consignmentId || undefined);
       setSyncState(navigator.onLine ? r.data.state : 'offline');
       if (consignmentId && r.data.consignment) {
@@ -487,6 +552,7 @@ export default function PackingStation() {
   };
 
   const checkResume = async () => {
+    if (isDesktopPacking) return;
     try {
       const r = await packingAPI.resumeSession();
       if (r.data.available && r.data.consignments?.length) {
@@ -500,12 +566,23 @@ export default function PackingStation() {
     try {
       const { data } = await api.get('/consignments?status=pending,in_progress&sort=dispatch&limit=200');
       setConsignmentList(sortByPriority(data.consignments || []));
-    } catch (e) {}
+    } catch (e) {
+      if (isDesktopPacking) {
+        const cached = await getDesktopPacking().packing.listCachedConsignments().catch(() => []);
+        setConsignmentList(cached.map((item) => ({
+          id: item.consignmentId,
+          internalShipmentNo: item.internalShipmentNo,
+          status: item.status,
+          requiredDispatchDate: null,
+          localReady: true,
+        })));
+      }
+    }
   };
 
   const sortedConsignmentList = consignmentList;
 
-  const goBack = () => navigate('/consignments');
+  const goBack = () => navigate(isDesktopPacking ? '/' : '/consignments');
 
   const stopComposeLoop = () => {
     if (composeFrameRef.current && videoRef.current?.cancelVideoFrameCallback) {
@@ -586,6 +663,7 @@ export default function PackingStation() {
       })
 
       streamRef.current = stream;
+      if (isDesktopPacking) await stream.getVideoTracks()[0]?.applyConstraints({ width: { ideal: 1280, max: 1280 }, height: { ideal: 720, max: 720 }, frameRate: { ideal: 18, max: 20 } });
       const native = `${width || videoEl.videoWidth || '?'}×${height || videoEl.videoHeight || '?'}`
       setCamRes(native);
       setCamActive(true);
@@ -680,6 +758,9 @@ export default function PackingStation() {
     sizeWarnRef.current = null;
     chunkIndexRef.current = 0;
     pendingChunkWritesRef.current = [];
+    desktopChunkErrorRef.current = null;
+    desktopChunkChainRef.current = Promise.resolve();
+    desktopPendingBytesRef.current = 0;
     recordingSessionIdRef.current = null;
 
     const cid = explicitCid || S.cid;
@@ -710,6 +791,7 @@ export default function PackingStation() {
     recIntShipRef.current = S.intShip || cid;
 
     try {
+      if (!isDesktopPacking) {
       const persistResult = await requestPersistentStorage();
       const storageEstimate = await estimateBrowserStorage();
       const backpressure = await canStartRecordingSafely(storageEstimate);
@@ -732,6 +814,7 @@ export default function PackingStation() {
       } else if (persistResult.supported && !persistResult.persisted) {
         toast('Browser may clear video cache under storage pressure — keep this tab open while packing.', 'warning', 6000);
       }
+      }
 
       const fileName = `${cid}_box_${box}_${Date.now()}.${actualExt}`;
       const metadata = {
@@ -748,13 +831,24 @@ export default function PackingStation() {
         isReopen: reopen,
       };
       if (reopen) toast(`Recording additional video for Box ${box} — the earlier video is kept, not replaced`, 'info', 4500);
-      recordingSessionIdRef.current = await startRecordingSession(metadata);
-      void uploadsAPI.updateVideoStatus({
-        consignmentId: cid,
-        boxNo: box,
-        status: 'recording',
-        queueId: recordingSessionIdRef.current,
-      }).catch(() => {});
+      if (isDesktopPacking) {
+        const localVideo = await getDesktopPacking().video.start({
+          videoId: `${cid}-${box}-${Date.now()}`,
+          consignmentId: cid,
+          boxNo: box,
+          fileName,
+        });
+        recordingSessionIdRef.current = localVideo.videoId;
+        desktopRecordingRef.current = { ...localVideo, metadata };
+      } else {
+        recordingSessionIdRef.current = await startRecordingSession(metadata);
+        void uploadsAPI.updateVideoStatus({
+          consignmentId: cid,
+          boxNo: box,
+          status: 'recording',
+          queueId: recordingSessionIdRef.current,
+        }).catch(() => {});
+      }
     } catch (e) {
       console.error('[Video] Failed to start recording session:', e);
       toast('Could not start video recording session', 'error');
@@ -770,12 +864,14 @@ export default function PackingStation() {
       console.error('[Video] MediaRecorder init failed:', err);
       const failedSession = recordingSessionIdRef.current;
       recordingSessionIdRef.current = null;
-      void uploadsAPI.updateVideoStatus({
-        consignmentId: cid,
-        boxNo: box,
-        status: 'failed',
-        queueId: failedSession,
-      }).catch(() => {});
+      if (!isDesktopPacking) {
+        void uploadsAPI.updateVideoStatus({
+          consignmentId: cid,
+          boxNo: box,
+          status: 'failed',
+          queueId: failedSession,
+        }).catch(() => {});
+      }
       toast('Could not start recorder — try another browser/camera', 'error');
       return;
     }
@@ -783,14 +879,39 @@ export default function PackingStation() {
     mediaRecorderRef.current.ondataavailable = async (e) => {
       if (e.data?.size > 0 && recordingSessionIdRef.current) {
         const idx = chunkIndexRef.current++;
-        const write = appendRecordingChunk(recordingSessionIdRef.current, idx, e.data)
-          .catch((err) => {
-            console.error('[Video] Chunk persist failed:', err);
-            throw err;
-          });
-        pendingChunkWritesRef.current.push(write);
-        write.finally(() => {
-          pendingChunkWritesRef.current = pendingChunkWritesRef.current.filter((p) => p !== write);
+        const capturedRecordingId = recordingSessionIdRef.current;
+        const capturedRecorder = mediaRecorderRef.current;
+        if (isDesktopPacking) {
+          desktopPendingBytesRef.current += e.data.size;
+          if (desktopPendingBytesRef.current >= 8 * 1024 * 1024 && capturedRecorder?.state === 'recording') {
+            capturedRecorder.pause();
+            toast('Disk writes are catching up. Scanning is paused briefly.', 'warning', 5000);
+          }
+        }
+        const write = isDesktopPacking
+          ? desktopChunkChainRef.current.then(() => e.data.arrayBuffer()).then((data) => getDesktopPacking().video.appendChunk({
+            videoId: capturedRecordingId,
+            data,
+          }))
+          : appendRecordingChunk(recordingSessionIdRef.current, idx, e.data)
+        if (isDesktopPacking) desktopChunkChainRef.current = write.catch((error) => { desktopChunkErrorRef.current = error; });
+        const durableWrite = write.catch((err) => {
+          if (isDesktopPacking) {
+            desktopChunkErrorRef.current = err;
+            boxClosePendingRef.current = true;
+            if (capturedRecorder?.state === 'recording') capturedRecorder.pause();
+            toast('Recording could not be saved. Packing paused; partial evidence is preserved.', 'error', 10000);
+          }
+          console.error('[Video] Chunk persist failed:', err);
+          throw err;
+        });
+        pendingChunkWritesRef.current.push(durableWrite);
+        durableWrite.finally(() => {
+          pendingChunkWritesRef.current = pendingChunkWritesRef.current.filter((p) => p !== durableWrite);
+          if (isDesktopPacking) {
+            desktopPendingBytesRef.current = Math.max(0, desktopPendingBytesRef.current - e.data.size);
+            if (!desktopChunkErrorRef.current && desktopPendingBytesRef.current === 0 && capturedRecorder === mediaRecorderRef.current && capturedRecorder?.state === 'paused') capturedRecorder.resume();
+          }
         }).catch(() => {});
         recordedBytesRef.current += e.data.size;
         const mb = recordedBytesRef.current / (1024 * 1024);
@@ -816,7 +937,10 @@ export default function PackingStation() {
             10000
           );
           try {
-            if (mediaRecorderRef.current?.state === 'recording') {
+            if (isDesktopPacking) {
+              boxClosePendingRef.current = true;
+              void stopRecording(true).finally(() => { boxClosePendingRef.current = false; });
+            } else if (mediaRecorderRef.current?.state === 'recording') {
               mediaRecorderRef.current.stop();
             }
           } catch (stopErr) {
@@ -836,10 +960,12 @@ export default function PackingStation() {
       setRecDuration(`${String(Math.floor(e/60)).padStart(2,'0')}:${String(e%60).padStart(2,'0')}`);
     }, 1000);
 
-    // 1s timeslice → crash-safe IndexedDB chunks (background upload after stop)
+    // 1s timeslice → crash-safe IndexedDB chunks in web mode or filesystem
+    // chunks through the Electron main process in desktop mode.
     mediaRecorderRef.current.start(1000);
     setRecState('REC');
     toast(`Recording Box ${box} · ${width}×${height}@${fps || 24}fps · ~${Math.round(bitrate / 1000)}kbps`, 'info');
+    return true;
   };
 
   const stopRecording = async (silent = false) => {
@@ -847,6 +973,14 @@ export default function PackingStation() {
       // Still finalize any open session left behind after a crashy stop.
       const orphanSession = recordingSessionIdRef.current;
       if (orphanSession) {
+        if (isDesktopPacking) {
+          await desktopChunkChainRef.current;
+          if (desktopChunkErrorRef.current) throw desktopChunkErrorRef.current;
+          const localVideo = await getDesktopPacking().video.finalize({ videoId: orphanSession, consignmentId: recCidRef.current, boxNo: recBoxIdRef.current, mimeType: desktopRecordingRef.current?.metadata?.mimeType || 'video/webm' });
+          recordingSessionIdRef.current = null;
+          desktopFinalizedVideoRef.current = localVideo;
+          return { queued: true, sessionId: orphanSession, result: localVideo };
+        }
         recordingSessionIdRef.current = null;
         try {
           await finalizeRecordingSessionInWorker(orphanSession);
@@ -873,6 +1007,31 @@ export default function PackingStation() {
         const box = recBoxIdRef.current;
         const sessionId = recordingSessionIdRef.current;
         recordingSessionIdRef.current = null;
+
+        if (isDesktopPacking && sessionId) {
+          try {
+            const pendingWrites = pendingChunkWritesRef.current || [];
+            if (pendingWrites.length) await Promise.all(pendingWrites);
+            await desktopChunkChainRef.current;
+            if (desktopChunkErrorRef.current) throw desktopChunkErrorRef.current;
+            const localVideo = await getDesktopPacking().video.finalize({
+              videoId: sessionId,
+              consignmentId: cid,
+              boxNo: box,
+              mimeType: desktopRecordingRef.current?.metadata?.mimeType || 'video/webm',
+            });
+            desktopFinalizedVideoRef.current = localVideo;
+            desktopRecordingRef.current = null;
+            setShowUpload(false);
+            resolve({ queued: true, sessionId, result: localVideo });
+          } catch (desktopError) {
+            console.error('[Video] Desktop finalize failed:', desktopError);
+            desktopRecordingRef.current = null;
+            if (!silent) toast(desktopError.message || 'Video save failed — keep the box open and retry', 'error', 7000);
+            reject(desktopError);
+          }
+          return;
+        }
 
         if (!sessionId) {
           if (!silent) toast('Recording stopped (no data saved)', 'warning');
@@ -951,6 +1110,13 @@ export default function PackingStation() {
     const wasRecording = mediaRecorderRef.current?.state === 'recording' || Boolean(recordingSessionIdRef.current);
     if (wasRecording) {
       await stopRecording(silent);
+    }
+
+    if (isDesktopPacking) {
+      if (!desktopFinalizedVideoRef.current && requireUploaded) {
+        throw new Error('The current box video is not finalized locally. Keep the box open and retry.');
+      }
+      return true;
     }
 
     // Kick background uploader without blocking the packing UI
@@ -1038,11 +1204,58 @@ export default function PackingStation() {
 
   /* ═══ WORKFLOW ═══ */
   const doLoad = async () => {
+    setLoadError('');
+    setLoadNotice('');
     const v = inCidRef.current?.value.trim();
     if (!v) { toast('Enter ID', 'warning'); return; }
     setLoading(true);
     try {
-      const r = await packingAPI.load({ consignment_id: v });
+      let data;
+      if (isDesktopPacking) {
+        const desktop = getDesktopPacking();
+        const cached = await desktop.packing.getSnapshot(v).catch(() => null);
+        if (navigator.onLine) {
+          let remoteLoaded = false;
+          try {
+            const compatibility = await desktop.packing.checkBackend();
+            if (!compatibility.ok) {
+              const error = new Error(compatibility.message || 'Application service is unavailable');
+              error.code = compatibility.code;
+              if (compatibility.status) error.response = { status: compatibility.status, data: { error: error.message } };
+              throw error;
+            }
+            const response = await packingAPI.load({ consignment_id: v }, { timeout: 8000 });
+            data = response.data;
+            remoteLoaded = true;
+            await desktop.packing.claimLease({ consignmentId: data.consignment_id || v });
+            data = await desktop.packing.saveSnapshot({ snapshot: data });
+            toast('READY OFFLINE ✓ ' + (data.internalShipmentNo || data.consignment_id || v), 'success', 4500);
+          } catch (onlineError) {
+            const status = onlineError.response?.status;
+            const serverUpgradeRequired = onlineError.code === 'DESKTOP_SERVER_UPGRADE_REQUIRED';
+            const canContinueFromCache = cached && !remoteLoaded && (
+              !onlineError.response || status >= 500 || serverUpgradeRequired
+            );
+            if (!canContinueFromCache) throw onlineError;
+            data = cached;
+            if (serverUpgradeRequired) {
+              const message = 'Server update pending. Continuing from this downloaded consignment; new box data and video are safe locally and will sync after the update.';
+              setLoadNotice(message);
+              toast('Server update pending — continuing from downloaded local copy', 'warning', 6000);
+            } else {
+              toast('Offline — using cached READY OFFLINE snapshot', 'warning', 5000);
+            }
+          }
+        } else {
+          if (!cached) throw new Error('This consignment is not downloaded for offline packing');
+          data = cached;
+          toast('READY OFFLINE ✓ — cloud sync will resume when online', 'success', 4500);
+        }
+      } else {
+        const r = await packingAPI.load({ consignment_id: v });
+        data = r.data;
+      }
+      const r = { data };
       const actualCid = r.data.consignment_id || v;
       sfx.cid();
       const meta = {
@@ -1074,7 +1287,9 @@ export default function PackingStation() {
         await startCamera();
       }
     } catch (e) {
-      toast(e.response?.data?.error || 'Error', 'error');
+      const message = e.response?.data?.error || e.message || 'Could not load this consignment';
+      setLoadError(message);
+      toast(message, 'error');
     }
     setLoading(false);
   };
@@ -1087,6 +1302,9 @@ export default function PackingStation() {
   };
 
   const autoSaveCurrentBox = async () => {
+    if (isDesktopPacking && stateRef.current.box) {
+      throw new Error('Use Save Box or Next Box to confirm the current box before continuing.');
+    }
     const current = stateRef.current;
     if (!current.cid || !current.box || !current.boxes[current.box]?.length) {
       // Still finalize any open recorder so chunks are not left in a half-open session
@@ -1096,6 +1314,12 @@ export default function PackingStation() {
       return;
     }
     const savedBox = current.box;
+    if (isDesktopPacking) {
+      await ensureBoxVideoSafe({ requireUploaded: false, silent: true });
+      const committed = await commitDesktopBoxLocally(savedBox, null, null, null, current.boxes[savedBox]);
+      if (committed?.localSafe) toast(`Box ${savedBox} saved locally`, 'success', 3000);
+      return;
+    }
     try {
       await packingAPI.saveBox({ consignment_id: current.cid, box_no: savedBox });
       toast('Box ' + savedBox + ' auto-saved', 'success', 3000);
@@ -1114,6 +1338,11 @@ export default function PackingStation() {
     commitPackingState((prev) => ({ ...prev, box: null }));
     setZoneState(2);
     window.setTimeout(() => inBoxRef.current?.focus(), 50);
+    if (isDesktopPacking) {
+      getDesktopPacking().sync.start();
+      await updatePendingCount();
+      return;
+    }
     // Next Box must stay non-blocking: queue cloud upload in background only (no popup).
     const count = await getQueueCount();
     const { getFailedCount } = await import('../utils/videoQueue');
@@ -1148,7 +1377,18 @@ export default function PackingStation() {
       return;
     }
 
-    if (S.box && S.box !== v) await autoSaveCurrentBox();
+    if (S.box && S.box !== v) {
+      if (isDesktopPacking) { toast('Save the current box with Next Box before switching.', 'warning'); return; }
+      await autoSaveCurrentBox();
+    }
+
+    if (isDesktopPacking) {
+      const snapshot = await getDesktopPacking().packing.getSnapshot(S.cid).catch(() => null);
+      const existing = snapshot?.localBoxes?.find((box) => box.box_no === v);
+      if (existing && existing.state !== 'OPEN') { toast('Box is already closed. Start a new box or use the web adjustment workflow.', 'warning', 6000); return; }
+      await _setBox(v);
+      return;
+    }
 
     try {
       const dup = await packingAPI.checkDuplicateBox({ consignment_id: S.cid, box_no: v });
@@ -1207,7 +1447,7 @@ export default function PackingStation() {
     _setBox(v);
   };
 
-  const _setBox = (v, { reopen = false } = {}) => {
+  const _setBox = async (v, { reopen = false } = {}) => {
     if (!streamRef.current) {
       toast('Camera must be active before packing. Click "Start Camera" or reload consignment.', 'error', 5000);
       setMoConfig({
@@ -1220,18 +1460,27 @@ export default function PackingStation() {
       setShowMo(true);
       return;
     }
+    const activeCid = cidRef.current || stateRef.current.cid;
+    if (isDesktopPacking) {
+      try {
+        await getDesktopPacking().packing.openBox({ consignmentId: activeCid, boxNo: v });
+        desktopFinalizedVideoRef.current = null;
+        desktopOperationRef.current = null;
+        desktopProofRef.current = null;
+        if (!await startRecording(activeCid, v)) throw new Error('Recording did not start. Check the camera and local storage.');
+      } catch (error) { toast(error.message || 'Could not open the local box', 'error', 6000); return; }
+    }
     commitPackingState((prev) => ({
       ...prev,
       box: v,
       boxes: { ...prev.boxes, [v]: prev.boxes[v] || [] },
     }));
-    const activeCid = cidRef.current || stateRef.current.cid;
     boxClosePendingRef.current = false;
     sfx.box();
     toast('Box ' + v + ' active', 'success');
     setZoneState(3);
     inBoxRef.current.value = '';
-    if (activeCid) startRecording(activeCid, v, { reopen });
+    if (activeCid && !isDesktopPacking) startRecording(activeCid, v, { reopen });
   };
 
   const refreshPackingSession = async (consignmentId, { preferServerBoxes = false } = {}) => {
@@ -1344,6 +1593,12 @@ export default function PackingStation() {
   };
 
   const runPendingSync = async (showLog = false) => {
+    if (isDesktopPacking) {
+      if (showLog) await getDesktopPacking().sync.retry();
+      else getDesktopPacking().sync.start();
+      await updatePendingCount();
+      return;
+    }
     await drainPackingSyncQueue(
       processSaveBoxJob,
       (job, result, err) => {
@@ -1359,6 +1614,13 @@ export default function PackingStation() {
   };
 
   const retryFailedSync = async () => {
+    if (isDesktopPacking) {
+      setSyncState('pending');
+      toast('Retrying failed desktop sync items', 'info', 3000);
+      await getDesktopPacking().sync.retry();
+      await updatePendingCount();
+      return;
+    }
     const { resetFailedToPending, pruneDuplicateBoxVideos } = await import('../utils/videoQueue');
     await pruneDuplicateBoxVideos().catch(() => 0);
     const [saveJobs, videos] = await Promise.all([
@@ -1492,6 +1754,10 @@ export default function PackingStation() {
     }
 
     const session = stateRef.current;
+    if (isDesktopPacking && (boxClosePendingRef.current || desktopChunkErrorRef.current || mediaRecorderRef.current?.state !== 'recording')) {
+      scanToast('Packing is paused. Finish saving the box or start a healthy recording before scanning.', 'error');
+      return;
+    }
     if (!session.cid || !session.box) {
       scanToast('Load consignment and set box number before scanning', 'error');
       inSkuRef.current?.focus();
@@ -1521,6 +1787,49 @@ export default function PackingStation() {
     const capturedBox = String(session.box);
     const localSku = session.skus.find((sku) => barcodeMatchesSku(sku, bc));
     const queueBarcode = localSku ? resolveQueueBarcode(localSku, bc) : bc;
+
+    if (isDesktopPacking) {
+      // Dispatch the immutable envelope immediately. Only UI application is
+      // chained; repeated physical scans are independent durable events.
+      const capture = getDesktopPacking().packing.recordScan({
+        consignmentId: capturedCid, boxNo: capturedBox, scanId: globalThis.crypto.randomUUID(), barcode: bc, qty: 1, capturedAt: new Date().toISOString(),
+      }).then((result) => ({ result }), (error) => ({ error }));
+      desktopScanChainRef.current = desktopScanChainRef.current.then(async () => {
+        const captured = await capture;
+        if (captured.error) throw captured.error;
+        const durable = captured.result;
+        if (!durable?.ok) {
+          playScanSound(durable?.result || 'rejected', durable);
+          toast(durable?.message || 'Scan rejected locally', 'error', 2500);
+          flash('err');
+          return;
+        }
+        commitPackingState((latestState) => {
+          if (latestState.cid !== capturedCid) return latestState;
+          const boxItems = (latestState.boxes[capturedBox] || []).map((item) => ({ ...item }));
+          const existing = boxItems.find((item) => item.skuId === durable.skuId);
+          if (existing) existing.qty += 1;
+          else boxItems.push({
+            skuId: durable.skuId,
+            marketplaceBarcode: durable.marketplaceBarcode || durable.barcode,
+            barcode: durable.barcode,
+            marketplaceSku: durable.marketplaceSku || durable.barcode,
+            internalSku: durable.internalSku,
+            name: durable.internalSku,
+            qty: 1,
+          });
+          return { ...latestState, boxes: { ...latestState.boxes, [capturedBox]: boxItems } };
+        }, { syncSkus: true, flush: true });
+        playScanSound('ok');
+        flash('ok');
+        if (navigator.vibrate) navigator.vibrate(40);
+      }).catch((error) => {
+        console.error('[DesktopPacking] Durable scan failed:', error);
+        toast(error.message || 'Scan could not be saved locally', 'error', 5000);
+        flash('err');
+      });
+      return;
+    }
     
     const proxySnapshot = { ...session, box: capturedBox, cid: capturedCid };
     const optimistic = applyOptimisticScan(proxySnapshot, queueBarcode, 1);
@@ -1563,12 +1872,25 @@ export default function PackingStation() {
   };
 
   const removeItem = async (marketplaceSku) => {
+    if (boxClosePendingRef.current) return;
     const session = stateRef.current;
     if (!session.cid || !session.box) return;
     const boxItems = session.boxes[session.box] || [];
     const item = boxItems.find((i) => i.marketplaceSku === marketplaceSku || i.skuId === marketplaceSku);
     
     const capturedBox = String(session.box);
+    if (isDesktopPacking) {
+      boxClosePendingRef.current = true;
+      try {
+        await desktopScanChainRef.current;
+        await getDesktopPacking().packing.undoScan({ consignmentId: session.cid, boxNo: capturedBox, skuId: item?.skuId, eventId: globalThis.crypto.randomUUID() });
+        const fresh = await getDesktopPacking().packing.getSnapshot(session.cid);
+        commitPackingState((latest) => ({ ...latest, skus: fresh.skus, boxes: fresh.boxes }), { flush: true });
+        toast('Removal saved locally', 'info');
+      } catch (error) { toast(error.message || 'Could not save removal', 'error'); }
+      finally { boxClosePendingRef.current = Boolean(desktopChunkErrorRef.current); }
+      return;
+    }
     
     commitPackingState((latestState) => ({
       ...latestState,
@@ -1588,9 +1910,60 @@ export default function PackingStation() {
     toast('Removed locally', 'info');
   };
 
+  const commitDesktopBoxLocally = async (boxNo, weight, unit, imageFileOrBlob, itemsSnapshot) => {
+    const desktop = getDesktopPacking();
+    const cid = stateRef.current.cid;
+    await desktopScanChainRef.current;
+    await ensureBoxVideoSafe({ requireUploaded: false, silent: true });
+    const station = await desktop.station.get();
+    const video = desktopFinalizedVideoRef.current;
+    if (!video?.videoId) {
+      throw new Error('Box video was not finalized locally. Keep the box open and retry.');
+    }
+    let proof = desktopProofRef.current;
+    if (imageFileOrBlob && !proof) {
+      proof = desktopProofRef.current = await desktop.files.writeProof({
+        proofId: `${cid}-${boxNo}-${Date.now()}`,
+        consignmentId: cid,
+        boxNo,
+        fileName: imageFileOrBlob.name || 'weight-proof.jpg',
+        data: await blobToArrayBuffer(imageFileOrBlob),
+      });
+    }
+    const result = await desktop.packing.closeBox({
+      consignmentId: cid,
+      boxNo,
+      operationId: desktopOperationRef.current || (desktopOperationRef.current = createDesktopOperationId(station.station_id, cid, boxNo)),
+      items: (itemsSnapshot || []).map((item) => ({ ...item })),
+      weight,
+      weightUnit: unit || 'KG',
+      weightProof: proof,
+      video,
+    });
+    desktopFinalizedVideoRef.current = null;
+    desktop.sync.start();
+    await updatePendingCount();
+    return result;
+  };
+
   const saveBoxWithWeight = async (boxNo, weight, unit, imageFileOrBlob, itemsSnapshot) => {
     const cid = stateRef.current.cid;
     if (!cid || !boxNo) return false;
+
+    if (isDesktopPacking) {
+      setLoading(true);
+      try {
+        const result = await commitDesktopBoxLocally(boxNo, weight, unit, imageFileOrBlob, itemsSnapshot);
+        toast(`Box ${boxNo} saved locally ✓ — cloud sync continues in background`, 'success', 4500);
+        return Boolean(result?.localSafe);
+      } catch (err) {
+        console.error('[DesktopPacking] Local box commit failed:', err);
+        toast(err.message || 'Could not save the box locally', 'error', 8000);
+        return false;
+      } finally {
+        setLoading(false);
+      }
+    }
 
     const afterSave = async () => {
       void packingAPI.generateLabel({ consignment_id: cid, box_no: boxNo }).catch(() => {});
@@ -1667,6 +2040,8 @@ export default function PackingStation() {
     boxClosePendingRef.current = true;
     setLoading(true);
 
+    if (isDesktopPacking) await desktopScanChainRef.current;
+
     const settled = stateRef.current;
     const itemsSnapshot = (settled.boxes[context.boxNo] || []).map((item) => ({ ...item }));
     if (!itemsSnapshot.length) {
@@ -1675,6 +2050,7 @@ export default function PackingStation() {
           setLoading(true);
           await ensureBoxVideoSafe({ requireUploaded: false, silent: true });
         }
+        if (isDesktopPacking) await getDesktopPacking().packing.discardEmptyBox({ consignmentId: context.consignmentId, boxNo: context.boxNo });
         await actionAfterSave();
       } catch (err) {
         toast(err.message || 'Could not save box video locally', 'error', 7000);
@@ -1811,20 +2187,39 @@ export default function PackingStation() {
       // Save leftover box + durable-finalize video locally (fast)
       await autoSaveCurrentBox();
 
+      if (isDesktopPacking) {
+        const readiness = await getDesktopPacking().packing.finishReadiness(finishCid);
+        if (!readiness.ready) {
+          const pendingBoxes = readiness.pendingBoxes?.length || 0;
+          const pendingVideos = readiness.missingVideos?.length || 0;
+          toast(
+            `Packing is safe locally. ${pendingBoxes} box(es), ${pendingVideos} video(s) pending sync; ${readiness.incompleteSkus || 0} SKU(s) still need packing.`,
+            'warning',
+            8000,
+          );
+          await updatePendingCount();
+          return;
+        }
+      }
+
       // Compliance gate: show upload popup and wait until all box videos are verified
-      try {
-        await ensureBoxVideoSafe({ requireUploaded: true, silent: true });
-      } catch (err) {
-        toast(err.message || 'Upload all box videos before finishing', 'error', 8000);
-        try { await refreshUploadLogFromQueue(); } catch (_) { setShowUploadLog(true); }
-        return;
+      if (!isDesktopPacking) {
+        try {
+          await ensureBoxVideoSafe({ requireUploaded: true, silent: true });
+        } catch (err) {
+          toast(err.message || 'Upload all box videos before finishing', 'error', 8000);
+          try { await refreshUploadLogFromQueue(); } catch (_) { setShowUploadLog(true); }
+          return;
+        }
       }
 
       // Ensure save-box jobs flushed before finish API (non-blocking if empty)
-      try {
-        await drainPackingSyncQueue(processSaveBoxJob, () => {});
-      } catch (err) {
-        console.warn('[Packing] Sync drain before finish:', err.message);
+      if (!isDesktopPacking) {
+        try {
+          await drainPackingSyncQueue(processSaveBoxJob, () => {});
+        } catch (err) {
+          console.warn('[Packing] Sync drain before finish:', err.message);
+        }
       }
 
       const res = await packingAPI.finish({ consignment_id: finishCid });
@@ -1896,6 +2291,9 @@ export default function PackingStation() {
   };
 
   const resetAll = () => {
+    if (isDesktopPacking && cidRef.current) {
+      void getDesktopPacking().packing.releaseLease({ consignment_id: cidRef.current }).catch(() => {});
+    }
     const empty = { cid: null, intShip: null, box: null, skus: [], boxes: {} };
     commitPackingState(empty);
     setLoadMeta(null);
@@ -2175,6 +2573,8 @@ export default function PackingStation() {
                   {loading || uploading ? <span className="spin" /> : 'Load'}
                 </button>
               </div>
+              {loadError && <p role="alert" className="mt-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800">{loadError}</p>}
+              {loadNotice && <p role="status" className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">{loadNotice}</p>}
             </div>
           </div>
 

@@ -603,7 +603,7 @@ async function generateSignedPartUrls(storagePath, uploadId, partNumbers = []) {
   return { parts, storagePath, uploadId, expiresIn: UPLOAD_URL_TTL_SECONDS };
 }
 
-async function completeMultipartUpload(storagePath, uploadId, parts = []) {
+async function completeMultipartUpload(storagePath, uploadId, parts = [], expectedSize = null) {
   const { client, bucket } = requireR2();
   const normalized = (Array.isArray(parts) ? parts : [])
     .map((part) => ({
@@ -621,12 +621,21 @@ async function completeMultipartUpload(storagePath, uploadId, parts = []) {
     throw new Error('At least one completed part with ETag is required');
   }
 
-  await client.send(new CompleteMultipartUploadCommand({
+  try {
+    await client.send(new CompleteMultipartUploadCommand({
     Bucket: bucket,
     Key: storagePath,
     UploadId: uploadId,
     MultipartUpload: { Parts: normalized },
-  }));
+    }));
+  } catch (error) {
+    // The complete response can be lost after R2 commits the object. A retry
+    // has no active upload ID, so verify the exact object before acknowledging.
+    if (!isNoSuchUploadError(error) || !Number.isSafeInteger(expectedSize) || expectedSize <= 0) throw error;
+    const head = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: storagePath }));
+    if (Number(head.ContentLength) !== expectedSize) throw error;
+    return { storagePath, uploadId, parts: normalized.length, idempotentReplay: true };
+  }
 
   return { storagePath, uploadId, parts: normalized.length };
 }

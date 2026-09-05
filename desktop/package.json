@@ -1,0 +1,57 @@
+{
+  "name": "youthnic-packing-station-desktop",
+  "version": "0.2.1",
+  "description": "Offline-first Youthnic Packing Station for warehouse desktops",
+  "author": "VB Exports",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "build:frontend": "node scripts/build-frontend.mjs",
+    "copy:frontend": "node scripts/copy-frontend.mjs",
+    "package": "npm run build:frontend && npm run copy:frontend && electron-builder",
+    "rebuild": "electron-builder install-app-deps"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^37.1.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.youthnic.packingstation",
+    "productName": "Youthnic Packing Station",
+    "asar": true,
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "src/**/*",
+      "scripts/**/*",
+      "renderer/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "toolsets": {
+      "nsis": "1.2.1"
+    },
+    "win": {
+      "target": "nsis",
+      "artifactName": "Youthnic-Packing-Station-Setup.${ext}"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Office",
+      "artifactName": "Youthnic-Packing-Station-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Youthnic Packing Station"
+    }
+  }
+}

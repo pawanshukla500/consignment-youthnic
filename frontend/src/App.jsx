@@ -1,5 +1,5 @@
-import { Suspense, lazy, useEffect, useState } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router'
+import { Fragment, Suspense, lazy, useEffect, useState } from 'react'
+import { BrowserRouter, HashRouter, Routes, Route, Navigate, useLocation } from 'react-router'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { ToastProvider } from './context/ToastContext'
 import { ConsignmentSyncProvider } from './context/ConsignmentSyncContext'
@@ -31,6 +31,7 @@ const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'))
 const ContactDetails = lazy(() => import('./pages/ContactDetails'))
 const CopyrightPage = lazy(() => import('./pages/CopyrightPage'))
 const ShareVideo = lazy(() => import('./pages/ShareVideo'))
+const DesktopHome = lazy(() => import('./pages/DesktopHome'))
 
 const Spinner = () => <PageSpinner label="Loading application…" />
 
@@ -87,6 +88,17 @@ const PermissionRoute = ({ permission, children }) => {
 }
 
 function AppRoutes() {
+  if (window.youthnicDesktop) return <Suspense fallback={<Spinner />}><Routes>
+    <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
+    <Route path="/reset-password" element={<ResetPassword />} />
+    <Route path="/packing" element={<PrivateRoute><PermissionRoute permission="packing"><PackingStation /></PermissionRoute></PrivateRoute>} />
+    <Route path="/" element={<PrivateRoute><DesktopHome /></PrivateRoute>} />
+    <Route path="/terms" element={<TermsAndConditions />} />
+    <Route path="/privacy" element={<PrivacyPolicy />} />
+    <Route path="/contact" element={<ContactDetails />} />
+    <Route path="/copyright" element={<CopyrightPage />} />
+    <Route path="*" element={<Navigate to="/" replace />} />
+  </Routes></Suspense>
   return (
     <Suspense fallback={<Spinner />}>
       <Routes>
@@ -121,18 +133,21 @@ function AppRoutes() {
 }
 
 export default function App() {
+  const Router = window.youthnicDesktop ? HashRouter : BrowserRouter
+  const SyncProvider = window.youthnicDesktop ? Fragment : ConsignmentSyncProvider
+
   return (
     <ErrorBoundary>
-      <BrowserRouter>
+      <Router>
         <ToastProvider>
           <AuthProvider>
-            <ConsignmentSyncProvider>
+            <SyncProvider>
               <AppServices />
               <AppRoutes />
-            </ConsignmentSyncProvider>
+            </SyncProvider>
           </AuthProvider>
         </ToastProvider>
-      </BrowserRouter>
+      </Router>
     </ErrorBoundary>
   )
 }
