@@ -2,7 +2,11 @@
   "name": "youthnic-packing-station-desktop",
   "version": "0.2.1",
   "description": "Offline-first Youthnic Packing Station for warehouse desktops",
-  "author": "VB Exports",
+  "author": {
+    "name": "Youthnic Exports Pvt. Ltd.",
+    "email": "support@youthnic.shop"
+  },
+  "homepage": "https://consignment.youthnic.shop",
   "license": "UNLICENSED",
   "private": true,
   "main": "main.cjs",

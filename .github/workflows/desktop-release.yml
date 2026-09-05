@@ -2,19 +2,18 @@ name: Youthnic Packing Station Desktop
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'desktop/**'
-      - 'frontend/**'
-      - 'package.json'
-      - 'frontend/package-lock.json'
-      - 'desktop/package-lock.json'
+  workflow_run:
+    workflows: ["Deploy to Cloud Run"]
+    types: [completed]
 
 permissions:
   contents: read
 
 jobs:
   package:
+    # A desktop package is useful only after the exact server revision it needs
+    # has passed the deployed protocol/schema verification.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -29,6 +28,8 @@ jobs:
         working-directory: desktop
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -51,7 +52,6 @@ jobs:
           YOUTHNIC_PACKING_API_URL: ${{ vars.YOUTHNIC_PACKING_API_URL }}
       - name: Verify live desktop backend before distributing artifacts
         # Never distribute a desktop client ahead of its server contract.
-        # A simultaneous backend deploy can be followed by a manual rerun.
         run: node ../backend/scripts/verify-desktop-deployment.cjs
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v4
