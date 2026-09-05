@@ -162,6 +162,18 @@ const MIGRATIONS = [
     INSERT OR IGNORE INTO local_scan_keys SELECT consignment_id, internal_sku, sku_id FROM local_skus WHERE internal_sku IS NOT NULL;
     CREATE INDEX idx_outbox_consignment_state ON sync_outbox(consignment_id, state);
   ` },
+  { id: 3, sql: `
+    DELETE FROM local_scan_keys
+    WHERE EXISTS (
+      SELECT 1 FROM local_skus s
+      WHERE s.consignment_id = local_scan_keys.consignment_id
+        AND s.sku_id = local_scan_keys.sku_id
+        AND s.internal_sku IS NOT NULL
+        AND lower(local_scan_keys.scan_key) = lower(s.internal_sku)
+        AND (s.barcode IS NULL OR lower(s.barcode) <> lower(local_scan_keys.scan_key))
+        AND (s.marketplace_sku IS NULL OR lower(s.marketplace_sku) <> lower(local_scan_keys.scan_key))
+    );
+  ` },
 ];
 
 function nowIso() { return new Date().toISOString(); }
@@ -277,7 +289,8 @@ class DesktopDatabase {
           .run(consignmentId, skuId, sku.marketplaceBarcode || sku.skuBarcode || sku.scanBarcode || sku.barcode || null, sku.marketplaceSku || sku.marketplace_sku || null, sku.internalSku || sku.internal_sku || null,
             Number(sku.required ?? sku.requiredQty ?? sku.required_qty) || 0, Number(sku.packed ?? sku.packedQty ?? sku.packed_qty) || 0,
             sku.status || 'pending', Number(existing.count) || 0, Number(existing.count) || 0);
-        for (const key of [sku.marketplaceBarcode, sku.skuBarcode, sku.scanBarcode, sku.barcode, sku.marketplaceSku, sku.internalSku].map(clean).filter(Boolean)) {
+        // Marketplace scan identifiers only — internal SKU is display data, not a scan key.
+        for (const key of [sku.marketplaceBarcode, sku.skuBarcode, sku.scanBarcode, sku.barcode, sku.marketplaceSku].map(clean).filter(Boolean)) {
           this.db.prepare('INSERT OR IGNORE INTO local_scan_keys (consignment_id, scan_key, sku_id) VALUES (?, ?, ?)').run(consignmentId, key, skuId);
         }
       }

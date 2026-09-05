@@ -47,6 +47,7 @@ import {
   isValidBarcode,
   barcodeValidationMessage,
   normalizeBarcodeInput,
+  createScannerInputGuard,
   resolveQueueBarcode,
   getMarketplaceBarcode,
   barcodeMatchesSku,
@@ -254,6 +255,9 @@ export default function PackingStation() {
   const desktopPendingBytesRef = useRef(0);
   const desktopProofRef = useRef(null);
   const desktopOperationRef = useRef(null);
+  // Exactly-once gate for one scanner input generation. Hardware scanners often
+  // send Enter plus a form submit / CR+LF; without this, Zone 3 double-counts.
+  const scannerGuardRef = useRef(createScannerInputGuard());
 
   const boxClosePendingRef = useRef(false);
   const scanToastDedupRef = useRef({ message: '', at: 0 });
@@ -1476,6 +1480,7 @@ export default function PackingStation() {
       boxes: { ...prev.boxes, [v]: prev.boxes[v] || [] },
     }));
     boxClosePendingRef.current = false;
+    scannerGuardRef.current.reset();
     sfx.box();
     toast('Box ' + v + ' active', 'success');
     setZoneState(3);
@@ -1703,6 +1708,7 @@ export default function PackingStation() {
     const value = normalizeBarcodeInput(
       overrideBarcode !== undefined ? overrideBarcode : inSkuRef.current?.value
     );
+    if (!scannerGuardRef.current.consumeSubmission(value)) return;
     doScan(value);
   };
 
@@ -1722,6 +1728,7 @@ export default function PackingStation() {
     try {
       inSkuRef.current.select();
     } catch (e) {}
+    scannerGuardRef.current.noteInput();
     submitSkuInput(cleaned);
   };
 
@@ -2620,6 +2627,7 @@ export default function PackingStation() {
                 className="w-full px-4 py-4 border-2 rounded-xl outline-none transition-all text-lg font-bold bg-slate-50 border-slate-300 text-slate-900 font-mono focus:ring-4 focus:ring-emerald-500/20 focus:border-emerald-500 placeholder:text-slate-400 placeholder:font-normal"
                 onFocus={(e) => { sfx.init(); e.target.select(); }}
                 onPointerDown={() => sfx.init()}
+                onInput={() => scannerGuardRef.current.noteInput()}
                 onKeyDown={(e) => {
                   sfx.init();
                   if (e.key === 'Enter' || e.key === 'Tab') {

@@ -63,3 +63,15 @@ test('invalid and over-limit scans are rejected locally without changing quantit
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('internal SKU is display data and is not accepted as a packing barcode', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'youthnic-packing-'));
+  const db = openDatabase(path.join(root, 'packing.sqlite'));
+  db.saveSnapshot(fixtureSnapshot());
+  db.openBox({ consignmentId: 'c-1', boxNo: '1' });
+  assert.equal(db.recordScan({ consignmentId: 'c-1', boxNo: '1', scanId: 'internal', barcode: 'INT-1' }).result, 'not_found');
+  assert.equal(db.recordScan({ consignmentId: 'c-1', boxNo: '1', scanId: 'market', barcode: 'MKT-1' }).ok, true);
+  assert.equal(db.getSnapshot('c-1').skus[0].packed, 1);
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
