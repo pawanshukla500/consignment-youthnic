@@ -40,8 +40,8 @@ export default function AppServices() {
       countsRef.current.video = pending + failed
       syncPendingTotal()
     })
-    const unsubPacking = subscribePackingSyncStatus(({ pendingScans, pendingJobs, failedScans, failedJobs }) => {
-      countsRef.current.packing = pendingScans + pendingJobs + failedScans + failedJobs
+    const unsubPacking = subscribePackingSyncStatus(({ pendingJobs, failedJobs }) => {
+      countsRef.current.packing = (Number(pendingJobs) || 0) + (Number(failedJobs) || 0)
       syncPendingTotal()
     })
 

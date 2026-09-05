@@ -1298,13 +1298,6 @@ export default function PackingStation() {
     setLoading(false);
   };
 
-  const queueSaveBoxLocally = async (consignmentId, boxNo, items, message = 'Box saved locally and will sync when online') => {
-    await enqueueSaveBoxJob({ consignmentId, boxNo, items: items || [] });
-    setSyncState(navigator.onLine ? 'pending' : 'offline');
-    await updatePendingCount();
-    toast(message, 'warning', 5000);
-  };
-
   const autoSaveCurrentBox = async () => {
     if (isDesktopPacking && stateRef.current.box) {
       throw new Error('Use Save Box or Next Box to confirm the current box before continuing.');
@@ -1318,23 +1311,26 @@ export default function PackingStation() {
       return;
     }
     const savedBox = current.box;
-    if (isDesktopPacking) {
-      await ensureBoxVideoSafe({ requireUploaded: false, silent: true });
-      const committed = await commitDesktopBoxLocally(savedBox, null, null, null, current.boxes[savedBox]);
-      if (committed?.localSafe) toast(`Box ${savedBox} saved locally`, 'success', 3000);
-      return;
-    }
+    const items = (current.boxes[savedBox] || []).map((item) => ({ ...item }));
+    // Scans live in local box state only. save-box without `items` hits an empty
+    // server session and either 400s or overwrites with stale packed qty.
+    await enqueueSaveBoxJob({
+      consignmentId: current.cid,
+      boxNo: savedBox,
+      items,
+    });
+    setSyncState(navigator.onLine ? 'pending' : 'offline');
     try {
-      await packingAPI.saveBox({ consignment_id: current.cid, box_no: savedBox });
-      toast('Box ' + savedBox + ' auto-saved', 'success', 3000);
-    } catch (e) {
-      await queueSaveBoxLocally(
-        current.cid,
-        savedBox,
-        current.boxes[savedBox],
-        `Box ${savedBox} pending sync. It is not confirmed on the server yet.`
+      await drainPackingSyncQueue(
+        processSaveBoxJob,
+        (job, _result, err) => {
+          if (err) toast(`Box ${job.boxNo} still pending sync`, 'warning', 4000);
+        }
       );
+    } catch (e) {
+      toast(`Box ${savedBox} pending sync. It is not confirmed on the server yet.`, 'warning', 5000);
     }
+    await updatePendingCount();
     await ensureBoxVideoSafe({ requireUploaded: false, silent: true });
   };
 
@@ -1973,10 +1969,14 @@ export default function PackingStation() {
     }
 
     const afterSave = async () => {
-      void packingAPI.generateLabel({ consignment_id: cid, box_no: boxNo }).catch(() => {});
       void checkSyncStatus(cid);
-      void drainPackingSyncQueue(processSaveBoxJob, () => {})
-        .catch((err) => console.warn('[Packing] Save-box queue drain failed:', err.message));
+      try {
+        await drainPackingSyncQueue(processSaveBoxJob, () => {});
+      } catch (err) {
+        console.warn('[Packing] Save-box queue drain failed:', err.message);
+      }
+      await updatePendingCount();
+      void processVideoUploadQueue({ wait: false, forceNow: true });
       return true;
     };
 
@@ -2000,6 +2000,14 @@ export default function PackingStation() {
 
       toast(`Box ${boxNo} saved locally — server sync pending`, 'success', 3500);
       const videoOk = await afterSave();
+      const pending = await getPendingSyncJobCount();
+      toast(
+        pending === 0
+          ? `Box ${boxNo} saved and synced`
+          : `Box ${boxNo} saved locally — server sync pending`,
+        pending === 0 ? 'success' : 'warning',
+        3500,
+      );
       return videoOk;
     } catch (err) {
       console.error('Local save-box failed:', err);
@@ -2028,11 +2036,9 @@ export default function PackingStation() {
         boxNo,
         weight,
         unit,
-        isOnline: false,
+        isOnline: navigator.onLine,
       })
     }
-
-    toast(`Box ${boxNo} saved locally and queued for sync`, 'info', 5000);
   };
 
   const handleBoxCompletion = async (actionAfterSave) => {

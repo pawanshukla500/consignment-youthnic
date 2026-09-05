@@ -50,7 +50,7 @@ export async function processPackingSyncQueues() {
     await drainPackingSyncQueue(processSaveBoxJob, (job, _result, err) => {
       if (err) console.warn('[PackingSync] Save-box retry:', job.boxNo, err?.message)
     })
-    await processVideoUploadQueue()
+    await processVideoUploadQueue({ wait: false, forceNow: true })
   } finally {
     running = false
     await refreshCounts()
