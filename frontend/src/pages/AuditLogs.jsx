@@ -50,17 +50,7 @@ function labelFor(map, value) {
 function formatDetailValue(value) {
   if (value === null || value === undefined || value === '') return '-';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-  if (typeof value === 'object') {
-    if (Object.prototype.hasOwnProperty.call(value, 'from') && Object.prototype.hasOwnProperty.call(value, 'to')) {
-      const from = value.fromName || value.from || 'not set';
-      const to = value.toName || value.to || 'not set';
-      return `${from} → ${to}`;
-    }
-    if (value.name || value.email) {
-      return [value.name, value.email].filter(Boolean).join(' · ');
-    }
-    return JSON.stringify(value);
-  }
+  if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }
 
@@ -109,20 +99,7 @@ export default function AuditLogs() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const getUserName = (log) =>
-    log.userName
-    || log.details?.changedBy?.name
-    || users.find(u => u.id === log.userId)?.name
-    || log.userEmail
-    || log.details?.changedBy?.email
-    || log.userId
-
-  const getUserLabel = (log) => {
-    const name = getUserName(log)
-    const email = log.userEmail || log.details?.changedBy?.email
-    if (email && email !== name) return `${name} (${email})`
-    return name
-  }
+  const getUserName = (id) => users.find(u => u.id === id)?.name || id;
 
   let filtered = [...logs];
   if (filterUser) filtered = filtered.filter(l => l.userId === filterUser);
@@ -139,8 +116,7 @@ export default function AuditLogs() {
       l.action?.toLowerCase().includes(s) ||
       l.entityType?.toLowerCase().includes(s) ||
       l.summary?.toLowerCase().includes(s) ||
-      getUserName(l)?.toLowerCase().includes(s)
-      || (l.userEmail || '').toLowerCase().includes(s)
+      getUserName(l.userId)?.toLowerCase().includes(s)
     );
   }
 
@@ -246,7 +222,7 @@ export default function AuditLogs() {
               : filtered.length > 0 ? filtered.map((log, i) => (
                 <tr key={i} className="hover:bg-slate-50">
                   <td className="px-6 py-4 text-xs text-slate-500 whitespace-nowrap"><div className="flex items-center gap-1"><Calendar className="w-3 h-3" />{new Date(log.timestamp).toLocaleString()}</div></td>
-                  <td className="px-6 py-4"><div className="flex items-center gap-2"><User className="w-3.5 h-3.5 text-slate-400" /><span className="text-sm font-medium text-slate-900">{getUserLabel(log)}</span></div></td>
+                  <td className="px-6 py-4"><div className="flex items-center gap-2"><User className="w-3.5 h-3.5 text-slate-400" /><span className="text-sm font-medium text-slate-900">{getUserName(log.userId)}</span></div></td>
                   <td className="px-6 py-4"><span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${ACTION_COLORS[log.action] || 'bg-slate-100 text-slate-700'}`}>{labelFor(ACTION_LABELS, log.action)}</span></td>
                   <td className="px-6 py-4 text-sm text-slate-600">{labelFor(ENTITY_LABELS, log.entityType)} <span className="text-xs text-slate-400 font-mono">{log.entityId?.slice(0, 16)}{log.entityId?.length > 16 ? '...' : ''}</span></td>
                   <td className="px-6 py-4 text-sm text-slate-600 max-w-[620px]"><p className="leading-relaxed">{log.summary || <DetailList details={log.details} />}</p></td>

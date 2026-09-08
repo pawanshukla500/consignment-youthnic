@@ -26,7 +26,7 @@ import ShipmentProgressBar from '../components/ShipmentProgressBar';
 import TagButton, { TagButtonGroup } from '../components/TagButton';
 import { TableSkeleton } from '../components/Skeleton';
 import OmsGuruChecklist from '../components/OmsGuruChecklist';
-import { normalizeWarehouses, applyDispatchDates } from '../utils/dispatchPlanning';
+import { normalizeWarehouses, computeRequiredDispatchDate, getTransitDays } from '../utils/dispatchPlanning';
 
 const FULL_COL_COUNT = 29;
 const COMPACT_COL_COUNT = 17;
@@ -86,7 +86,10 @@ const parseCsvLine = (line) => {
 };
 
 function applyDispatchToForm(form, marketplaces) {
-  return applyDispatchDates(form, marketplaces);
+  const mp = marketplaces.find((m) => m.id === form.marketplaceId);
+  const transitDays = getTransitDays(mp, form.warehouse);
+  const dispatch = computeRequiredDispatchDate(form.appointmentDate, transitDays);
+  return dispatch ? { ...form, scheduledDispatchDate: dispatch } : form;
 }
 
 export default function Consignments() {
@@ -931,33 +934,6 @@ export default function Consignments() {
                     <tr className="bg-slate-50">
                       <td colSpan={colCount} className="px-3 py-2">
                         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                          <div>
-                            <label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Marketplace</label>
-                            <select
-                              value={editForm.marketplaceId || ''}
-                              onChange={e=>setEditForm(applyDispatchToForm({...editForm,marketplaceId:e.target.value,warehouse:''}, marketplaces))}
-                              className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none bg-white"
-                            >
-                              <option value="">Select portal</option>
-                              {marketplaces.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
-                            </select>
-                          </div>
-                          <div>
-                            <label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Warehouse</label>
-                            {editForm.marketplaceId && getMpWarehouses(editForm.marketplaceId).length===0 ? (
-                              <div className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm bg-slate-50 text-slate-400">No warehouses</div>
-                            ) : (
-                              <select
-                                value={editForm.warehouse || ''}
-                                onChange={e=>setEditForm(applyDispatchToForm({...editForm,warehouse:e.target.value}, marketplaces))}
-                                disabled={!editForm.marketplaceId}
-                                className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none bg-white disabled:bg-slate-50 disabled:text-slate-400"
-                              >
-                                <option value="">Select warehouse</option>
-                                {getMpWarehouses(editForm.marketplaceId).map(w=><option key={w.name} value={w.name}>{w.name}{w.transitDays ? ` (${w.transitDays}d)` : ''}</option>)}
-                              </select>
-                            )}
-                          </div>
                           <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Appointment Date</label><input type="date" value={editForm.appointmentDate || ''} onChange={e=>setEditForm(applyDispatchToForm({...editForm,appointmentDate:e.target.value}, marketplaces))} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" /></div>
                           <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Required Dispatch</label><input type="date" value={editForm.scheduledDispatchDate || ''} readOnly className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm bg-slate-50 text-slate-600" title="Auto-calculated from appointment − transit days" /></div>
                           <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Actual Dispatch</label><input type="date" value={editForm.actualDispatchDate || ''} onChange={e=>setEditForm({...editForm,actualDispatchDate:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" /></div>
