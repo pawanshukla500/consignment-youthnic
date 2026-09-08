@@ -26,7 +26,7 @@ import ShipmentProgressBar from '../components/ShipmentProgressBar';
 import TagButton, { TagButtonGroup } from '../components/TagButton';
 import { TableSkeleton } from '../components/Skeleton';
 import OmsGuruChecklist from '../components/OmsGuruChecklist';
-import { normalizeWarehouses, computeRequiredDispatchDate, getTransitDays } from '../utils/dispatchPlanning';
+import { normalizeWarehouses, applyDispatchDates } from '../utils/dispatchPlanning';
 
 const FULL_COL_COUNT = 29;
 const COMPACT_COL_COUNT = 17;
@@ -86,10 +86,7 @@ const parseCsvLine = (line) => {
 };
 
 function applyDispatchToForm(form, marketplaces) {
-  const mp = marketplaces.find((m) => m.id === form.marketplaceId);
-  const transitDays = getTransitDays(mp, form.warehouse);
-  const dispatch = computeRequiredDispatchDate(form.appointmentDate, transitDays);
-  return dispatch ? { ...form, scheduledDispatchDate: dispatch } : form;
+  return applyDispatchDates(form, marketplaces);
 }
 
 export default function Consignments() {

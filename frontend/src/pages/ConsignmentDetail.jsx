@@ -20,7 +20,7 @@ import ConsignmentWorkflowPanel from '../components/ConsignmentWorkflowPanel';
 import { useAuth } from '../context/AuthContext';
 import { summarizeOmsGuruSkus } from '../utils/omsGuruSku';
 import { inwardStatusClass, inwardStatusLabel } from '../utils/inwardSku';
-import { normalizeWarehouses, computeRequiredDispatchDate, getTransitDays } from '../utils/dispatchPlanning';
+import { normalizeWarehouses, applyDispatchDates } from '../utils/dispatchPlanning';
 
 const PACKING_LIVE_TYPES = new Set([
   'packing_scan',
@@ -433,12 +433,7 @@ const ConsignmentDetail = () => {
   const [boxRenameSaving, setBoxRenameSaving] = useState(false);
   const liveRefreshRef = useRef(null);
 
-  const applyDispatchToTracking = (form) => {
-    const mp = marketplaces.find((m) => m.id === form.marketplaceId);
-    const transitDays = getTransitDays(mp, form.warehouse);
-    const dispatch = computeRequiredDispatchDate(form.appointmentDate, transitDays);
-    return dispatch ? { ...form, scheduledDispatchDate: dispatch } : form;
-  };
+  const applyDispatchToTracking = (form) => applyDispatchDates(form, marketplaces);
 
   const getMpWarehouses = (marketplaceId) => {
     const mp = marketplaces.find((m) => m.id === marketplaceId);
