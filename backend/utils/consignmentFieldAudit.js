@@ -30,9 +30,13 @@ function collectChangedFields(existing = {}, updateData = {}, fields = []) {
 
 function resolveWarehouseForMarketplace(marketplace, warehouseName) {
   const requested = String(warehouseName || '').trim();
-  if (!marketplace) return { warehouse: requested, cleared: false, invalid: false };
+  if (!marketplace) {
+    return { warehouse: '', cleared: Boolean(requested), invalid: Boolean(requested) };
+  }
   const names = getWarehouseNames(marketplace.warehouses);
-  if (!names.length) return { warehouse: requested, cleared: false, invalid: false };
+  if (!names.length) {
+    return { warehouse: '', cleared: Boolean(requested), invalid: Boolean(requested) };
+  }
   if (!requested) return { warehouse: '', cleared: false, invalid: false };
   if (names.includes(requested)) return { warehouse: requested, cleared: false, invalid: false };
   return { warehouse: '', cleared: true, invalid: true };

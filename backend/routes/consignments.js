@@ -662,7 +662,7 @@ async function applyDispatchPlanning(consignment, marketplaceMap) {
     ...consignment,
     transitDays: enriched.transitDays,
     requiredDispatchDate: enriched.requiredDispatchDate,
-    scheduledDispatchDate: enriched.scheduledDispatchDate || consignment.scheduledDispatchDate || '',
+    scheduledDispatchDate: enriched.scheduledDispatchDate || '',
     updatedAt: now(),
   };
 }
@@ -1694,6 +1694,9 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
     let warehouseClearedAsInvalid = false;
     if (updateData.marketplaceId !== undefined || updateData.warehouse !== undefined) {
       const nextMarketplaceId = updateData.marketplaceId !== undefined ? updateData.marketplaceId : existing.marketplaceId;
+      if (String(nextMarketplaceId || '').trim() && !marketplaceMap[nextMarketplaceId]) {
+        return res.status(400).json({ error: 'Marketplace not found' });
+      }
       const requestedWarehouse = updateData.warehouse !== undefined ? updateData.warehouse : existing.warehouse;
       const resolved = resolveWarehouseForMarketplace(marketplaceMap[nextMarketplaceId], requestedWarehouse);
       if (resolved.warehouse !== String(requestedWarehouse || '').trim()) {
@@ -1705,7 +1708,12 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
     const merged = { ...existing, ...updateData };
     const updated = await applyDispatchPlanning(merged, marketplaceMap);
     await firestoreHelpers.setDocument('consignments', id, updated);
-    const auditDetails = buildConsignmentUpdateAuditDetails(existing, updateData, req.user, { warehouseClearedAsInvalid });
+    const auditDetails = buildConsignmentUpdateAuditDetails(existing, {
+      ...updateData,
+      requiredDispatchDate: updated.requiredDispatchDate,
+      scheduledDispatchDate: updated.scheduledDispatchDate,
+      transitDays: updated.transitDays,
+    }, req.user, { warehouseClearedAsInvalid });
     if (auditDetails.marketplaceId) {
       const fromId = auditDetails.marketplaceId.from;
       const toId = auditDetails.marketplaceId.to;

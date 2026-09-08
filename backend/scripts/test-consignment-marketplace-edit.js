@@ -42,9 +42,37 @@ assert.deepStrictEqual(
   { warehouse: 'DEL-9', cleared: false, invalid: false }
 );
 assert.deepStrictEqual(
-  resolveWarehouseForMarketplace(flipkart, 'BLR-1'),
+  resolveWarehouseForMarketplace(null, 'BLR-1'),
   { warehouse: '', cleared: true, invalid: true }
 );
+assert.deepStrictEqual(
+  resolveWarehouseForMarketplace({ warehouses: [] }, 'BLR-1'),
+  { warehouse: '', cleared: true, invalid: true }
+);
+assert.deepStrictEqual(
+  resolveWarehouseForMarketplace(null, ''),
+  { warehouse: '', cleared: false, invalid: false }
+);
+
+const plannerAudit = buildConsignmentUpdateAuditDetails(
+  {
+    ...existing,
+    scheduledDispatchDate: '2026-09-10',
+    requiredDispatchDate: '2026-09-10',
+    transitDays: 3,
+  },
+  {
+    marketplaceId: 'mp-flipkart',
+    warehouse: '',
+    scheduledDispatchDate: '',
+    requiredDispatchDate: '',
+    transitDays: 0,
+  },
+  { id: 'user-1', name: 'Pawan Shukla', email: 'returnorders@vbexports.co.in' }
+);
+assert.deepStrictEqual(plannerAudit.changes.scheduledDispatchDate, { from: '2026-09-10', to: null });
+assert.deepStrictEqual(plannerAudit.changes.requiredDispatchDate, { from: '2026-09-10', to: null });
+assert.deepStrictEqual(plannerAudit.changes.transitDays, { from: 3, to: 0 });
 
 const audit = buildConsignmentUpdateAuditDetails(
   existing,
