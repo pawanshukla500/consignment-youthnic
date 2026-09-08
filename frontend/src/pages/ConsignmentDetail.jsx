@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import ConfirmModal from '../components/ConfirmModal';
 import { printShipmentBoxLabel, printAllShipmentBoxLabels } from '../utils/shipmentLabel';
-import { consignmentsAPI, uploadsAPI, packingAPI, marketplacesAPI } from '../services/api';
+import { consignmentsAPI, uploadsAPI, packingAPI } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import { buildUploadStreamUrl, fetchAuthenticatedStream } from '../utils/videoPlayback';
 import { uploadFileToStorage } from '../hooks/useStorageUpload';
@@ -20,7 +20,6 @@ import ConsignmentWorkflowPanel from '../components/ConsignmentWorkflowPanel';
 import { useAuth } from '../context/AuthContext';
 import { summarizeOmsGuruSkus } from '../utils/omsGuruSku';
 import { inwardStatusClass, inwardStatusLabel } from '../utils/inwardSku';
-import { normalizeWarehouses, applyDispatchDates } from '../utils/dispatchPlanning';
 
 const PACKING_LIVE_TYPES = new Set([
   'packing_scan',
@@ -416,7 +415,6 @@ const ConsignmentDetail = () => {
   const [deleteFile, setDeleteFile] = useState(null); // { id, type, name }
   const [savingTracking, setSavingTracking] = useState(false);
   const [trackingForm, setTrackingForm] = useState({});
-  const [marketplaces, setMarketplaces] = useState([]);
   const [showReassignId, setShowReassignId] = useState(false);
   const [newConsignmentId, setNewConsignmentId] = useState('');
   const [reassigningId, setReassigningId] = useState(false);
@@ -433,17 +431,8 @@ const ConsignmentDetail = () => {
   const [boxRenameSaving, setBoxRenameSaving] = useState(false);
   const liveRefreshRef = useRef(null);
 
-  const applyDispatchToTracking = (form) => applyDispatchDates(form, marketplaces);
-
-  const getMpWarehouses = (marketplaceId) => {
-    const mp = marketplaces.find((m) => m.id === marketplaceId);
-    return normalizeWarehouses(mp?.warehouses);
-  };
-
   const openTrackingEdit = () => {
-    setTrackingForm(applyDispatchToTracking({
-      marketplaceId: consignment.marketplaceId || consignment.marketplace?.id || '',
-      warehouse: consignment.warehouse || '',
+    setTrackingForm({
       appointmentDate: consignment.appointmentDate || '',
       scheduledDispatchDate: consignment.scheduledDispatchDate || '',
       actualDispatchDate: consignment.actualDispatchDate || '',
@@ -458,7 +447,7 @@ const ConsignmentDetail = () => {
       unitsReceived: consignment.unitsReceived || 0,
       unitsInwarded: consignment.unitsInwarded || 0,
       qaFailExcessQty: consignment.qaFailExcessQty || 0,
-    }));
+    });
     setEditingTracking(true);
     setTrackingOpen(true);
   };
@@ -497,12 +486,6 @@ const ConsignmentDetail = () => {
   useEffect(() => {
     fetchConsignment();
   }, [id]);
-
-  useEffect(() => {
-    marketplacesAPI.getAll()
-      .then((res) => setMarketplaces(res.data.marketplaces || []))
-      .catch(() => setMarketplaces([]));
-  }, []);
 
   // Keep SKU tab aligned with active packing session while consignment is in progress
   useEffect(() => {
@@ -1348,35 +1331,6 @@ const ConsignmentDetail = () => {
         <div className="px-5 pb-5">
         {editingTracking ? (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            <div>
-              <label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Marketplace</label>
-              <select
-                value={trackingForm.marketplaceId || ''}
-                onChange={(e) => setTrackingForm(applyDispatchToTracking({ ...trackingForm, marketplaceId: e.target.value, warehouse: '' }))}
-                className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none bg-white"
-              >
-                <option value="">Select portal</option>
-                {marketplaces.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Warehouse</label>
-              {trackingForm.marketplaceId && getMpWarehouses(trackingForm.marketplaceId).length === 0 ? (
-                <div className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm bg-slate-50 text-slate-400">No warehouses</div>
-              ) : (
-                <select
-                  value={trackingForm.warehouse || ''}
-                  onChange={(e) => setTrackingForm(applyDispatchToTracking({ ...trackingForm, warehouse: e.target.value }))}
-                  disabled={!trackingForm.marketplaceId}
-                  className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none bg-white disabled:bg-slate-50 disabled:text-slate-400"
-                >
-                  <option value="">Select warehouse</option>
-                  {getMpWarehouses(trackingForm.marketplaceId).map((w) => (
-                    <option key={w.name} value={w.name}>{w.name}{w.transitDays ? ` (${w.transitDays}d)` : ''}</option>
-                  ))}
-                </select>
-              )}
-            </div>
             {[
               { label: 'Appointment Date', field: 'appointmentDate', type: 'date' },
               { label: 'Scheduled Dispatch', field: 'scheduledDispatchDate', type: 'date' },
@@ -1407,17 +1361,7 @@ const ConsignmentDetail = () => {
                     <option value="Missed">Missed</option>
                   </select>
                 ) : (
-                  <input
-                    type={item.type}
-                    value={trackingForm[item.field] || ''}
-                    readOnly={item.field === 'scheduledDispatchDate'}
-                    onChange={e => {
-                      const next = { ...trackingForm, [item.field]: e.target.value };
-                      setTrackingForm(item.field === 'appointmentDate' ? applyDispatchToTracking(next) : next);
-                    }}
-                    className={`w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none ${item.field === 'scheduledDispatchDate' ? 'bg-slate-50 text-slate-600' : ''}`}
-                    title={item.field === 'scheduledDispatchDate' ? 'Auto-calculated from appointment − warehouse transit days' : undefined}
-                  />
+                  <input type={item.type} value={trackingForm[item.field] || ''} onChange={e => setTrackingForm({...trackingForm, [item.field]: e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
                 )}
               </div>
             ))}
@@ -1425,8 +1369,6 @@ const ConsignmentDetail = () => {
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
             {[
-              { label: 'Marketplace', value: consignment.marketplace?.name || marketplaces.find((m) => m.id === consignment.marketplaceId)?.name || consignment.marketplaceId },
-              { label: 'Warehouse', value: consignment.warehouse },
               { label: 'Appointment Date', value: consignment.appointmentDate },
               { label: 'Scheduled Dispatch', value: consignment.scheduledDispatchDate },
               { label: 'Actual Dispatch', value: consignment.actualDispatchDate },

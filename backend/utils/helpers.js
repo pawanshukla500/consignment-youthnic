@@ -9,15 +9,12 @@ const now = () => new Date().toISOString();
 
 // Audit logging helper
 const addAuditLog = async (action, entityType, entityId, userId, details = {}) => {
-  const changedBy = details.changedBy || {};
   const logEntry = {
     id: generateId(),
     action,
     entityType,
     entityId,
     userId,
-    userName: changedBy.name || details.userName || null,
-    userEmail: changedBy.email || details.userEmail || null,
     details,
     timestamp: now()
   };

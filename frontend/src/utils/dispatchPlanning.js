@@ -34,19 +34,10 @@ export function getTransitDays(marketplace, warehouseName) {
 
 function parseDateOnly(value) {
   if (!value) return null
-  if (value instanceof Date) {
-    if (Number.isNaN(value.getTime())) return null
-    return new Date(value.getFullYear(), value.getMonth(), value.getDate())
-  }
-  const text = String(value).trim()
-  const parts = text.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  if (parts) {
-    const d = new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]))
-    return Number.isNaN(d.getTime()) ? null : d
-  }
-  const parsed = new Date(text)
-  if (Number.isNaN(parsed.getTime())) return null
-  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate())
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return null
+  d.setHours(0, 0, 0, 0)
+  return d
 }
 
 function formatDateOnly(date) {
@@ -64,28 +55,20 @@ export function computeRequiredDispatchDate(appointmentDate, transitDays) {
   return formatDateOnly(d)
 }
 
-export function applyDispatchDates(form, marketplaces = []) {
-  const mp = (marketplaces || []).find((m) => m.id === form.marketplaceId)
-  const transitDays = getTransitDays(mp, form.warehouse)
-  const scheduledDispatchDate = computeRequiredDispatchDate(form.appointmentDate, transitDays)
-  return { ...form, scheduledDispatchDate: scheduledDispatchDate || '' }
-}
-
 export function enrichConsignmentPlanning(consignment, marketplaces = []) {
   if (!consignment) return consignment
   const marketplace = marketplaces.find((m) => m.id === consignment.marketplaceId)
   const transitDays = getTransitDays(marketplace, consignment.warehouse)
-  const computedDispatch = computeRequiredDispatchDate(consignment.appointmentDate, transitDays)
-  const hasWarehouse = Boolean(String(consignment.warehouse || '').trim())
-  const requiredDispatchDate = computedDispatch
-    || (hasWarehouse ? (consignment.requiredDispatchDate || consignment.scheduledDispatchDate || '') : '')
+  const requiredDispatchDate = computeRequiredDispatchDate(consignment.appointmentDate, transitDays)
+    || consignment.requiredDispatchDate
+    || consignment.scheduledDispatchDate
     || ''
 
   return {
     ...consignment,
     transitDays,
     requiredDispatchDate,
-    scheduledDispatchDate: computedDispatch || (hasWarehouse ? (consignment.scheduledDispatchDate || '') : '') || '',
+    scheduledDispatchDate: requiredDispatchDate || consignment.scheduledDispatchDate || '',
     marketplaceName: marketplace?.name || consignment.marketplaceName || '',
   }
 }
