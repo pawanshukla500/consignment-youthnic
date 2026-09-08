@@ -60,6 +60,13 @@ const DETAIL_LABELS = {
   toEmail: 'To email',
   event: 'Event',
   via: 'Login method',
+  changedBy: 'Changed by',
+  marketplaceId: 'Marketplace',
+  warehouse: 'Warehouse',
+  changes: 'Field changes',
+  warehouseClearedAsInvalid: 'Warehouse cleared as invalid',
+  userName: 'User name',
+  userEmail: 'User email',
 };
 
 function prettifyKey(key) {
@@ -125,10 +132,13 @@ async function userNameMap() {
 
 function enrichLogs(logs, names) {
   return logs.map(log => {
-    const userName = names[log.userId] || log.userName || log.userId || 'Unknown user';
+    const storedName = log.userName || log.details?.changedBy?.name || log.details?.userName;
+    const storedEmail = log.userEmail || log.details?.changedBy?.email || log.details?.userEmail;
+    const userName = storedName || names[log.userId] || storedEmail || log.userId || 'Unknown user';
     return {
       ...log,
       userName,
+      userEmail: storedEmail || log.userEmail || null,
       actionLabel: ACTION_LABELS[log.action] || prettifyKey(log.action || 'Activity'),
       entityLabel: ENTITY_LABELS[log.entityType] || prettifyKey(log.entityType || 'record'),
       summary: buildSummary(log, userName),
