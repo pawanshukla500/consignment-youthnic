@@ -27,6 +27,7 @@ const { lookupShipmentSkus } = require('../utils/consignmentSheet');
 const { pushPackingToSheet } = require('../utils/consignmentSheetPush');
 const { resolveStoragePath, resolvePublicUrl, deleteFile } = require('../utils/storage');
 const { requirePermission, requireAnyPermission, DELETE_CONSIGNMENTS } = require('../utils/permissions');
+const { resolveWarehouseForMarketplace, buildConsignmentUpdateAuditDetails } = require('../utils/consignmentFieldAudit');
 const {
   buildConsignmentId,
   findConsignmentIdentityConflict,
@@ -661,7 +662,7 @@ async function applyDispatchPlanning(consignment, marketplaceMap) {
     ...consignment,
     transitDays: enriched.transitDays,
     requiredDispatchDate: enriched.requiredDispatchDate,
-    scheduledDispatchDate: enriched.scheduledDispatchDate || consignment.scheduledDispatchDate || '',
+    scheduledDispatchDate: enriched.scheduledDispatchDate || '',
     updatedAt: now(),
   };
 }
@@ -1689,11 +1690,37 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
       }
     }
 
-    const merged = { ...existing, ...updateData };
     const marketplaceMap = await buildMarketplaceMap(firestoreHelpers);
+    let warehouseClearedAsInvalid = false;
+    if (updateData.marketplaceId !== undefined || updateData.warehouse !== undefined) {
+      const nextMarketplaceId = updateData.marketplaceId !== undefined ? updateData.marketplaceId : existing.marketplaceId;
+      if (String(nextMarketplaceId || '').trim() && !marketplaceMap[nextMarketplaceId]) {
+        return res.status(400).json({ error: 'Marketplace not found' });
+      }
+      const requestedWarehouse = updateData.warehouse !== undefined ? updateData.warehouse : existing.warehouse;
+      const resolved = resolveWarehouseForMarketplace(marketplaceMap[nextMarketplaceId], requestedWarehouse);
+      if (resolved.warehouse !== String(requestedWarehouse || '').trim()) {
+        updateData.warehouse = resolved.warehouse;
+      }
+      warehouseClearedAsInvalid = resolved.cleared;
+    }
+
+    const merged = { ...existing, ...updateData };
     const updated = await applyDispatchPlanning(merged, marketplaceMap);
     await firestoreHelpers.setDocument('consignments', id, updated);
-    await addAuditLog('update', 'consignment', id, req.user.id, updateData);
+    const auditDetails = buildConsignmentUpdateAuditDetails(existing, {
+      ...updateData,
+      requiredDispatchDate: updated.requiredDispatchDate,
+      scheduledDispatchDate: updated.scheduledDispatchDate,
+      transitDays: updated.transitDays,
+    }, req.user, { warehouseClearedAsInvalid });
+    if (auditDetails.marketplaceId) {
+      const fromId = auditDetails.marketplaceId.from;
+      const toId = auditDetails.marketplaceId.to;
+      auditDetails.marketplaceId.fromName = (fromId && marketplaceMap[fromId]?.name) || fromId;
+      auditDetails.marketplaceId.toName = (toId && marketplaceMap[toId]?.name) || toId;
+    }
+    await addAuditLog('update', 'consignment', id, req.user.id, auditDetails);
     const enriched = enrichConsignment(updated, marketplaceMap);
     emitConsignmentChange({
       id,

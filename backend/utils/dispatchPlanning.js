@@ -47,14 +47,19 @@ function enrichConsignment(consignment, marketplaceMap = {}) {
   const marketplace = marketplaceMap[consignment.marketplaceId] || null;
   const transitDays = getTransitDays(marketplace, consignment.warehouse);
   const computedDispatch = computeRequiredDispatchDate(consignment.appointmentDate, transitDays);
+  const hasWarehouse = Boolean(String(consignment.warehouse || '').trim());
 
-  const requiredDispatchDate = computedDispatch || consignment.requiredDispatchDate || consignment.scheduledDispatchDate || '';
-  const scheduledDispatchDate = computedDispatch || consignment.scheduledDispatchDate || '';
+  const requiredDispatchDate = computedDispatch
+    || (hasWarehouse ? (consignment.requiredDispatchDate || consignment.scheduledDispatchDate || '') : '')
+    || '';
+  const scheduledDispatchDate = computedDispatch
+    || (hasWarehouse ? (consignment.scheduledDispatchDate || '') : '')
+    || '';
 
   const planning = {
     transitDays,
     requiredDispatchDate,
-    scheduledDispatchDate: scheduledDispatchDate || consignment.scheduledDispatchDate || '',
+    scheduledDispatchDate,
     marketplaceName: marketplace?.name || '',
   };
 
