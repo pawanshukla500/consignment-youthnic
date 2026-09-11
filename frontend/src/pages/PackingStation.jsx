@@ -32,6 +32,7 @@ import {
   STOP_RECORDING_TIMEOUT_MS,
   boxCloseAlreadyInProgressMessage,
   boxSaveCancelledMessage,
+  isCurrentRecordingSession,
   withTimeout,
 } from '../utils/packingStationSafety';
 import { useConsignmentSync } from '../context/ConsignmentSyncContext';
@@ -267,6 +268,7 @@ export default function PackingStation() {
   const scannerGuardRef = useRef(createScannerInputGuard());
 
   const boxClosePendingRef = useRef(false);
+  const stopRecordingInFlightRef = useRef(null);
   const scanToastDedupRef = useRef({ message: '', at: 0 });
   const { pendingChanges } = useConsignmentSync();
 
@@ -976,6 +978,15 @@ export default function PackingStation() {
   };
 
   const stopRecording = async (silent = false) => {
+    if (stopRecordingInFlightRef.current) {
+      return withTimeout(
+        stopRecordingInFlightRef.current,
+        STOP_RECORDING_TIMEOUT_MS,
+        'Video recorder did not stop. Keep this box open and tap SAVE BOX again.'
+      );
+    }
+
+    const runStop = (async () => {
     if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') {
       // Still finalize any open session left behind after a crashy stop.
       const orphanSession = recordingSessionIdRef.current;
@@ -1004,36 +1015,50 @@ export default function PackingStation() {
     clearInterval(recTimerRef.current);
     stopComposeLoop();
 
-    const stopPromise = new Promise((resolve, reject) => {
-      mediaRecorderRef.current.onstop = async () => {
-        setRecState('STANDBY');
-        setRecDuration('00:00');
-        setRecSize('0 MB');
+    const recorder = mediaRecorderRef.current;
+    const sessionIdAtStop = recordingSessionIdRef.current;
+    const cidAtStop = recCidRef.current;
+    const boxAtStop = recBoxIdRef.current;
+    const pendingWritesAtStop = [...(pendingChunkWritesRef.current || [])];
+    const desktopChainAtStop = desktopChunkChainRef.current;
+    const mimeAtStop = desktopRecordingRef.current?.metadata?.mimeType || 'video/webm';
 
-        const cid = recCidRef.current;
-        const box = recBoxIdRef.current;
-        const sessionId = recordingSessionIdRef.current;
-        recordingSessionIdRef.current = null;
+    const adoptLiveIdle = () => {
+      if (!isCurrentRecordingSession(recordingSessionIdRef.current, sessionIdAtStop)) return;
+      recordingSessionIdRef.current = null;
+      setRecState('STANDBY');
+      setRecDuration('00:00');
+      setRecSize('0 MB');
+    };
+
+    return new Promise((resolve, reject) => {
+      recorder.onstop = async () => {
+        adoptLiveIdle();
+
+        const cid = cidAtStop;
+        const box = boxAtStop;
+        const sessionId = sessionIdAtStop;
 
         if (isDesktopPacking && sessionId) {
           try {
-            const pendingWrites = pendingChunkWritesRef.current || [];
-            if (pendingWrites.length) await Promise.all(pendingWrites);
-            await desktopChunkChainRef.current;
+            if (pendingWritesAtStop.length) await Promise.all(pendingWritesAtStop);
+            await desktopChainAtStop;
             if (desktopChunkErrorRef.current) throw desktopChunkErrorRef.current;
             const localVideo = await getDesktopPacking().video.finalize({
               videoId: sessionId,
               consignmentId: cid,
               boxNo: box,
-              mimeType: desktopRecordingRef.current?.metadata?.mimeType || 'video/webm',
+              mimeType: mimeAtStop,
             });
-            desktopFinalizedVideoRef.current = localVideo;
-            desktopRecordingRef.current = null;
-            setShowUpload(false);
+            if (String(recBoxIdRef.current) === String(boxAtStop)) {
+              desktopFinalizedVideoRef.current = localVideo;
+              desktopRecordingRef.current = null;
+              setShowUpload(false);
+            }
             resolve({ queued: true, sessionId, result: localVideo });
           } catch (desktopError) {
             console.error('[Video] Desktop finalize failed:', desktopError);
-            desktopRecordingRef.current = null;
+            if (String(recBoxIdRef.current) === String(boxAtStop)) desktopRecordingRef.current = null;
             if (!silent) toast(desktopError.message || 'Video save failed — keep the box open and retry', 'error', 7000);
             reject(desktopError);
           }
@@ -1047,10 +1072,9 @@ export default function PackingStation() {
         }
 
         try {
-          const pendingWrites = pendingChunkWritesRef.current || [];
           let settlements = [];
-          if (pendingWrites.length) {
-            settlements = await Promise.allSettled(pendingWrites);
+          if (pendingWritesAtStop.length) {
+            settlements = await Promise.allSettled(pendingWritesAtStop);
           }
           const chunkCheck = inspectChunkWriteSettlements(settlements);
           if (!chunkCheck.ok) {
@@ -1081,7 +1105,9 @@ export default function PackingStation() {
             queueId: result?.queueId || sessionId,
           }).catch(() => {});
 
-          setShowUpload(true);
+          if (isCurrentRecordingSession(recordingSessionIdRef.current, sessionId) || !recordingSessionIdRef.current) {
+            setShowUpload(true);
+          }
           void processVideoUploadQueue({ wait: false });
 
           if (!silent) {
@@ -1102,24 +1128,31 @@ export default function PackingStation() {
         }
       };
       try {
-        mediaRecorderRef.current.stop();
+        recorder.stop();
       } catch (err) {
         reject(err);
       }
     });
+    })();
+
+    stopRecordingInFlightRef.current = runStop;
     try {
       return await withTimeout(
-        stopPromise,
+        runStop,
         STOP_RECORDING_TIMEOUT_MS,
         'Video recorder did not stop. Keep this box open and tap SAVE BOX again.'
       );
     } catch (err) {
-      setRecState('STANDBY');
       try {
         if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
       } catch (_) { /* recorder may already be stopping */ }
       if (!silent) toast(err.message || 'Video recorder did not stop', 'error', 7000);
       throw err;
+    } finally {
+      // Keep the in-flight promise until finalize finishes so SAVE/NEXT join the same stop.
+      runStop.finally(() => {
+        if (stopRecordingInFlightRef.current === runStop) stopRecordingInFlightRef.current = null;
+      }).catch(() => {});
     }
   };
 

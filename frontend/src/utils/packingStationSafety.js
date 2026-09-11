@@ -41,3 +41,8 @@ export function boxCloseAlreadyInProgressMessage() {
 export function boxSaveCancelledMessage() {
   return 'Box not saved. You can scan more items, then tap SAVE BOX or NEXT BOX.'
 }
+
+/** True when the live recorder still belongs to the session we asked to stop. */
+export function isCurrentRecordingSession(liveSessionId, stoppedSessionId) {
+  return Boolean(stoppedSessionId) && liveSessionId === stoppedSessionId
+}

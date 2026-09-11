@@ -3,6 +3,7 @@ import {
   STOP_RECORDING_TIMEOUT_MS,
   boxCloseAlreadyInProgressMessage,
   boxSaveCancelledMessage,
+  isCurrentRecordingSession,
   withTimeout,
 } from '../packingStationSafety'
 
@@ -30,5 +31,11 @@ describe('packing station safety', () => {
     expect(STOP_RECORDING_TIMEOUT_MS).toBeGreaterThanOrEqual(10000)
     expect(boxCloseAlreadyInProgressMessage()).toMatch(/already saving/i)
     expect(boxSaveCancelledMessage()).toMatch(/not saved/i)
+  })
+
+  it('only treats a stop as live when the session id still matches', () => {
+    expect(isCurrentRecordingSession('sess-1', 'sess-1')).toBe(true)
+    expect(isCurrentRecordingSession('sess-2', 'sess-1')).toBe(false)
+    expect(isCurrentRecordingSession(null, 'sess-1')).toBe(false)
   })
 })
