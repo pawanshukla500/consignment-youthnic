@@ -28,6 +28,12 @@ import {
 import { escapeHtml, openEscapedPrintWindow } from '../utils/printHtml';
 import { enqueueSaveBoxJob, drainPackingSyncQueue, getPendingSyncJobCount, getFailedSyncJobCount, resetFailedSyncJobs } from '../utils/packingSyncQueue';
 import { processSaveBoxJob } from '../utils/saveBoxSyncHelper';
+import {
+  STOP_RECORDING_TIMEOUT_MS,
+  boxCloseAlreadyInProgressMessage,
+  boxSaveCancelledMessage,
+  withTimeout,
+} from '../utils/packingStationSafety';
 import { useConsignmentSync } from '../context/ConsignmentSyncContext';
 import { getShipmentPriority, sortByPriority, formatAppointmentDate, formatDispatchDate } from '../utils/priority';
 import { getCriticalityCardClass, getDisplayLabel } from '../utils/criticalityUi';
@@ -166,6 +172,7 @@ export default function PackingStation() {
   const [S, setS] = useState({ cid: null, intShip: null, box: null, skus: [], boxes: {} });
   const [skuFilter, setSkuFilter] = useState('all');
   const [loading, setLoading] = useState(false);
+  const [boxSaving, setBoxSaving] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [loadNotice, setLoadNotice] = useState('');
   const [showMo, setShowMo] = useState(false);
@@ -755,8 +762,8 @@ export default function PackingStation() {
   };
 
   const startRecording = async (explicitCid, explicitBox, { reopen = false } = {}) => {
-    if (!streamRef.current) { toast('Start camera first', 'warning'); return; }
-    if (mediaRecorderRef.current?.state === 'recording') return;
+    if (!streamRef.current) { toast('Start camera first', 'warning'); return false; }
+    if (mediaRecorderRef.current?.state === 'recording') return true;
 
     recordedBytesRef.current = 0;
     sizeWarnRef.current = null;
@@ -807,7 +814,7 @@ export default function PackingStation() {
           ...backpressure.actions.map((a) => `• ${a}`),
         ].join('\n');
         toast(detail, 'error', 12000);
-        return;
+        return false;
       }
       if (isStorageInsufficient(storageEstimate, VIDEO_UPLOAD_CONFIG.minFreeStorageMb || MIN_RECOMMENDED_FREE_MB)) {
         toast(
@@ -856,7 +863,7 @@ export default function PackingStation() {
     } catch (e) {
       console.error('[Video] Failed to start recording session:', e);
       toast('Could not start video recording session', 'error');
-      return;
+      return false;
     }
 
     const recorderOpts = { videoBitsPerSecond: bitrate };
@@ -877,7 +884,7 @@ export default function PackingStation() {
         }).catch(() => {});
       }
       toast('Could not start recorder — try another browser/camera', 'error');
-      return;
+      return false;
     }
 
     mediaRecorderRef.current.ondataavailable = async (e) => {
@@ -902,9 +909,8 @@ export default function PackingStation() {
         const durableWrite = write.catch((err) => {
           if (isDesktopPacking) {
             desktopChunkErrorRef.current = err;
-            boxClosePendingRef.current = true;
             if (capturedRecorder?.state === 'recording') capturedRecorder.pause();
-            toast('Recording could not be saved. Packing paused; partial evidence is preserved.', 'error', 10000);
+            toast('Recording could not be saved. Packing paused — tap SAVE BOX to keep the scans. Partial video is preserved.', 'error', 10000);
           }
           console.error('[Video] Chunk persist failed:', err);
           throw err;
@@ -941,12 +947,9 @@ export default function PackingStation() {
             10000
           );
           try {
-            if (isDesktopPacking) {
-              boxClosePendingRef.current = true;
-              void stopRecording(true).finally(() => { boxClosePendingRef.current = false; });
-            } else if (mediaRecorderRef.current?.state === 'recording') {
-              mediaRecorderRef.current.stop();
-            }
+            void stopRecording(true).catch((stopErr) => {
+              console.warn('[Video] Soft-stop failed:', stopErr);
+            });
           } catch (stopErr) {
             console.warn('[Video] Soft-stop failed:', stopErr);
           }
@@ -1001,7 +1004,7 @@ export default function PackingStation() {
     clearInterval(recTimerRef.current);
     stopComposeLoop();
 
-    return new Promise((resolve, reject) => {
+    const stopPromise = new Promise((resolve, reject) => {
       mediaRecorderRef.current.onstop = async () => {
         setRecState('STANDBY');
         setRecDuration('00:00');
@@ -1104,6 +1107,20 @@ export default function PackingStation() {
         reject(err);
       }
     });
+    try {
+      return await withTimeout(
+        stopPromise,
+        STOP_RECORDING_TIMEOUT_MS,
+        'Video recorder did not stop. Keep this box open and tap SAVE BOX again.'
+      );
+    } catch (err) {
+      setRecState('STANDBY');
+      try {
+        if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
+      } catch (_) { /* recorder may already be stopping */ }
+      if (!silent) toast(err.message || 'Video recorder did not stop', 'error', 7000);
+      throw err;
+    }
   };
 
   /** Stop+finalize current box video before advancing.
@@ -1469,6 +1486,15 @@ export default function PackingStation() {
         desktopProofRef.current = null;
         if (!await startRecording(activeCid, v)) throw new Error('Recording did not start. Check the camera and local storage.');
       } catch (error) { toast(error.message || 'Could not open the local box', 'error', 6000); return; }
+    } else if (activeCid) {
+      if (mediaRecorderRef.current?.state === 'recording' || recordingSessionIdRef.current) {
+        try { await stopRecording(true); } catch (err) { console.warn('[Video] Stop leftover recording failed:', err); }
+      }
+      const started = await startRecording(activeCid, v, { reopen });
+      if (!started) {
+        toast('Camera recording did not start. Box was not opened — start the camera and try again.', 'error', 7000);
+        return;
+      }
     }
     commitPackingState((prev) => ({
       ...prev,
@@ -1481,7 +1507,6 @@ export default function PackingStation() {
     toast('Box ' + v + ' active', 'success');
     setZoneState(3);
     inBoxRef.current.value = '';
-    if (activeCid && !isDesktopPacking) startRecording(activeCid, v, { reopen });
   };
 
   const refreshPackingSession = async (consignmentId, { preferServerBoxes = false } = {}) => {
@@ -1954,7 +1979,7 @@ export default function PackingStation() {
     if (!cid || !boxNo) return false;
 
     if (isDesktopPacking) {
-      setLoading(true);
+      setBoxSaving(true);
       try {
         const result = await commitDesktopBoxLocally(boxNo, weight, unit, imageFileOrBlob, itemsSnapshot);
         toast(`Box ${boxNo} saved locally ✓ — cloud sync continues in background`, 'success', 4500);
@@ -1964,7 +1989,7 @@ export default function PackingStation() {
         toast(err.message || 'Could not save the box locally', 'error', 8000);
         return false;
       } finally {
-        setLoading(false);
+        setBoxSaving(false);
       }
     }
 
@@ -1980,7 +2005,7 @@ export default function PackingStation() {
       return true;
     };
 
-    setLoading(true);
+    setBoxSaving(true);
     try {
       // Finalize video chunks locally before creating the immutable save-box
       // snapshot. If local video durability fails, no stale save job exists.
@@ -2014,7 +2039,7 @@ export default function PackingStation() {
       toast(err.message || 'Failed to save box/video to local storage', 'error', 8000);
       return false;
     } finally {
-      setLoading(false);
+      setBoxSaving(false);
     }
   };
 
@@ -2042,7 +2067,10 @@ export default function PackingStation() {
   };
 
   const handleBoxCompletion = async (actionAfterSave) => {
-    if (boxClosePendingRef.current) return;
+    if (boxClosePendingRef.current) {
+      toast(boxCloseAlreadyInProgressMessage(), 'warning', 4000);
+      return;
+    }
     const started = stateRef.current;
     if (!started.cid || !started.box) {
       await actionAfterSave();
@@ -2051,57 +2079,76 @@ export default function PackingStation() {
 
     const context = { consignmentId: started.cid, boxNo: String(started.box) };
     boxClosePendingRef.current = true;
-    setLoading(true);
 
     if (isDesktopPacking) await desktopScanChainRef.current;
 
     const settled = stateRef.current;
     const itemsSnapshot = (settled.boxes[context.boxNo] || []).map((item) => ({ ...item }));
+
+    const releaseCloseGuard = () => {
+      boxClosePendingRef.current = false;
+      setBoxSaving(false);
+    };
+
+    const finishSavedBox = async () => {
+      setBoxSaving(true);
+      try {
+        await actionAfterSave();
+      } finally {
+        releaseCloseGuard();
+      }
+    };
+
     if (!itemsSnapshot.length) {
+      setBoxSaving(true);
       try {
         if (mediaRecorderRef.current?.state === 'recording' || recordingSessionIdRef.current) {
-          setLoading(true);
           await ensureBoxVideoSafe({ requireUploaded: false, silent: true });
         }
         if (isDesktopPacking) await getDesktopPacking().packing.discardEmptyBox({ consignmentId: context.consignmentId, boxNo: context.boxNo });
         await actionAfterSave();
       } catch (err) {
-        toast(err.message || 'Could not save box video locally', 'error', 7000);
+        toast(err.message || 'Could not close this box. Keep it open and try again.', 'error', 7000);
       } finally {
-        boxClosePendingRef.current = false;
-        setLoading(false);
+        releaseCloseGuard();
       }
       return;
     }
 
-    const reopenAfterFailure = () => {
-      boxClosePendingRef.current = false;
-    };
     setWeightModalData({
       boxNo: context.boxNo,
       onSave: async (weight, unit, imageFileOrBlob) => {
         setShowWeightModal(false);
         const ok = await saveBoxWithWeight(context.boxNo, weight, unit, imageFileOrBlob, itemsSnapshot);
-        if (ok) {
-          await actionAfterSave();
-          boxClosePendingRef.current = false;
-        } else {
-          reopenAfterFailure();
+        if (!ok) {
+          releaseCloseGuard();
+          return;
+        }
+        try {
+          await finishSavedBox();
+        } catch (err) {
+          toast(err.message || 'Box saved, but the next box bar did not open. Tap NEXT BOX again.', 'error', 7000);
+          releaseCloseGuard();
         }
       },
       onSkip: async () => {
         setShowWeightModal(false);
         const ok = await saveBoxWithWeight(context.boxNo, null, null, null, itemsSnapshot);
-        if (ok) {
-          await actionAfterSave();
-          boxClosePendingRef.current = false;
-        } else {
-          reopenAfterFailure();
+        if (!ok) {
+          releaseCloseGuard();
+          return;
+        }
+        try {
+          await finishSavedBox();
+        } catch (err) {
+          toast(err.message || 'Box saved, but the next box bar did not open. Tap NEXT BOX again.', 'error', 7000);
+          releaseCloseGuard();
         }
       },
       onCancel: () => {
         setShowWeightModal(false);
-        reopenAfterFailure();
+        releaseCloseGuard();
+        toast(boxSaveCancelledMessage(), 'info', 4000);
       },
     });
     setShowWeightModal(true);
@@ -2375,6 +2422,11 @@ export default function PackingStation() {
 
   return (
     <div className="fixed inset-0 z-50 overflow-hidden bg-slate-50">
+      {boxSaving && (
+        <div className="absolute top-0 inset-x-0 z-[10002] bg-amber-500 text-white text-center text-sm font-semibold py-2 shadow-md">
+          Saving this box… keep this tab open.
+        </div>
+      )}
       <style>{`
         @keyframes slideIn { from { transform:translateX(100%); opacity:0; } to { transform:translateX(0); opacity:1; } }
         @keyframes fadeIn { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:translateY(0); } }
@@ -2654,12 +2706,16 @@ export default function PackingStation() {
               </span>
             </div>
             <div className="flex gap-2 flex-wrap mt-3">
-              <button onClick={doSaveBox} disabled={loading} className="flex-1 px-4 py-3 rounded-xl text-[13px] font-bold text-white cursor-pointer transition-all active:scale-[0.96] bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 shadow-sm shadow-emerald-200">💾 SAVE BOX</button>
-              <button onClick={doNewBox} disabled={loading} className="flex-1 px-4 py-3 rounded-xl text-[13px] font-bold text-white cursor-pointer transition-all active:scale-[0.96] bg-amber-500 hover:bg-amber-600 shadow-sm shadow-amber-200 disabled:opacity-60">📦 NEXT BOX</button>
+              <button onClick={doSaveBox} disabled={loading || boxSaving || showWeightModal} className="flex-1 px-4 py-3 rounded-xl text-[13px] font-bold text-white cursor-pointer transition-all active:scale-[0.96] bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 shadow-sm shadow-emerald-200">
+                {boxSaving ? <span className="inline-flex items-center justify-center gap-2"><span className="spin" /> Saving box…</span> : '💾 SAVE BOX'}
+              </button>
+              <button onClick={doNewBox} disabled={loading || boxSaving || showWeightModal} className="flex-1 px-4 py-3 rounded-xl text-[13px] font-bold text-white cursor-pointer transition-all active:scale-[0.96] bg-amber-500 hover:bg-amber-600 shadow-sm shadow-amber-200 disabled:opacity-60">
+                {boxSaving ? <span className="inline-flex items-center justify-center gap-2"><span className="spin" /> Saving box…</span> : '📦 NEXT BOX'}
+              </button>
             </div>
             <div className="flex gap-2 mt-2">
               <button onClick={doDL} className="flex-1 px-3 py-2 rounded-lg text-[11px] font-semibold border cursor-pointer transition-all active:scale-[0.96] bg-white text-slate-600 border-slate-200 hover:bg-slate-50">⬇ Download PDF</button>
-              <button onClick={doFinish} disabled={loading} className="flex-1 px-3 py-2 rounded-lg text-[11px] font-semibold text-white cursor-pointer transition-all active:scale-[0.96] bg-red-500 hover:bg-red-600 disabled:opacity-60">✅ Finish Packing</button>
+              <button onClick={doFinish} disabled={loading || boxSaving || showWeightModal} className="flex-1 px-3 py-2 rounded-lg text-[11px] font-semibold text-white cursor-pointer transition-all active:scale-[0.96] bg-red-500 hover:bg-red-600 disabled:opacity-60">✅ Finish Packing</button>
             </div>
           </div>
 
@@ -3066,6 +3122,7 @@ function WeightModalInner({ boxNo, onSave, onSkip, onCancel, weightUploading, we
   const [unit, setUnit] = useState('KG');
   const [imageBlob, setImageBlob] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
+  const submittedRef = useRef(false);
 
   const handleFileUpload = (e) => {
     const file = e.target.files?.[0];
@@ -3077,11 +3134,19 @@ function WeightModalInner({ boxNo, onSave, onSkip, onCancel, weightUploading, we
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (submittedRef.current || weightUploading) return;
     if (!weight || Number(weight) <= 0) {
       alert('Weight is required and must be greater than 0');
       return;
     }
+    submittedRef.current = true;
     onSave(Number(weight), unit, imageBlob);
+  };
+
+  const handleSkip = () => {
+    if (submittedRef.current || weightUploading) return;
+    submittedRef.current = true;
+    onSkip();
   };
 
   return (
@@ -3091,7 +3156,7 @@ function WeightModalInner({ boxNo, onSave, onSkip, onCancel, weightUploading, we
           <h3 className="text-white font-bold text-sm">⚖️ Box Weight Capture</h3>
           <p className="text-white/80 text-[10px]">Enter weight — upload scale photo manually (optional)</p>
         </div>
-        <button type="button" onClick={onCancel} className="text-white/80 hover:text-white text-lg leading-none p-1 rounded-md hover:bg-white/10 transition-colors">✕</button>
+        <button type="button" onClick={onCancel} disabled={weightUploading} className="text-white/80 hover:text-white text-lg leading-none p-1 rounded-md hover:bg-white/10 transition-colors disabled:opacity-50">✕</button>
       </div>
 
       <form onSubmit={handleSubmit} className="p-5 space-y-4">
@@ -3186,7 +3251,7 @@ function WeightModalInner({ boxNo, onSave, onSkip, onCancel, weightUploading, we
           </button>
           <button
             type="button"
-            onClick={onSkip}
+            onClick={handleSkip}
             disabled={weightUploading}
             className="w-1/4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-500 hover:text-slate-700 text-xs font-semibold rounded-lg transition-colors"
           >
