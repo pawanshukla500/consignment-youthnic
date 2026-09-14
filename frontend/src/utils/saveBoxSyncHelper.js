@@ -43,7 +43,7 @@ export async function processSaveBoxJob(job) {
     weight_unit: job.weightUnit,
     weight_image_id: uploadedImageId,
   }
-  if (Array.isArray(job.items) && job.items.length) {
+  if (Array.isArray(job.items)) {
     payload.items = job.items
   }
 

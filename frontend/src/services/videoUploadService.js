@@ -12,6 +12,8 @@ import {
 } from './videoDrainWaiter'
 
 let worker = null
+let liveCount = 0
+let stopTimer = null
 const listeners = new Set()
 let onlineHandler = null
 let visibilityHandler = null
@@ -244,6 +246,11 @@ function handleWorkerMessage(e) {
 }
 
 export function initVideoUploadService() {
+  liveCount += 1
+  if (stopTimer) {
+    clearTimeout(stopTimer)
+    stopTimer = null
+  }
   if (worker) return
 
   worker = new Worker(new URL('../workers/videoUpload.worker.js', import.meta.url), { type: 'module' })
@@ -289,6 +296,17 @@ export function initVideoUploadService() {
 }
 
 export function stopVideoUploadService() {
+  liveCount = Math.max(0, liveCount - 1)
+  if (liveCount > 0) return
+  if (stopTimer) clearTimeout(stopTimer)
+  stopTimer = setTimeout(() => {
+    stopTimer = null
+    if (liveCount > 0) return
+    stopVideoUploadServiceNow()
+  }, 400)
+}
+
+function stopVideoUploadServiceNow() {
   if (onlineHandler) {
     window.removeEventListener('online', onlineHandler)
     onlineHandler = null
