@@ -11,7 +11,7 @@
     "test": "vitest run --poolOptions.threads.singleThread=true --pool=threads",
     "test:watch": "vitest",
     "benchmark:scans": "node scripts/benchmark-scan-capture.mjs",
-    "test:security": "vitest run src/utils/__tests__/printHtml.test.js src/services/__tests__/videoDrainWaiter.test.js src/utils/__tests__/videoUploadReliability.stress.test.js src/utils/__tests__/phase05VideoReliability.test.js"
+    "test:security": "vitest run src/utils/__tests__/printHtml.test.js src/utils/__tests__/shipmentLabel.test.js src/services/__tests__/videoDrainWaiter.test.js src/utils/__tests__/videoUploadReliability.stress.test.js src/utils/__tests__/phase05VideoReliability.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.108.1",

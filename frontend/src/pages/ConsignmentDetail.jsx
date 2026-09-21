@@ -6,7 +6,12 @@ import {
   Copy, ExternalLink, Tag, ChevronDown, ChevronUp, Database, Scale, AlertTriangle, History, Pencil, UploadCloud
 } from 'lucide-react';
 import ConfirmModal from '../components/ConfirmModal';
-import { printShipmentBoxLabel, printAllShipmentBoxLabels } from '../utils/shipmentLabel';
+import {
+  printShipmentBoxLabel,
+  printAllShipmentBoxLabels,
+  downloadShipmentBoxLabelPdf,
+  downloadAllShipmentBoxLabelsPdf,
+} from '../utils/shipmentLabel';
 import { consignmentsAPI, uploadsAPI, packingAPI } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import { buildUploadStreamUrl, fetchAuthenticatedStream } from '../utils/videoPlayback';
@@ -1056,6 +1061,28 @@ const ConsignmentDetail = () => {
     addToast(`Printing ${boxes.length} box label(s)`, 'success');
   };
 
+  const downloadBoxLabel = (box) => {
+    try {
+      downloadShipmentBoxLabelPdf(consignment, box);
+      addToast(`Box #${box.boxNo} label downloaded (4 x 6 in PDF)`, 'success');
+    } catch (error) {
+      console.error('Box label download failed', error);
+      addToast('Could not build the label PDF', 'error');
+    }
+  };
+
+  const downloadAllLabels = () => {
+    const boxes = consignment.boxes || [];
+    if (boxes.length === 0) { addToast('No boxes to download', 'warning'); return; }
+    try {
+      const pages = downloadAllShipmentBoxLabelsPdf(consignment);
+      addToast(`${boxes.length} box label(s) downloaded - ${pages} page(s), 4 x 6 in PDF`, 'success');
+    } catch (error) {
+      console.error('Box label download failed', error);
+      addToast('Could not build the label PDF', 'error');
+    }
+  };
+
   const getStatusColor = (status) => {
     switch (status) {
       case 'completed': return 'bg-emerald-100 text-emerald-800';
@@ -1647,6 +1674,9 @@ const ConsignmentDetail = () => {
                   <button onClick={printAllLabels} className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg text-sm font-medium hover:bg-slate-700 transition-colors">
                     <Tag className="w-4 h-4" />Print All {consignment.boxes.length} Labels
                   </button>
+                  <button onClick={downloadAllLabels} title="One 4 x 6 in PDF with every box label" className="flex items-center gap-2 px-4 py-2 border border-slate-300 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-100 transition-colors">
+                    <Download className="w-4 h-4" />Download All Labels (PDF)
+                  </button>
                 </div>
               )}
 
@@ -1731,6 +1761,9 @@ const ConsignmentDetail = () => {
                       <div className="flex items-center gap-2">
                         <button onClick={() => printBoxLabel(box)} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-medium hover:bg-slate-700 transition-colors">
                           <Tag className="w-3.5 h-3.5" />Print Label
+                        </button>
+                        <button onClick={() => downloadBoxLabel(box)} title="Download this label as a 4 x 6 in PDF" className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-300 text-slate-700 rounded-lg text-xs font-medium hover:bg-slate-100 transition-colors">
+                          <Download className="w-3.5 h-3.5" />Download
                         </button>
                         <span className="text-sm text-slate-500">{box.totalQty} items</span>
                       </div>
