@@ -8,7 +8,9 @@ This document is written for AI coding agents. It assumes zero prior knowledge o
 
 The **Consignment Packing App** (also branded **Youthnic Packing Station**) is a full-stack web application for managing consignment packing operations. It is built for VB Exports internal use and is private/proprietary software.
 
-> **TaskFlow Pro Project ID:** `9513898a-8338-4e3d-9f97-bfdc389f0466`  
+> **TaskFlow Pro Projects:**  
+> - Desktop Releases & CI/CD: `9513898a-8338-4e3d-9f97-bfdc389f0466`  
+> - Consignment Detail UX & Clarity Overhaul: `16f34976-652a-4d35-bdc1-c1dee936648a`  
 > **Official Desktop Releases:** [GitHub Releases](https://github.com/pawanshukla500/consignment-youthnic/releases)
 
 **Core capabilities:**
