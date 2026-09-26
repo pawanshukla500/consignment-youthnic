@@ -40,8 +40,12 @@ function summarizeBoxes(boxes = []) {
   const rows = Array.isArray(boxes) ? boxes : [];
   const localSafe = rows.filter((box) => [BOX_STATES.CLOSED_LOCAL, BOX_STATES.QUEUED, BOX_STATES.DATA_SYNCING, BOX_STATES.DATA_SYNCED, BOX_STATES.VIDEO_QUEUED, BOX_STATES.VIDEO_UPLOADING, BOX_STATES.VIDEO_VERIFYING, BOX_STATES.SYNCED].includes(box.state)).length;
   const cloudSynced = rows.filter((box) => box.state === BOX_STATES.SYNCED).length;
-  const pendingData = rows.filter((box) => ![BOX_STATES.DATA_SYNCED, BOX_STATES.SYNCED].includes(box.state)).length;
-  const pendingVideos = rows.filter((box) => box.video_state && box.video_state !== BOX_STATES.SYNCED).length;
+  // A box the operator is still filling has no committed data and no finalized
+  // video, so it is not waiting on the network. Counting it made a fully synced
+  // station report "Pending Sync" for as long as a box stayed open.
+  const awaitingSync = rows.filter((box) => box.state !== BOX_STATES.OPEN);
+  const pendingData = awaitingSync.filter((box) => ![BOX_STATES.DATA_SYNCED, BOX_STATES.SYNCED].includes(box.state)).length;
+  const pendingVideos = awaitingSync.filter((box) => box.video_state && box.video_state !== BOX_STATES.SYNCED).length;
   return { localSafe, cloudSynced, pendingData, pendingVideos };
 }
 

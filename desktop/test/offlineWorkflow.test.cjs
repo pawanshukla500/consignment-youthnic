@@ -177,6 +177,38 @@ test('lost complete acknowledgement is recovered by verifying the existing objec
   assert.equal(f.db.getFinishReadiness('c1').ready, true);
 });
 
+test('a consignment ID with spaces packs locally and uploads to the sanitized R2 prefix', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'packing-freetext-'));
+  const db = openDatabase(path.join(root, 'packing.sqlite'));
+  t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  const cid = 'Offline Test 1';
+  const videoId = 'ffffffff-0000-4000-8000-000000000001';
+  db.saveSnapshot({ consignment_id: cid, skus: [{ id: 's1', barcode: 'SKU001', required: 1, packed: 0 }], boxes: {} }, { userId: 'operator' });
+  db.setSetting('sessionUserId', 'operator');
+  const localFiles = new LocalFiles(root);
+
+  db.openBox({ consignmentId: cid, boxNo: '1' });
+  assert.equal(db.recordScan({ consignmentId: cid, boxNo: '1', scanId: 'scan-1', barcode: 'sku001' }).ok, true);
+  const started = await localFiles.startVideo({ videoId, consignmentId: cid, boxNo: '1', fileName: 'box.webm' });
+  await localFiles.appendVideoChunk({ videoId: started.videoId, data: Buffer.from('recorded video evidence') });
+  const video = await localFiles.finalizeVideo({ videoId: started.videoId, consignmentId: cid, boxNo: '1' });
+  db.closeBox({ consignmentId: cid, boxNo: '1', operationId: 'operation-1', items: [{ skuId: 's1', qty: 1 }], video });
+
+  const requested = [];
+  t.mock.method(global, 'fetch', async () => new Response('', { headers: { etag: 'part' } }));
+  const engine = new SyncEngine({ database: db, files: localFiles, client: backend({
+    async createMultipart({ storagePath }) { requested.push(storagePath); return { uploadId: 'upload-1', storagePath }; },
+    async saveMetadata({ storagePath }) { requested.push(storagePath); return { verified: true }; },
+  }) });
+  t.after(() => engine.stop());
+
+  assert.equal((await engine.process()).processed, 2);
+  // The web client writes consignments/Offline_Test_1/…; the desktop client
+  // must not create a second prefix for the same consignment.
+  assert.deepEqual([...new Set(requested)], [`consignments/Offline_Test_1/boxes/box_1/video_${videoId}.webm`]);
+  assert.equal(db.getFinishReadiness(cid).ready, true);
+});
+
 test('250 repeated physical barcodes are independently durable with no debounce', (t) => {
   const f = setup(t, 250);
   f.db.openBox({ consignmentId: 'c1', boxNo: '1' });

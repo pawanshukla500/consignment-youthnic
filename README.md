@@ -1,6 +1,27 @@
 # Consignment Packing Station
 
-A modern full-stack web application for managing consignment packing operations. Built with React, Node.js, Express, and Firebase.
+A modern full-stack web application and offline-resilient desktop station for managing consignment packing operations. Built with React, Node.js, Express, PostgreSQL, Cloudflare R2, and Electron.
+
+> **TaskFlow Pro Project ID:** `9513898a-8338-4e3d-9f97-bfdc389f0466`  
+> **Official Desktop App Releases:** [GitHub Releases](https://github.com/pawanshukla500/consignment-youthnic/releases)
+
+---
+
+## Desktop Packing Station (Offline-First)
+
+For rugged warehouse environments where network connectivity may drop, an official Electron desktop installer is provided.
+
+- **Download:** Get `Youthnic-Packing-Station-Setup.exe` directly from the [GitHub Releases](https://github.com/pawanshukla500/consignment-youthnic/releases) page.
+- **Offline Durability:** Local SQLite persistence for scans and box contents, local video chunk staging, and automatic cloud sync on reconnect.
+- **Hardware Integration:** Barcode reader debounce, webcam evidence recording with continuity watchdog, and 4x6 box label PDF printing.
+- **Build Locally:**
+  ```bash
+  cd desktop
+  npm install
+  npm run package # Produces Youthnic-Packing-Station-Setup.exe in desktop/release
+  ```
+
+---
 
 ## Quick Start (Local Development)
 

@@ -8,6 +8,14 @@ const PART_SIZE = 8 * 1024 * 1024;
 // lost after a long outage and require manual recovery.
 const MAX_ATTEMPTS = Number.POSITIVE_INFINITY;
 
+// Mirrors sanitizeConsignmentId in frontend/src/utils/storagePaths.js and
+// backend/utils/storagePathValidation.js. A desktop object must land under the
+// same R2 prefix as a web upload for the same consignment, or the two clients
+// write to different prefixes and stored paths stop matching.
+function storageSegment(value) {
+  return String(value ?? '').replace(/[^\w.-]/g, '_');
+}
+
 class SyncEngine {
   constructor({ database, files, client, logger, onStatus }) {
     this.database = database;
@@ -182,7 +190,7 @@ class SyncEngine {
     if (!proof?.local_path) throw new Error('Weight proof file is missing locally');
     const buffer = await fs.readFile(proof.local_path);
     const extension = path.extname(proof.local_path).toLowerCase() === '.png' ? '.png' : '.jpg';
-    const storagePath = `consignments/${payload.consignmentId}/documents/${proof.proof_id}${extension}`;
+    const storagePath = `consignments/${storageSegment(payload.consignmentId)}/documents/${proof.proof_id}${extension}`;
     const signed = await this.client.generateUploadUrl({ storagePath, mimeType: extension === '.png' ? 'image/png' : 'image/jpeg', consignmentId: payload.consignmentId });
     await this.putSigned(signed.uploadUrl, buffer, extension === '.png' ? 'image/png' : 'image/jpeg');
     const metadata = await this.client.saveMetadata({
@@ -244,7 +252,7 @@ class SyncEngine {
     const stat = await fs.stat(video.local_path);
     if (!stat.size || stat.size !== video.size_bytes) throw new Error('Local video size changed; review the preserved recording');
     const epoch = this.sessionEpoch;
-    const storagePath = payload.storagePath || `consignments/${video.consignment_id}/boxes/box_${video.box_no}/video_${video.video_id}${path.extname(video.local_path) || '.webm'}`;
+    const storagePath = payload.storagePath || `consignments/${storageSegment(video.consignment_id)}/boxes/box_${storageSegment(video.box_no)}/video_${storageSegment(video.video_id)}${path.extname(video.local_path) || '.webm'}`;
     let uploadId = payload.uploadId || null;
     let completedParts = Array.isArray(payload.completedParts) ? payload.completedParts : [];
     if (uploadId && !payload.multipartCompleted) {
