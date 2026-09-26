@@ -9,6 +9,18 @@ function safePart(value) {
   return text;
 }
 
+// Consignment IDs are operator-entered free text ("Offline Test 1"), so they
+// cannot be used as a path segment directly. Derive a readable slug plus a
+// digest of the exact ID: stable across restarts, collision-free between two
+// IDs that sanitize alike, and never a traversal or a bare dot sequence.
+function consignmentDirName(consignmentId) {
+  const raw = String(consignmentId ?? '');
+  if (raw.length > 256 || !/[a-zA-Z0-9]/.test(raw)) throw new Error('Invalid local storage identifier');
+  const digest = crypto.createHash('sha256').update(raw, 'utf8').digest('hex').slice(0, 16);
+  const slug = raw.trim().replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^[._-]+/, '').slice(0, 64);
+  return safePart(slug ? `${slug}-${digest}` : digest);
+}
+
 function toBuffer(data) {
   if (Buffer.isBuffer(data)) return data;
   if (data instanceof Uint8Array) return Buffer.from(data);
@@ -24,6 +36,7 @@ class LocalFiles {
     this.writeChains = new Map();
     this.sessions = new Map();
     this.writeErrors = new Map();
+    this.firstChunkLogged = new Set();
   }
 
   async ensureRoot() {
@@ -36,7 +49,7 @@ class LocalFiles {
   }
 
   async ensureConsignmentDirs(consignmentId) {
-    const base = path.join(this.root, 'consignments', safePart(consignmentId));
+    const base = path.join(this.root, 'consignments', consignmentDirName(consignmentId));
     await Promise.all([
       fsp.mkdir(path.join(base, 'videos'), { recursive: true }),
       fsp.mkdir(path.join(base, 'videos', 'recovery'), { recursive: true }),
@@ -70,6 +83,12 @@ class LocalFiles {
     const handle = this.handles.get(videoId);
     if (!handle) throw new Error('Recording session is not open');
     const buffer = toBuffer(data);
+    // Proves the recorder actually produced data for this session — its absence
+    // after video.started means the browser never emitted a chunk.
+    if (!this.firstChunkLogged.has(videoId)) {
+      this.firstChunkLogged.add(videoId);
+      this.logger?.info('video.first_chunk', { videoId, bytes: buffer.length });
+    }
     const previous = this.writeChains.get(videoId) || Promise.resolve();
     const next = previous.then(async () => {
       if (this.writeErrors.has(videoId)) throw this.writeErrors.get(videoId);
@@ -92,11 +111,22 @@ class LocalFiles {
     const handle = this.handles.get(videoId);
     if (!handle) throw new Error('Recording session is not open or was already finalized');
     await (this.writeChains.get(videoId) || Promise.resolve());
-    if (this.writeErrors.has(videoId)) throw new Error('A recording chunk was not saved. The partial video is preserved for recovery.');
+    if (this.writeErrors.has(videoId)) {
+      try { await handle.close(); } catch (_) {}
+      this.handles.delete(videoId);
+      this.writeChains.delete(videoId);
+      this.sessions.delete(videoId);
+      this.writeErrors.delete(videoId);
+      this.firstChunkLogged.delete(videoId);
+      throw new Error('A recording chunk was not saved. The partial video is preserved for recovery.');
+    }
     await handle.sync();
     await handle.close();
     this.handles.delete(videoId);
     this.writeChains.delete(videoId);
+    this.sessions.delete(videoId);
+    this.writeErrors.delete(videoId);
+    this.firstChunkLogged.delete(videoId);
     const base = await this.ensureConsignmentDirs(consignmentId);
     const recoveryPath = path.join(base, 'videos', 'recovery', `${safePart(videoId)}.part`);
     const ext = String(mimeType).includes('mp4') ? '.mp4' : '.webm';
@@ -109,6 +139,38 @@ class LocalFiles {
     await this.writeDurable(`${localPath}.json`, Buffer.from(JSON.stringify(result)));
     this.logger?.info('video.finalized', { videoId, consignmentId, boxNo, sizeBytes: stat.size });
     return result;
+  }
+
+  async discardVideo(videoId) {
+    const pending = this.writeChains.get(videoId);
+    try {
+      await pending;
+    } catch (_) {
+      // The recording is being discarded; cleanup should still proceed.
+    }
+
+    const session = this.sessions.get(videoId);
+
+    const handle = this.handles.get(videoId);
+    if (handle) {
+      try { await handle.close(); } catch (_) {}
+      this.handles.delete(videoId);
+    }
+
+    if (session?.consignmentId) {
+      try {
+        const base = await this.ensureConsignmentDirs(session.consignmentId);
+        await Promise.allSettled([
+          fsp.rm(path.join(base, 'videos', 'recovery', `${safePart(videoId)}.part`), { force: true }),
+          fsp.rm(path.join(base, 'videos', 'recovery', `${safePart(videoId)}.part.json`), { force: true }),
+        ]);
+      } catch (_) {}
+    }
+
+    this.writeChains.delete(videoId);
+    this.sessions.delete(videoId);
+    this.writeErrors.delete(videoId);
+    this.firstChunkLogged.delete(videoId);
   }
 
   async writeProof({ proofId = crypto.randomUUID(), consignmentId, boxNo, data, fileName = null }) {
@@ -217,4 +279,4 @@ class LocalFiles {
   }
 }
 
-module.exports = { LocalFiles, toBuffer, safePart };
+module.exports = { LocalFiles, toBuffer, safePart, consignmentDirName };

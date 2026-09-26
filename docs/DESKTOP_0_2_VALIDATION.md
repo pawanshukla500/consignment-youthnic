@@ -2,6 +2,60 @@
 
 Date: 2026-09-05. Windows x64 build, Electron 37.10.3.
 
+## Follow-up: offline → online transition hang (0.2.1 rebuilt 2026-09-06)
+
+A packer reported NEXT BOX spinning forever when the internet returned while
+packing `TEST-OFLINE`. Live evidence (station log, read-only SQLite, `.part`
+growth timeline) showed box 6's ~100 scans durable in the local ledger and its
+recording still appending; the box simply never closed.
+
+Root causes found and fixed in `frontend/src/pages/PackingStation.jsx`:
+
+- A wedged close-pending flag plus a silent guard could swallow the close
+  action entirely; the guard now reports audibly and the flag always resets.
+- Chromium can fail to fire `onstop` for a backpressure-paused recorder, which
+  hung the close flow; stop now resumes first and carries a 30s watchdog that
+  rejects with a retryable error, and a rec-timer watchdog force-resumes a
+  recorder paused over 30s.
+- The packaged smoke test then reproduced a deeper race: the camera pre-warm
+  and the consignment-load path could start two cameras and two recording
+  sessions ~4 ms apart for one box, producing empty recordings that finalize
+  rejects. Camera start is now guarded by a ref (state was stale in closures)
+  and recording start is single-flight.
+- Desktop session refresh now reads the local snapshot (the session
+  authority), fixing a REQUIRED-count desync against the server response.
+
+Packer-facing clarity added: Internet lost / Internet back / All-caught-up
+toasts, a syncing badge with pending count and last-synced time, and per-box
+sync status in the Boxes panel. Permanent diagnostics added: the main process
+logs `video.first_chunk` per recording session and the renderer warns on
+dropped chunks, so a zero-byte recording is immediately attributable.
+
+Validation: the packaged smoke test passes 3 consecutive runs, all five
+phases — including a box closed entirely offline through the weight modal, a
+reconnect that drains the outbox in order (box data before video, exactly
+once), and another box closed through the UI mid-drain, plus the three
+connectivity toasts. Desktop tests 33/33, frontend tests 80/80, lint 0 errors
+(31 pre-existing warnings). Live gate: `https://consignment.youthnic.shop`
+returns `ready:true, protocolVersion 1` with all desktop capabilities and
+`database: connected`. The legacy `*.run.app` service URLs now return 404;
+the deployment lives behind the custom domain, which is the app's default API
+base.
+
+New installer: `desktop/release/Youthnic-Packing-Station-Setup.exe`,
+92,615,439 bytes, built 2026-09-06 13:28 IST, SHA-256
+`11E0F47922DE81AAEB00FABE7F9D696950EC0E572F186A441E4FD7363070B3F0`.
+It supersedes the "do not distribute" note below. Still unsigned.
+
+Field recovery note: on the packer's machine, box 6 of `TEST-OFLINE` resumes
+after installing this build; its scans are durable and its partial recording
+is preserved. Reopen the consignment, then close the box normally.
+
+Environment note: during this session `npm.cmd` disappeared from
+`C:\Program Files\nodejs` (cause unknown — updater or antivirus). A
+user-level shim at `%LOCALAPPDATA%\npm-shim\npm.cmd` was used for the build;
+reinstalling Node 22 restores the original.
+
 ## Follow-up: station assignment 404 (0.2.1 prepared, not deployed)
 
 The operator's screenshot identified the missing end-to-end deployment gate.
@@ -103,11 +157,9 @@ a finalized media container; it is not a physical camera acceptance test.
 
 ## Installer
 
-Current smoke-tested executable: `desktop/release/win-unpacked/Youthnic Packing Station.exe`
-
-The existing `desktop/release/Youthnic-Packing-Station-Setup.exe` predates the
-latest cache-fallback change. Do not distribute it as 0.2.1 until NSIS
-packaging completes and its checksum is regenerated.
+Current smoke-tested installer: `desktop/release/Youthnic-Packing-Station-Setup.exe`
+(SHA-256 `11E0F47922DE81AAEB00FABE7F9D696950EC0E572F186A441E4FD7363070B3F0`,
+built 2026-09-06 — see the offline → online follow-up above).
 
 The installer is **not digitally signed**. A trusted release requires the
 organization's code-signing process; no security settings were disabled.

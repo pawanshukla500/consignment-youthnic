@@ -1,23 +1,32 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 import { X, CheckCircle, AlertCircle, Info } from 'lucide-react';
+import { upsertToast } from '../utils/toastDedupe';
 
 const ToastContext = createContext(null);
 
 export const ToastProvider = ({ children }) => {
   const [toasts, setToasts] = useState([]);
+  const toastsRef = useRef([]);
+  const timersRef = useRef(new Map());
 
-  const addToast = useCallback((message, type = 'info', duration = 4000) => {
-    const id = Date.now() + Math.random();
-    setToasts(prev => [...prev, { id, message, type, duration }]);
-    
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
-    }, duration);
-  }, []);
+  const syncToasts = (next) => {
+    toastsRef.current = next;
+    setToasts(next);
+  };
 
   const removeToast = useCallback((id) => {
-    setToasts(prev => prev.filter(t => t.id !== id));
+    const timer = timersRef.current.get(id);
+    if (timer) clearTimeout(timer);
+    timersRef.current.delete(id);
+    syncToasts(toastsRef.current.filter(t => t.id !== id));
   }, []);
+
+  const addToast = useCallback((message, type = 'info', duration = 4000) => {
+    const { list, toast, merged } = upsertToast(toastsRef.current, { id: Date.now() + Math.random(), message, type, duration });
+    if (merged) clearTimeout(timersRef.current.get(toast.id));
+    timersRef.current.set(toast.id, setTimeout(() => removeToast(toast.id), toast.duration));
+    syncToasts(list);
+  }, [removeToast]);
 
   const icons = {
     success: <CheckCircle className="w-5 h-5 text-emerald-500" />,
@@ -43,7 +52,10 @@ export const ToastProvider = ({ children }) => {
             className={`flex items-start gap-3 p-4 rounded-xl border shadow-lg animate-pop-in ${styles[toast.type]}`}
           >
             {icons[toast.type]}
-            <p className="text-sm font-medium flex-1">{toast.message}</p>
+            <p className="text-sm font-medium flex-1">
+              {toast.message}
+              {toast.count > 1 && <span className="ml-1.5 text-[10px] font-bold opacity-60">×{toast.count}</span>}
+            </p>
             <button
               onClick={() => removeToast(toast.id)}
               className="text-slate-400 hover:text-slate-600"

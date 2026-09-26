@@ -7,7 +7,7 @@ on:
     types: [completed]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   package:
@@ -57,5 +57,64 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: youthnic-packing-station-${{ matrix.platform }}
-          path: desktop/release/*
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.blockmap
+            desktop/release/*.AppImage
+            desktop/release/*.deb
           if-no-files-found: error
+
+  publish-release:
+    name: Publish to GitHub Releases
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      - name: Download all built desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-artifacts
+      - name: Determine Release Tag and Assets
+        id: prepare_release
+        run: |
+          VERSION=$(node -p "require('./desktop/package.json').version")
+          TAG="v${VERSION}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          mkdir -p dist-assets
+          find downloaded-artifacts -type f \( -name "*.exe" -o -name "*.blockmap" -o -name "*.AppImage" -o -name "*.deb" \) -exec cp {} dist-assets/ \;
+          echo "Assets to release:"
+          ls -lh dist-assets/
+      - name: Publish or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.prepare_release.outputs.tag }}
+        run: |
+          RELEASE_TITLE="Youthnic Packing Station Desktop ${TAG_NAME}"
+          NOTES="### Youthnic Packing Station Desktop ${TAG_NAME}
+
+Official desktop release for high-durability warehouse packing stations.
+
+- **Offline-resilient packing sessions**: Local SQLite cache, evidence retention, and offline scan queuing.
+- **Robust video and evidence upload**: Cloudflare R2 direct stream integration with automatic retry.
+- **Full hardware integration**: Barcode scanner, scale, and thermal label printer support.
+- **Windows (x64) and Linux supported**.
+
+#### Assets
+- Windows: \`Youthnic-Packing-Station-Setup.exe\`
+- Linux: \`Youthnic-Packing-Station-${TAG_NAME#v}.AppImage\`, \`Youthnic-Packing-Station-${TAG_NAME#v}.deb\`
+"
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists, uploading new assets with clobber..."
+            gh release upload "$TAG_NAME" dist-assets/* --clobber
+          else
+            echo "Creating new GitHub Release $TAG_NAME..."
+            gh release create "$TAG_NAME" dist-assets/* \
+              --title "$RELEASE_TITLE" \
+              --notes "$NOTES" \
+              --latest
+          fi

@@ -36,6 +36,14 @@ export function recomputeSkuTotals(skus = [], boxes = {}) {
   })
 }
 
+// `serverBoxCount` is captured once when the shipment loads, so it stays 0 for a
+// station that packs offline. Reporting the higher of the two keeps the header
+// truthful without letting a stale server value hide locally packed boxes.
+export function resolveBoxCount(boxes = {}, serverBoxCount = 0) {
+  const live = Object.keys(boxes || {}).filter((boxNo) => (boxes[boxNo] || []).length > 0).length
+  return Math.max(Math.max(0, Math.trunc(toNumber(serverBoxCount))), live)
+}
+
 export function getShipmentQtySummary(skus = []) {
   return skus.reduce((acc, sku) => {
     acc.required += toNumber(sku.required)

@@ -1,6 +1,6 @@
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -44,6 +44,38 @@ if (!env.VITE_FIREBASE_API_KEY) {
   }
 }
 
+// An installer is handed to an operator who only signs in, so the renderer must
+// carry its own Firebase web configuration. Without it the packaged app builds
+// and installs cleanly but every sign-in fails.
+const REQUIRED_FIREBASE_KEYS = ['VITE_FIREBASE_API_KEY', 'VITE_FIREBASE_AUTH_DOMAIN', 'VITE_FIREBASE_PROJECT_ID', 'VITE_FIREBASE_APP_ID']
+const missing = REQUIRED_FIREBASE_KEYS.filter((key) => !env[key])
+if (missing.length) {
+  console.error(`Desktop build refused: no Firebase web configuration for ${missing.join(', ')}.`)
+  console.error('Set them in frontend/.env.production (or the shell) so the installed app can sign in.')
+  process.exit(1)
+}
+
+// The packaged renderer runs on app://youthnic and reaches the backend through
+// the main-process /api proxy, so an absolute base URL must never be baked in.
+delete env.VITE_API_URL
+
+function verifyRendererBundle() {
+  const assets = resolve(frontend, 'dist', 'assets')
+  const bundle = readdirSync(assets)
+    .filter((name) => name.endsWith('.js'))
+    .map((name) => readFileSync(resolve(assets, name), 'utf8'))
+    .join('\n')
+  if (!bundle.includes(env.VITE_FIREBASE_AUTH_DOMAIN)) {
+    throw new Error('Desktop build refused: the Firebase auth domain is not present in the renderer bundle; sign-in would fail.')
+  }
+  // localhost:9999 is a Supabase SDK library default, not our API base.
+  // The real risk is localhost:5000 (the dev backend) leaking into the build.
+  if (/https?:\/\/localhost:5000/.test(bundle)) {
+    throw new Error('Desktop build refused: the dev API base (localhost:5000) was baked into the renderer bundle.')
+  }
+  console.log('Verified renderer bundle: Firebase sign-in configured, no localhost API base.')
+}
+
 const child = spawn(command, args, {
   cwd: frontend,
   env: { ...env, VITE_DESKTOP_BUILD: 'true' },
@@ -61,5 +93,14 @@ child.on('exit', (code, signal) => {
     process.exitCode = 1
     return
   }
-  process.exitCode = code ?? 1
+  if (code !== 0) {
+    process.exitCode = code ?? 1
+    return
+  }
+  try {
+    verifyRendererBundle()
+  } catch (error) {
+    console.error(error.message)
+    process.exitCode = 1
+  }
 })

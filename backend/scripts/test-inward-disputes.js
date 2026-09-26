@@ -10,6 +10,7 @@
  *
  * Run: node scripts/test-inward-disputes.js
  */
+require('./ensureTestEnv');
 const assert = require('assert');
 const Module = require('module');
 const path = require('path');

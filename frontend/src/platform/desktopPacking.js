@@ -13,7 +13,22 @@ export async function blobToArrayBuffer(blob) {
   return blob
 }
 
+// Local evidence IDs become filenames in the station's data directory, so they
+// must stay filesystem-safe regardless of how the consignment ID is written.
+export function createLocalEvidenceId() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
 export function createDesktopOperationId(stationId, consignmentId, boxNo) {
-  const uuid = typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
-  return `${stationId}:${consignmentId}:${boxNo}:${uuid}`
+  return `${stationId}:${consignmentId}:${boxNo}:${createLocalEvidenceId()}`
+}
+
+// Electron wraps every main-process throw as
+// "Error invoking remote method 'desktop:…': Error: <message>". Packers should
+// read the reason, not the IPC plumbing.
+export function describeDesktopError(error, fallback = 'Desktop action failed') {
+  const raw = String(error?.message || error || '')
+  const cleaned = raw.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '').trim()
+  return cleaned || fallback
 }

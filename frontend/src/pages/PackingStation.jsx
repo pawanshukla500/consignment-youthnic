@@ -38,7 +38,7 @@ import {
 import { useConsignmentSync } from '../context/ConsignmentSyncContext';
 import { getShipmentPriority, sortByPriority, formatAppointmentDate, formatDispatchDate } from '../utils/priority';
 import { getCriticalityCardClass, getDisplayLabel } from '../utils/criticalityUi';
-import { isDesktopPacking, getDesktopPacking, blobToArrayBuffer, createDesktopOperationId } from '../platform/desktopPacking';
+import { isDesktopPacking, getDesktopPacking, blobToArrayBuffer, createDesktopOperationId, createLocalEvidenceId, describeDesktopError } from '../platform/desktopPacking';
 import UnitsProgressCell from '../components/UnitsProgressCell';
 import QuantityRemovalModal from '../components/QuantityRemovalModal';
 import { ArrowLeft, Boxes, Upload, X, Loader2 } from 'lucide-react';
@@ -59,7 +59,7 @@ import {
   getMarketplaceBarcode,
   barcodeMatchesSku,
 } from '../utils/barcodeInput';
-import { clonePackingBoxItems, recomputeSkuTotals, getShipmentQtySummary } from '../utils/packingQuantities';
+import { clonePackingBoxItems, recomputeSkuTotals, getShipmentQtySummary, resolveBoxCount } from '../utils/packingQuantities';
 
 function getScanMessage(reason, data = {}) {
   if (data.extra_item || (reason === 'not_found' && data.all_complete)) {
@@ -70,6 +70,17 @@ function getScanMessage(reason, data = {}) {
   if (reason === 'over_limit') return `Cannot exceed required qty (${data.required ?? '?'})`;
   if (reason === 'invalid_barcode') return data.message || 'Invalid barcode';
   return data.message || 'Scan rejected';
+}
+
+function indexDesktopBoxStates(boxes, activeCid) {
+  const map = {};
+  for (const box of boxes || []) {
+    const cid = String(box.consignment_id || '').trim();
+    const boxNo = String(box.box_no);
+    if (cid) map[`${cid}:${boxNo}`] = box;
+    if (!activeCid || cid === activeCid) map[boxNo] = box;
+  }
+  return map;
 }
 
 /* ═══ SOUND ENGINE ═══ */
@@ -185,6 +196,9 @@ export default function PackingStation() {
   const [showDashboard, setShowDashboard] = useState(false);
   const [dashData] = useState(null);
   const [syncState, setSyncState] = useState('synced');
+  const [syncRunning, setSyncRunning] = useState(false);
+  const [lastSyncAt, setLastSyncAt] = useState(null);
+  const [desktopBoxStates, setDesktopBoxStates] = useState({});
   const [recState, setRecState] = useState('STANDBY');
   const [recDuration, setRecDuration] = useState('00:00');
   const [recSize, setRecSize] = useState('0 MB');
@@ -263,6 +277,10 @@ export default function PackingStation() {
   const desktopPendingBytesRef = useRef(0);
   const desktopProofRef = useRef(null);
   const desktopOperationRef = useRef(null);
+  const desktopPausedSinceRef = useRef(null);
+  const prevDesktopSyncRef = useRef({ online: null, pending: -1 });
+  const cameraStartingRef = useRef(false);
+  const recordingStartingRef = useRef(null);
   // Exactly-once gate for one scanner input generation. Hardware scanners often
   // send Enter plus a form submit / CR+LF; without this, Zone 3 double-counts.
   const scannerGuardRef = useRef(createScannerInputGuard());
@@ -341,10 +359,29 @@ export default function PackingStation() {
         setPendingSaveJobs(Number(status.pendingJobs) || 0);
         setFailedSyncJobs(Number(status.failedJobs) || 0);
         setPendingUploads(Number(status.pendingVideos) || 0);
+        setSyncRunning(Boolean(status.running));
+        if (status.lastSyncAt) setLastSyncAt(status.lastSyncAt);
+        if (Array.isArray(status.boxes)) {
+          setDesktopBoxStates(indexDesktopBoxStates(status.boxes, String(cidRef.current || S.consignmentId || '').trim()));
+        }
         if (status.online === false) setSyncState('offline');
         else if ((status.failedJobs || 0) > 0) setSyncState('failed');
         else if ((status.pendingJobs || 0) > 0 || (status.pendingVideos || 0) > 0) setSyncState('pending');
         else if (status.online === true) setSyncState('synced');
+        // Packer-facing connectivity transitions (deduped by ToastContext).
+        const pendingTotal = (Number(status.pendingJobs) || 0) + (Number(status.pendingVideos) || 0);
+        const prev = prevDesktopSyncRef.current;
+        if (status.online === false && prev.online === true) {
+          toast('Internet lost — keep packing. Scans, boxes and videos save on this computer and sync when the connection returns.', 'warning', 7000);
+        } else if (status.online === true && prev.online === false) {
+          toast(pendingTotal > 0
+            ? `Internet back — syncing ${pendingTotal} pending item(s) in the background…`
+            : 'Internet back — everything is already in the cloud.', 'info', 5000);
+        }
+        if (status.online === true && pendingTotal === 0 && prev.pending > 0) {
+          toast('All caught up ✓ — every box and video is in the cloud.', 'success', 4000);
+        }
+        prevDesktopSyncRef.current = { online: status.online, pending: pendingTotal };
       });
       desktop.storage.health().catch(() => {});
       desktop.video.recover?.().then((recovered) => {
@@ -449,10 +486,15 @@ export default function PackingStation() {
         setPendingUploads(Number(status.pendingVideos) || 0);
         setPendingSaveJobs(Number(status.pendingJobs) || 0);
         setFailedSyncJobs(Number(status.failedJobs) || 0);
+        setSyncRunning(Boolean(status.running));
+        if (status.lastSyncAt) setLastSyncAt(status.lastSyncAt);
+        if (Array.isArray(status.boxes)) {
+          setDesktopBoxStates(indexDesktopBoxStates(status.boxes, String(cidRef.current || S.consignmentId || '').trim()));
+        }
         if (status.online === false) setSyncState('offline');
         else if ((status.failedJobs || 0) > 0) setSyncState('failed');
         else if ((status.pendingJobs || 0) > 0 || (status.pendingVideos || 0) > 0) setSyncState('pending');
-        else setSyncState('synced');
+        else if (status.online === true) setSyncState('synced');
         return;
       }
       const [{ getFailedCount }, videos, saveJobs, failedSaveJobs] = await Promise.all([
@@ -525,9 +567,15 @@ export default function PackingStation() {
         setPendingUploads(Number(status.pendingVideos) || 0);
         setPendingSaveJobs(Number(status.pendingJobs) || 0);
         setFailedSyncJobs(Number(status.failedJobs) || 0);
-        if (status.failedJobs > 0) setSyncState('failed');
-        else if (status.pendingJobs > 0 || status.pendingVideos > 0) setSyncState(navigator.onLine ? 'pending' : 'offline');
-        else setSyncState(navigator.onLine ? 'synced' : 'offline');
+        setSyncRunning(Boolean(status.running));
+        if (status.lastSyncAt) setLastSyncAt(status.lastSyncAt);
+        if (Array.isArray(status.boxes)) {
+          setDesktopBoxStates(indexDesktopBoxStates(status.boxes, String(consignmentId || cidRef.current || S.consignmentId || '').trim()));
+        }
+        if (status.online === false) setSyncState('offline');
+        else if ((status.failedJobs || 0) > 0) setSyncState('failed');
+        else if ((status.pendingJobs || 0) > 0 || (status.pendingVideos || 0) > 0) setSyncState('pending');
+        else if (status.online === true) setSyncState('synced');
         return;
       }
       const r = await packingAPI.syncStatus(consignmentId || undefined);
@@ -661,7 +709,11 @@ export default function PackingStation() {
 
   /* ═══ CAMERA ═══ */
   const startCamera = async () => {
-    if (cameraStarting) return;
+    // Ref guard: the cameraStarting state is stale inside closures captured by
+    // earlier renders, which let the mount pre-warm and the consignment load
+    // race into two concurrent camera starts (and two recording sessions).
+    if (cameraStartingRef.current || streamRef.current) return;
+    cameraStartingRef.current = true;
     setCameraStarting(true);
     setCameraError('');
     try {
@@ -682,12 +734,19 @@ export default function PackingStation() {
       setCamActive(true);
       toast(`Camera live (${profile}) ${native} — packing profile 720p@24`, 'success');
       startCanvasOverlay();
+      // A box restored after an app restart has no recorder yet — CCTV evidence
+      // is mandatory, so resume recording as soon as the camera is live again.
+      const resumeBox = stateRef.current?.box;
+      if (resumeBox && stateRef.current?.cid && mediaRecorderRef.current?.state !== 'recording' && !recordingSessionIdRef.current) {
+        void startRecording(stateRef.current.cid, resumeBox);
+      }
     } catch (err) {
       const message = describeCameraError(err);
       setCameraError(message);
       setCamActive(false);
       toast('Camera error: ' + message, 'error', 6000);
     } finally {
+      cameraStartingRef.current = false;
       setCameraStarting(false);
     }
   };
@@ -763,7 +822,27 @@ export default function PackingStation() {
     draw();
   };
 
-  const startRecording = async (explicitCid, explicitBox, { reopen = false } = {}) => {
+  // Single-flight: the camera-live hook, box resume and box entry can all
+  // trigger a start for the same box within milliseconds. Without a lock each
+  // one opened its own recording session and MediaRecorder — observed in the
+  // field/smoke as two video.started events 4ms apart with empty recordings.
+  const startRecording = (explicitCid, explicitBox, opts = {}) => {
+    const cid = explicitCid || stateRef.current?.cid;
+    const box = String(explicitBox || stateRef.current?.box || '');
+    const inflight = recordingStartingRef.current;
+    if (inflight) {
+      if (inflight.cid === cid && inflight.box === box) return inflight.promise;
+      return inflight.promise.catch(() => {}).then(() => startRecording(explicitCid, explicitBox, opts));
+    }
+    const promise = startRecordingInner(explicitCid, explicitBox, opts);
+    recordingStartingRef.current = { cid, box, promise };
+    promise.finally(() => {
+      if (recordingStartingRef.current?.promise === promise) recordingStartingRef.current = null;
+    }).catch(() => {});
+    return promise;
+  };
+
+  const startRecordingInner = async (explicitCid, explicitBox, { reopen = false } = {}) => {
     if (!streamRef.current) { toast('Start camera first', 'warning'); return false; }
     if (mediaRecorderRef.current?.state === 'recording') return true;
 
@@ -846,7 +925,7 @@ export default function PackingStation() {
       if (reopen) toast(`Recording additional video for Box ${box} — the earlier video is kept, not replaced`, 'info', 4500);
       if (isDesktopPacking) {
         const localVideo = await getDesktopPacking().video.start({
-          videoId: `${cid}-${box}-${Date.now()}`,
+          videoId: createLocalEvidenceId(),
           consignmentId: cid,
           boxNo: box,
           fileName,
@@ -864,7 +943,7 @@ export default function PackingStation() {
       }
     } catch (e) {
       console.error('[Video] Failed to start recording session:', e);
-      toast('Could not start video recording session', 'error');
+      toast(e?.message ? `Could not start video recording session — ${e.message}` : 'Could not start video recording session', 'error', 8000);
       return false;
     }
 
@@ -890,6 +969,12 @@ export default function PackingStation() {
     }
 
     mediaRecorderRef.current.ondataavailable = async (e) => {
+      if (!(e.data?.size > 0) || !recordingSessionIdRef.current) {
+        // Diagnostic for zero-byte recordings: distinguishes "browser emitted
+        // nothing" from "session id missing when the chunk arrived".
+        console.warn('[Video] chunk dropped', { size: e.data?.size ?? -1, hasSession: Boolean(recordingSessionIdRef.current), recorderState: mediaRecorderRef.current?.state });
+        return;
+      }
       if (e.data?.size > 0 && recordingSessionIdRef.current) {
         const idx = chunkIndexRef.current++;
         const capturedRecordingId = recordingSessionIdRef.current;
@@ -912,7 +997,7 @@ export default function PackingStation() {
           if (isDesktopPacking) {
             desktopChunkErrorRef.current = err;
             if (capturedRecorder?.state === 'recording') capturedRecorder.pause();
-            toast('Recording could not be saved. Packing paused — tap SAVE BOX to keep the scans. Partial video is preserved.', 'error', 10000);
+            toast('Recording could not be saved. Packing paused; partial evidence is preserved.', 'error', 10000);
           }
           console.error('[Video] Chunk persist failed:', err);
           throw err;
@@ -964,9 +1049,23 @@ export default function PackingStation() {
     };
 
     recStartRef.current = Date.now();
+    desktopPausedSinceRef.current = null;
     recTimerRef.current = setInterval(() => {
       const e = Math.floor((Date.now() - recStartRef.current) / 1000);
       setRecDuration(`${String(Math.floor(e/60)).padStart(2,'0')}:${String(e%60).padStart(2,'0')}`);
+      // Evidence-continuity watchdog: if backpressure paused the recorder but a
+      // chunk write never settles, the recorder would stay paused forever while
+      // the REC light keeps pulsing. Force-resume after 30s so CCTV keeps rolling.
+      if (isDesktopPacking && mediaRecorderRef.current?.state === 'paused') {
+        if (!desktopPausedSinceRef.current) desktopPausedSinceRef.current = Date.now();
+        if (Date.now() - desktopPausedSinceRef.current > 30000) {
+          try { mediaRecorderRef.current.resume(); } catch (_) { /* recorder already gone */ }
+          desktopPausedSinceRef.current = null;
+          toast('Disk writes fell behind — recording resumed. If this repeats, press NEXT BOX and check the disk.', 'warning', 6000);
+        }
+      } else {
+        desktopPausedSinceRef.current = null;
+      }
     }, 1000);
 
     // 1s timeslice → crash-safe IndexedDB chunks in web mode or filesystem
@@ -1059,7 +1158,7 @@ export default function PackingStation() {
           } catch (desktopError) {
             console.error('[Video] Desktop finalize failed:', desktopError);
             if (String(recBoxIdRef.current) === String(boxAtStop)) desktopRecordingRef.current = null;
-            if (!silent) toast(desktopError.message || 'Video save failed — keep the box open and retry', 'error', 7000);
+            if (!silent) toast(describeDesktopError(desktopError, 'Video save failed — keep the box open and retry'), 'error', 7000);
             reject(desktopError);
           }
           return;
@@ -1128,6 +1227,7 @@ export default function PackingStation() {
         }
       };
       try {
+        if (recorder.state === 'paused') recorder.resume();
         recorder.stop();
       } catch (err) {
         reject(err);
@@ -1330,10 +1430,22 @@ export default function PackingStation() {
       };
       setLoadMeta(meta);
       cidRef.current = actualCid;
-      const nextState = { cid: actualCid, intShip: meta.internalShipmentNo, box: null, skus: r.data.skus, boxes: r.data.boxes || {} };
+      // A box left open when the app last closed is still open in the local
+      // database. Restore it as the active box so the packer continues where
+      // they stopped instead of hitting "Resume and close Box N first".
+      const openLocalBox = isDesktopPacking
+        ? (r.data.localBoxes || []).find((localBox) => localBox.state === 'OPEN')
+        : null;
+      const resumeBoxNo = openLocalBox ? String(openLocalBox.box_no) : null;
+      const nextState = { cid: actualCid, intShip: meta.internalShipmentNo, box: resumeBoxNo, skus: r.data.skus, boxes: r.data.boxes || {} };
       commitPackingState(nextState);
       toast('Loaded ' + (meta.internalShipmentNo || actualCid) + ' — ' + r.data.total_skus + ' SKUs', 'success');
-      setZoneState(2);
+      if (resumeBoxNo) {
+        setZoneState(3);
+        toast(`Resumed Box ${resumeBoxNo} — it was still open when the app last closed. Keep scanning, or press NEXT BOX to weigh and close it.`, 'info', 7000);
+      } else {
+        setZoneState(2);
+      }
       inCidRef.current.value = '';
       // Auto-start camera when consignment loads
       if (!streamRef.current) {
@@ -1428,7 +1540,7 @@ export default function PackingStation() {
     }
 
     if (S.box && S.box !== v) {
-      if (isDesktopPacking) { toast('Save the current box with Next Box before switching.', 'warning'); return; }
+      if (isDesktopPacking) { toast(`Box ${S.box} is still open — press NEXT BOX to weigh and close it, or type ${S.box} to keep packing it.`, 'warning', 6000); return; }
       await autoSaveCurrentBox();
     }
 
@@ -1436,6 +1548,18 @@ export default function PackingStation() {
       const snapshot = await getDesktopPacking().packing.getSnapshot(S.cid).catch(() => null);
       const existing = snapshot?.localBoxes?.find((box) => box.box_no === v);
       if (existing && existing.state !== 'OPEN') { toast('Box is already closed. Start a new box or use the web adjustment workflow.', 'warning', 6000); return; }
+      if (S.box === v) {
+        // Re-entering the currently open box is the resume action, not an error.
+        setZoneState(3);
+        if (inBoxRef.current) inBoxRef.current.value = '';
+        inSkuRef.current?.focus();
+        if (streamRef.current && mediaRecorderRef.current?.state !== 'recording' && !recordingSessionIdRef.current) {
+          // The recorder stopped while this box was open — restart evidence capture.
+          await startRecording(S.cid, v);
+        }
+        toast(`Box ${v} is open — keep scanning`, 'info', 2500);
+        return;
+      }
       await _setBox(v);
       return;
     }
@@ -1518,7 +1642,7 @@ export default function PackingStation() {
         desktopOperationRef.current = null;
         desktopProofRef.current = null;
         if (!await startRecording(activeCid, v)) throw new Error('Recording did not start. Check the camera and local storage.');
-      } catch (error) { toast(error.message || 'Could not open the local box', 'error', 6000); return; }
+      } catch (error) { toast(describeDesktopError(error, 'Could not open the local box'), 'error', 6000); return; }
     } else if (activeCid) {
       if (mediaRecorderRef.current?.state === 'recording' || recordingSessionIdRef.current) {
         try { await stopRecording(true); } catch (err) { console.warn('[Video] Stop leftover recording failed:', err); }
@@ -1544,6 +1668,18 @@ export default function PackingStation() {
 
   const refreshPackingSession = async (consignmentId, { preferServerBoxes = false } = {}) => {
     if (!consignmentId) return;
+    if (isDesktopPacking) {
+      // The local snapshot is the authority for the whole desktop session.
+      // Pulling server skus here would desync the header from the scan ledger
+      // (observed: REQUIRED +8 vs the locally enforced totals mid-session).
+      const fresh = await getDesktopPacking().packing.getSnapshot(consignmentId);
+      if (!fresh?.skus) return;
+      commitPackingState((prev) => {
+        if (prev.cid !== consignmentId && prev.cid !== fresh.consignment_id) return prev;
+        return { ...prev, skus: fresh.skus, boxes: { ...(fresh.boxes || {}), ...prev.boxes } };
+      });
+      return;
+    }
     const response = await packingAPI.load({ consignment_id: consignmentId });
     const actualCid = response.data.consignment_id || consignmentId;
     commitPackingState((prev) => {
@@ -1849,182 +1985,182 @@ export default function PackingStation() {
     const localSku = session.skus.find((sku) => barcodeMatchesSku(sku, bc));
     const queueBarcode = localSku ? resolveQueueBarcode(localSku, bc) : bc;
 
-    if (isDesktopPacking) {
-      // Dispatch the immutable envelope immediately. Only UI application is
-      // chained; repeated physical scans are independent durable events.
-      const capture = getDesktopPacking().packing.recordScan({
-        consignmentId: capturedCid, boxNo: capturedBox, scanId: globalThis.crypto.randomUUID(), barcode: bc, qty: 1, capturedAt: new Date().toISOString(),
-      }).then((result) => ({ result }), (error) => ({ error }));
-      desktopScanChainRef.current = desktopScanChainRef.current.then(async () => {
-        const captured = await capture;
-        if (captured.error) throw captured.error;
-        const durable = captured.result;
-        if (!durable?.ok) {
-          playScanSound(durable?.result || 'rejected', durable);
-          toast(durable?.message || 'Scan rejected locally', 'error', 2500);
+      if (isDesktopPacking) {
+        // Dispatch the immutable envelope immediately. Only UI application is
+        // chained; repeated physical scans are independent durable events.
+        const capture = getDesktopPacking().packing.recordScan({
+          consignmentId: capturedCid, boxNo: capturedBox, scanId: globalThis.crypto.randomUUID(), barcode: bc, qty: 1, capturedAt: new Date().toISOString(),
+        }).then((result) => ({ result }), (error) => ({ error }));
+        desktopScanChainRef.current = desktopScanChainRef.current.then(async () => {
+          const captured = await capture;
+          if (captured.error) throw captured.error;
+          const durable = captured.result;
+          if (!durable?.ok) {
+            playScanSound(durable?.result || 'rejected', durable);
+            toast(durable?.message || 'Scan rejected locally', 'error', 2500);
+            flash('err');
+            return;
+          }
+          commitPackingState((latestState) => {
+            if (latestState.cid !== capturedCid) return latestState;
+            const boxItems = (latestState.boxes[capturedBox] || []).map((item) => ({ ...item }));
+            const existing = boxItems.find((item) => item.skuId === durable.skuId);
+            if (existing) existing.qty += 1;
+            else boxItems.push({
+              skuId: durable.skuId,
+              marketplaceBarcode: durable.marketplaceBarcode || durable.barcode,
+              barcode: durable.barcode,
+              marketplaceSku: durable.marketplaceSku || durable.barcode,
+              internalSku: durable.internalSku,
+              name: durable.internalSku,
+              qty: 1,
+            });
+            return { ...latestState, boxes: { ...latestState.boxes, [capturedBox]: boxItems } };
+          }, { syncSkus: true, flush: true });
+          playScanSound('ok');
+          flash('ok');
+          if (navigator.vibrate) navigator.vibrate(40);
+        }).catch((error) => {
+          console.error('[DesktopPacking] Durable scan failed:', error);
+          toast(describeDesktopError(error, 'Scan could not be saved locally'), 'error', 5000);
           flash('err');
-          return;
-        }
-        commitPackingState((latestState) => {
-          if (latestState.cid !== capturedCid) return latestState;
-          const boxItems = (latestState.boxes[capturedBox] || []).map((item) => ({ ...item }));
-          const existing = boxItems.find((item) => item.skuId === durable.skuId);
-          if (existing) existing.qty += 1;
-          else boxItems.push({
-            skuId: durable.skuId,
-            marketplaceBarcode: durable.marketplaceBarcode || durable.barcode,
-            barcode: durable.barcode,
-            marketplaceSku: durable.marketplaceSku || durable.barcode,
-            internalSku: durable.internalSku,
-            name: durable.internalSku,
+        });
+        return;
+      }
+      
+      const proxySnapshot = { ...session, box: capturedBox, cid: capturedCid };
+      const optimistic = applyOptimisticScan(proxySnapshot, queueBarcode, 1);
+      
+      if (!optimistic?.ok) {
+        const reason = optimistic?.reason || 'rejected';
+        const message = optimistic?.message || getScanMessage(reason, optimistic);
+        playScanSound(reason, optimistic);
+        toast(message, 'error', 2500);
+        flash('err');
+        if (navigator.vibrate) navigator.vibrate([250, 100, 250]);
+        return;
+      }
+
+      commitPackingState((latestState) => {
+        const boxItems = (latestState.boxes[capturedBox] || []).map((item) => ({ ...item }));
+        const existing = boxItems.find((item) => item.skuId === optimistic.scannedSku.id);
+        if (existing) {
+          existing.qty += 1;
+        } else {
+          boxItems.push({
+            skuId: optimistic.scannedSku.id,
+            marketplaceBarcode: optimistic.queueBarcode,
+            barcode: optimistic.queueBarcode,
+            marketplaceSku: optimistic.scannedSku.marketplaceSku || optimistic.queueBarcode,
+            internalSku: optimistic.scannedSku.internalSku,
+            name: optimistic.scannedSku.internalSku,
             qty: 1,
           });
-          return { ...latestState, boxes: { ...latestState.boxes, [capturedBox]: boxItems } };
-        }, { syncSkus: true, flush: true });
-        playScanSound('ok');
-        flash('ok');
-        if (navigator.vibrate) navigator.vibrate(40);
-      }).catch((error) => {
-        console.error('[DesktopPacking] Durable scan failed:', error);
-        toast(error.message || 'Scan could not be saved locally', 'error', 5000);
-        flash('err');
-      });
-      return;
-    }
-    
-    const proxySnapshot = { ...session, box: capturedBox, cid: capturedCid };
-    const optimistic = applyOptimisticScan(proxySnapshot, queueBarcode, 1);
-    
-    if (!optimistic?.ok) {
-      const reason = optimistic?.reason || 'rejected';
-      const message = optimistic?.message || getScanMessage(reason, optimistic);
-      playScanSound(reason, optimistic);
-      toast(message, 'error', 2500);
-      flash('err');
-      if (navigator.vibrate) navigator.vibrate([250, 100, 250]);
-      return;
-    }
+        }
+        return {
+          ...latestState,
+          boxes: { ...latestState.boxes, [capturedBox]: boxItems },
+        };
+      }, { syncSkus: true, flush: true });
 
-    commitPackingState((latestState) => {
-      const boxItems = (latestState.boxes[capturedBox] || []).map((item) => ({ ...item }));
-      const existing = boxItems.find((item) => item.skuId === optimistic.scannedSku.id);
-      if (existing) {
-        existing.qty += 1;
-      } else {
-        boxItems.push({
-          skuId: optimistic.scannedSku.id,
-          marketplaceBarcode: optimistic.queueBarcode,
-          barcode: optimistic.queueBarcode,
-          marketplaceSku: optimistic.scannedSku.marketplaceSku || optimistic.queueBarcode,
-          internalSku: optimistic.scannedSku.internalSku,
-          name: optimistic.scannedSku.internalSku,
-          qty: 1,
+      playScanSound('ok');
+      flash('ok');
+      if (navigator.vibrate) navigator.vibrate(40);
+    };
+
+    const removeItem = async (marketplaceSku) => {
+      if (boxClosePendingRef.current) return;
+      const session = stateRef.current;
+      if (!session.cid || !session.box) return;
+      const boxItems = session.boxes[session.box] || [];
+      const item = boxItems.find((i) => i.marketplaceSku === marketplaceSku || i.skuId === marketplaceSku);
+      
+      const capturedBox = String(session.box);
+      if (isDesktopPacking) {
+        boxClosePendingRef.current = true;
+        try {
+          await desktopScanChainRef.current;
+          await getDesktopPacking().packing.undoScan({ consignmentId: session.cid, boxNo: capturedBox, skuId: item?.skuId, eventId: globalThis.crypto.randomUUID() });
+          const fresh = await getDesktopPacking().packing.getSnapshot(session.cid);
+          commitPackingState((latest) => ({ ...latest, skus: fresh.skus, boxes: fresh.boxes }), { flush: true });
+          toast('Removal saved locally', 'info');
+        } catch (error) { toast(describeDesktopError(error, 'Could not save removal'), 'error'); }
+        finally { boxClosePendingRef.current = false; }
+        return;
+      }
+      
+      commitPackingState((latestState) => ({
+        ...latestState,
+        boxes: {
+          ...latestState.boxes,
+          [capturedBox]: (latestState.boxes[capturedBox] || [])
+            .map((row) => {
+              const match = row.skuId === item?.skuId
+                || row.barcode === item?.barcode
+                || row.marketplaceBarcode === item?.marketplaceBarcode;
+              return match ? { ...row, qty: row.qty - 1 } : row;
+            })
+            .filter((row) => row.qty > 0),
+        },
+      }), { syncSkus: true, flush: true });
+      
+      toast('Removed locally', 'info');
+    };
+
+    const commitDesktopBoxLocally = async (boxNo, weight, unit, imageFileOrBlob, itemsSnapshot) => {
+      const desktop = getDesktopPacking();
+      const cid = stateRef.current.cid;
+      await desktopScanChainRef.current;
+      await ensureBoxVideoSafe({ requireUploaded: false, silent: true });
+      const station = await desktop.station.get();
+      const video = desktopFinalizedVideoRef.current;
+      if (!video?.videoId) {
+        throw new Error('Box video was not finalized locally. Keep the box open and retry.');
+      }
+      let proof = desktopProofRef.current;
+      if (imageFileOrBlob && !proof) {
+        proof = desktopProofRef.current = await desktop.files.writeProof({
+          proofId: `${cid}-${boxNo}-${Date.now()}`,
+          consignmentId: cid,
+          boxNo,
+          fileName: imageFileOrBlob.name || 'weight-proof.jpg',
+          data: await blobToArrayBuffer(imageFileOrBlob),
         });
       }
-      return {
-        ...latestState,
-        boxes: { ...latestState.boxes, [capturedBox]: boxItems },
-      };
-    }, { syncSkus: true, flush: true });
-
-    playScanSound('ok');
-    flash('ok');
-    if (navigator.vibrate) navigator.vibrate(40);
-  };
-
-  const removeItem = async (marketplaceSku) => {
-    if (boxClosePendingRef.current) return;
-    const session = stateRef.current;
-    if (!session.cid || !session.box) return;
-    const boxItems = session.boxes[session.box] || [];
-    const item = boxItems.find((i) => i.marketplaceSku === marketplaceSku || i.skuId === marketplaceSku);
-    
-    const capturedBox = String(session.box);
-    if (isDesktopPacking) {
-      boxClosePendingRef.current = true;
-      try {
-        await desktopScanChainRef.current;
-        await getDesktopPacking().packing.undoScan({ consignmentId: session.cid, boxNo: capturedBox, skuId: item?.skuId, eventId: globalThis.crypto.randomUUID() });
-        const fresh = await getDesktopPacking().packing.getSnapshot(session.cid);
-        commitPackingState((latest) => ({ ...latest, skus: fresh.skus, boxes: fresh.boxes }), { flush: true });
-        toast('Removal saved locally', 'info');
-      } catch (error) { toast(error.message || 'Could not save removal', 'error'); }
-      finally { boxClosePendingRef.current = Boolean(desktopChunkErrorRef.current); }
-      return;
-    }
-    
-    commitPackingState((latestState) => ({
-      ...latestState,
-      boxes: {
-        ...latestState.boxes,
-        [capturedBox]: (latestState.boxes[capturedBox] || [])
-          .map((row) => {
-            const match = row.skuId === item?.skuId
-              || row.barcode === item?.barcode
-              || row.marketplaceBarcode === item?.marketplaceBarcode;
-            return match ? { ...row, qty: row.qty - 1 } : row;
-          })
-          .filter((row) => row.qty > 0),
-      },
-    }), { syncSkus: true, flush: true });
-    
-    toast('Removed locally', 'info');
-  };
-
-  const commitDesktopBoxLocally = async (boxNo, weight, unit, imageFileOrBlob, itemsSnapshot) => {
-    const desktop = getDesktopPacking();
-    const cid = stateRef.current.cid;
-    await desktopScanChainRef.current;
-    await ensureBoxVideoSafe({ requireUploaded: false, silent: true });
-    const station = await desktop.station.get();
-    const video = desktopFinalizedVideoRef.current;
-    if (!video?.videoId) {
-      throw new Error('Box video was not finalized locally. Keep the box open and retry.');
-    }
-    let proof = desktopProofRef.current;
-    if (imageFileOrBlob && !proof) {
-      proof = desktopProofRef.current = await desktop.files.writeProof({
-        proofId: `${cid}-${boxNo}-${Date.now()}`,
+      const result = await desktop.packing.closeBox({
         consignmentId: cid,
         boxNo,
-        fileName: imageFileOrBlob.name || 'weight-proof.jpg',
-        data: await blobToArrayBuffer(imageFileOrBlob),
+        operationId: desktopOperationRef.current || (desktopOperationRef.current = createDesktopOperationId(station.station_id, cid, boxNo)),
+        items: (itemsSnapshot || []).map((item) => ({ ...item })),
+        weight,
+        weightUnit: unit || 'KG',
+        weightProof: proof,
+        video,
       });
-    }
-    const result = await desktop.packing.closeBox({
-      consignmentId: cid,
-      boxNo,
-      operationId: desktopOperationRef.current || (desktopOperationRef.current = createDesktopOperationId(station.station_id, cid, boxNo)),
-      items: (itemsSnapshot || []).map((item) => ({ ...item })),
-      weight,
-      weightUnit: unit || 'KG',
-      weightProof: proof,
-      video,
-    });
-    desktopFinalizedVideoRef.current = null;
-    desktop.sync.start();
-    await updatePendingCount();
-    return result;
-  };
+      desktopFinalizedVideoRef.current = null;
+      desktop.sync.start();
+      await updatePendingCount();
+      return result;
+    };
 
-  const saveBoxWithWeight = async (boxNo, weight, unit, imageFileOrBlob, itemsSnapshot) => {
-    const cid = stateRef.current.cid;
-    if (!cid || !boxNo) return false;
+    const saveBoxWithWeight = async (boxNo, weight, unit, imageFileOrBlob, itemsSnapshot) => {
+      const cid = stateRef.current.cid;
+      if (!cid || !boxNo) return false;
 
-    if (isDesktopPacking) {
-      setBoxSaving(true);
-      try {
-        const result = await commitDesktopBoxLocally(boxNo, weight, unit, imageFileOrBlob, itemsSnapshot);
-        toast(`Box ${boxNo} saved locally ✓ — cloud sync continues in background`, 'success', 4500);
-        return Boolean(result?.localSafe);
-      } catch (err) {
-        console.error('[DesktopPacking] Local box commit failed:', err);
-        toast(err.message || 'Could not save the box locally', 'error', 8000);
-        return false;
-      } finally {
-        setBoxSaving(false);
+      if (isDesktopPacking) {
+        setBoxSaving(true);
+        try {
+          const result = await commitDesktopBoxLocally(boxNo, weight, unit, imageFileOrBlob, itemsSnapshot);
+          toast(`Box ${boxNo} saved locally ✓ — cloud sync continues in background`, 'success', 4500);
+          return Boolean(result?.localSafe);
+        } catch (err) {
+          console.error('[DesktopPacking] Local box commit failed:', err);
+          toast(describeDesktopError(err, 'Could not save the box locally'), 'error', 8000);
+          return false;
+        } finally {
+          setBoxSaving(false);
+        }
       }
-    }
 
     const afterSave = async () => {
       void checkSyncStatus(cid);
@@ -2113,15 +2249,21 @@ export default function PackingStation() {
     const context = { consignmentId: started.cid, boxNo: String(started.box) };
     boxClosePendingRef.current = true;
 
-    if (isDesktopPacking) await desktopScanChainRef.current;
-
-    const settled = stateRef.current;
-    const itemsSnapshot = (settled.boxes[context.boxNo] || []).map((item) => ({ ...item }));
-
     const releaseCloseGuard = () => {
       boxClosePendingRef.current = false;
       setBoxSaving(false);
     };
+
+    try {
+      if (isDesktopPacking) await desktopScanChainRef.current;
+    } catch (err) {
+      releaseCloseGuard();
+      toast(describeDesktopError(err, 'A scan was still saving — press NEXT BOX again'), 'error', 6000);
+      return;
+    }
+
+    const settled = stateRef.current;
+    const itemsSnapshot = (settled.boxes[context.boxNo] || []).map((item) => ({ ...item }));
 
     const finishSavedBox = async () => {
       setBoxSaving(true);
@@ -2141,7 +2283,7 @@ export default function PackingStation() {
         if (isDesktopPacking) await getDesktopPacking().packing.discardEmptyBox({ consignmentId: context.consignmentId, boxNo: context.boxNo });
         await actionAfterSave();
       } catch (err) {
-        toast(err.message || 'Could not close this box. Keep it open and try again.', 'error', 7000);
+        toast(describeDesktopError(err, 'Could not close this box. Keep it open and try again.'), 'error', 7000);
       } finally {
         releaseCloseGuard();
       }
@@ -2490,9 +2632,9 @@ export default function PackingStation() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <div onClick={retryFailedSync} className={`px-2.5 py-1 rounded-full text-[10px] font-semibold flex items-center gap-1.5 cursor-pointer ${syncState==='synced'?'bg-emerald-50 text-emerald-700 border border-emerald-200':syncState==='pending'?'bg-amber-50 text-amber-700 border border-amber-200':'bg-red-50 text-red-700 border border-red-200'}`} title={`${pendingSaveJobs} save-box job(s), ${pendingUploads} video(s), ${failedSyncJobs} failed`}>
+          <div onClick={retryFailedSync} className={`px-2.5 py-1 rounded-full text-[10px] font-semibold flex items-center gap-1.5 cursor-pointer ${syncState==='synced'?'bg-emerald-50 text-emerald-700 border border-emerald-200':syncState==='pending'?'bg-amber-50 text-amber-700 border border-amber-200':syncState==='failed'?'bg-red-50 text-red-700 border border-red-200':'bg-slate-100 text-slate-600 border border-slate-300'}`} title={`${pendingSaveJobs} box(es), ${pendingUploads} video(s) pending · ${failedSyncJobs} failed${lastSyncAt ? ` · last synced ${new Date(lastSyncAt).toLocaleTimeString()}` : ''}`}>
             <span className="w-1.5 h-1.5 rounded-full bg-current animate-[pulse_2s_infinite]" />
-            <span>{syncState==='synced'?'Synced':syncState==='pending'?'Pending Sync':syncState==='failed'?'Failed Needs Retry':'Offline'}</span>
+            <span>{syncState==='synced'?'Synced':syncState==='pending'?(syncRunning?`Syncing ${pendingSaveJobs+pendingUploads}…`:`Pending Sync (${pendingSaveJobs+pendingUploads})`):syncState==='failed'?'Failed — click to retry':'Offline — saving locally'}</span>
           </div>
           <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-[0.8px] border ${recState==='REC'?'bg-red-50 border-red-200 text-red-700':'bg-slate-50 border-slate-200 text-slate-500'}`}>
             <span className={`w-1.5 h-1.5 rounded-full ${recState==='REC'?'animate-[pulse_.8s_infinite] bg-red-500':'bg-slate-400'}`} />
@@ -2546,7 +2688,7 @@ export default function PackingStation() {
               </>
             );
           })()}
-          <div className="flex items-center gap-1.5"><span className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">Boxes</span><span className="text-sm font-bold font-mono text-slate-700">{loadMeta?.boxCount ?? Object.keys(S.boxes).filter((k) => S.boxes[k]?.length).length}</span></div>
+          <div className="flex items-center gap-1.5"><span className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">Boxes</span><span className="text-sm font-bold font-mono text-slate-700">{resolveBoxCount(S.boxes, loadMeta?.boxCount)}</span></div>
           <div className="flex items-center gap-1.5"><span className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">SKUs</span><span className="text-sm font-bold font-mono text-slate-700">{S.skus.length}</span></div>
           <div className="flex items-center gap-1.5"><span className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">Required</span><span className="text-sm font-bold font-mono text-slate-700">{qtySummary.required}</span></div>
           <div className="flex items-center gap-1.5"><span className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">Packed</span><span className="text-sm font-bold font-mono text-emerald-600">{qtySummary.packed}</span></div>
@@ -2943,6 +3085,7 @@ export default function PackingStation() {
                   <th className="px-2 py-1 text-left text-[9px] font-semibold uppercase tracking-wider bg-slate-50 text-slate-500 border-b border-slate-100">Box</th>
                   <th className="px-2 py-1 text-left text-[9px] font-semibold uppercase tracking-wider bg-slate-50 text-slate-500 border-b border-slate-100">Items</th>
                   <th className="px-2 py-1 text-left text-[9px] font-semibold uppercase tracking-wider bg-slate-50 text-slate-500 border-b border-slate-100">Qty</th>
+                  {isDesktopPacking && <th className="px-2 py-1 text-left text-[9px] font-semibold uppercase tracking-wider bg-slate-50 text-slate-500 border-b border-slate-100">Sync</th>}
                 </tr></thead>
                 <tbody>
                   {Object.entries(S.boxes).filter(([,items]) => items.length).map(([boxNo, items]) => (
@@ -2950,6 +3093,15 @@ export default function PackingStation() {
                       <td className="px-2 py-1 font-semibold text-slate-700">#{boxNo}</td>
                       <td className="px-2 py-1 text-slate-600">{items.length}</td>
                       <td className="px-2 py-1 text-slate-600">{items.reduce((s,i)=>s+i.qty,0)}</td>
+                      {isDesktopPacking && (() => {
+                        const currentCid = String(S.consignmentId || cidRef.current || '').trim();
+                        const st = (currentCid && desktopBoxStates[`${currentCid}:${boxNo}`]) || desktopBoxStates[String(boxNo)];
+                        const open = !st || st.state === 'OPEN';
+                        const synced = st && st.state === 'SYNCED' && st.video_state === 'SYNCED';
+                        const label = open ? 'Open — recording' : synced ? 'Synced to cloud ✓' : 'Closed — waiting to sync';
+                        const cls = open ? 'bg-blue-400' : synced ? 'bg-emerald-500' : 'bg-amber-400 animate-[pulse_2s_infinite]';
+                        return <td className="px-2 py-1"><span title={label} className={`inline-block w-2 h-2 rounded-full ${cls}`} /></td>;
+                      })()}
                     </tr>
                   ))}
                 </tbody>

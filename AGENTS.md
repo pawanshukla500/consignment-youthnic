@@ -8,11 +8,14 @@ This document is written for AI coding agents. It assumes zero prior knowledge o
 
 The **Consignment Packing App** (also branded **Youthnic Packing Station**) is a full-stack web application for managing consignment packing operations. It is built for VB Exports internal use and is private/proprietary software.
 
+> **TaskFlow Pro Project ID:** `9513898a-8338-4e3d-9f97-bfdc389f0466`  
+> **Official Desktop Releases:** [GitHub Releases](https://github.com/pawanshukla500/consignment-youthnic/releases)
+
 **Core capabilities:**
 - Secure sign-in via **Firebase Auth**, with an application-level JWT for API access
 - Role- and permission-based access control (`admin`, `packer`, plus per-feature permissions)
 - Consignment CRUD with SKU-level tracking, boxes, box items, and scan events
-- Barcode-driven packing station with offline-resilient IndexedDB queues
+- Barcode-driven packing station with offline-resilient IndexedDB queues and native Electron desktop station with local SQLite persistence
 - File uploads (videos and documents) to **Cloudflare R2**, metadata in **Supabase PostgreSQL**
 - Real-time consignment sync across clients via **Supabase Realtime**, with SSE and polling fallbacks
 - Productivity dashboard, audit logging, production planning, and CSV/Excel exports
@@ -25,6 +28,7 @@ The **Consignment Packing App** (also branded **Youthnic Packing Station**) is a
 | Layer | Technology |
 |-------|------------|
 | Frontend | React 19.2.6, Vite 8.0.12, Tailwind CSS v4.3.0, React Router v7.16.0 |
+| Desktop App | Electron 37+, electron-builder 26+, SQLite (WAL mode) |
 | Backend | Node.js 20+, Express 4.18.2 |
 | Primary database | Supabase PostgreSQL 15 (`pg` driver) |
 | Realtime | Supabase Realtime → SSE `/api/sync/events` → polling `/api/sync/changes` |
@@ -321,10 +325,19 @@ Only `VITE_*` variables are exposed to the browser.
 - **1 video per box** is enforced: a new video for the same `consignmentId` + `boxNo` replaces the previous one.
 - `GET /api/uploads/share/:fileId` returns an authenticated stream path (not a public object URL).
 
-**Packing station:**
+**Packing station & Offline Durability:**
 - `backend/routes/packing.js` holds active in-memory sessions per consignment.
 - `backend/utils/packingDraft.js` persists in-progress sessions to Postgres (`packing_drafts`) so scans survive server restarts.
-- Frontend uses IndexedDB queues (`scanQueue`, `packingSyncQueue`, `videoQueue`) to survive offline/crashes.
+- **Web Runtime**: Frontend uses IndexedDB queues (`scanQueue`, `packingSyncQueue`, `videoQueue`) to survive offline/crashes.
+- **Desktop Runtime (`desktop/`)**: Dedicated Electron client communicating via `window.youthnicDesktop`. Scans and box updates write to local SQLite (`database/packing.sqlite`), videos are staged on disk with continuous chunk flushing, and sync engine reconciles with the cloud API.
+- **Concurrency & Safety Invariants**:
+  - `boxSaving` state flag: Disables save/close interactions during active box serialization.
+  - `submittedRef`: Synchronous tick-level lock preventing rapid duplicate submissions.
+  - `scannerGuardRef`: Hardware barcode reader debounce window (150ms).
+  - Single-flight camera/recorder start mutex.
+  - 30-second evidence continuity watchdog to automatically resume stalled MediaRecorder streams.
+  - 4x6 inch thermal Box Label PDF generation (`doDL`).
+  - Pre-save recorder stop coordination: ensures all final video chunks are flushed before closing the box.
 
 ### Frontend Design
 
