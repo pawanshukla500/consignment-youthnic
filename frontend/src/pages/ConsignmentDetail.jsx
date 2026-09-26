@@ -1272,9 +1272,13 @@ const ConsignmentDetail = () => {
                 <span>{consignment.internalShipmentNo || consignment.id}</span>
                 <button
                   type="button"
-                  onClick={() => {
-                    navigator.clipboard.writeText(consignment.internalShipmentNo || consignment.id);
-                    addToast('Copied ID to clipboard', 'info');
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(consignment.internalShipmentNo || consignment.id);
+                      addToast('Copied ID to clipboard', 'info');
+                    } catch {
+                      addToast('Failed to copy to clipboard', 'warning');
+                    }
                   }}
                   className="p-1 text-slate-400 hover:text-slate-700 rounded-md transition-colors cursor-pointer"
                   title="Copy Consignment ID"
