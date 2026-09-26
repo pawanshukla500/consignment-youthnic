@@ -11,9 +11,22 @@ import {
   userCanConfirmStageClient,
   DISPUTE_RESOLUTION_TYPES,
 } from '../utils/workflowPriority'
-import { CheckCircle2, Loader2, UserPlus, AlertTriangle, Clock, Ticket, ShieldCheck } from 'lucide-react'
+import {
+  CheckCircle2, Loader2, AlertTriangle, Clock, Ticket, ShieldCheck,
+  PackageCheck, FileText, Truck, Warehouse, Archive, ChevronDown, ChevronUp,
+  RefreshCw, User, Check, ArrowRight, Info
+} from 'lucide-react'
 
 const AUTO_STAGES = new Set(['ready_for_invoice', 'ready_for_dispatch'])
+
+// Map workflow stages to user-friendly milestone icons and titles
+const MILESTONES = [
+  { key: 'packing_completed', title: 'Packing', icon: PackageCheck, desc: 'Pack SKUs & verify box quantities' },
+  { key: 'invoice_created', title: 'Invoice', icon: FileText, desc: 'Generate & attach billing invoice' },
+  { key: 'dispatched', title: 'Dispatch', icon: Truck, desc: 'Log courier docket & handover' },
+  { key: 'inward_completed', title: 'Inward', icon: Warehouse, desc: 'Destination warehouse inward verification' },
+  { key: 'archived', title: 'Archived', icon: Archive, desc: 'Shipment completed & records archived' },
+]
 
 /** One dispute row inside the Inward Dispute card — qty breakdown, ticket entry, resolve action. */
 function DisputeRow({ dispute, canAct, ticketDraft, onTicketDraftChange, onSaveTicket, savingTicket, onOpenResolve }) {
@@ -21,39 +34,39 @@ function DisputeRow({ dispute, canAct, ticketDraft, onTicketDraftChange, onSaveT
   const isOpen = d.status === 'open'
   const varianceLabel = d.varianceType === 'excess' ? 'Excess' : 'Short'
   return (
-    <div className={`rounded-lg border p-3 text-xs ${isOpen ? 'border-red-200 bg-white' : 'border-emerald-200 bg-emerald-50/50'}`}>
+    <div className={`rounded-xl border p-4 text-xs transition-all ${isOpen ? 'border-red-200 bg-red-50/20' : 'border-emerald-200 bg-emerald-50/30'}`}>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div className="flex items-center gap-2">
-          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${isOpen ? 'bg-red-100 text-red-800' : 'bg-emerald-100 text-emerald-800'}`}>
-            {isOpen ? 'Open' : 'Resolved'}
+          <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${isOpen ? 'bg-red-100 text-red-800 border border-red-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'}`}>
+            {isOpen ? 'Open Dispute' : 'Resolved'}
           </span>
-          <span className="font-semibold text-slate-800">
+          <span className="font-semibold text-slate-800 text-sm">
             {varianceLabel} {d.disputedQty} unit{d.disputedQty === 1 ? '' : 's'}
           </span>
-          <span className="text-slate-500">
-            (shipped {d.shippedQty} · inward {d.inwardQty})
+          <span className="text-slate-500 font-medium">
+            (Shipped: {d.shippedQty} · Inward: {d.inwardQty})
           </span>
         </div>
-        <span className="text-slate-400">
+        <span className="text-slate-400 text-[11px]">
           Raised {d.raisedAt ? new Date(d.raisedAt).toLocaleDateString() : '—'}
-          {d.raisedByName ? ` · ${d.raisedByName}` : ''}
+          {d.raisedByName ? ` by ${d.raisedByName}` : ''}
         </span>
       </div>
       {d.reason && <div className="text-slate-600 mb-1"><strong className="text-slate-700">Reason:</strong> {d.reason}</div>}
       {d.disputeDetails && <div className="text-slate-600 mb-2"><strong className="text-slate-700">Details:</strong> {d.disputeDetails}</div>}
 
       {isOpen ? (
-        <div className="flex flex-wrap items-end gap-2 mt-2 pt-2 border-t border-red-100">
-          <div className="flex-1 min-w-[160px]">
-            <label className="block text-[10px] font-semibold uppercase text-slate-500 mb-1">
+        <div className="flex flex-wrap items-end gap-2.5 mt-3 pt-3 border-t border-red-100/80">
+          <div className="flex-1 min-w-[200px]">
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
               Marketplace Ticket / Case ID {d.ticketId ? '(update)' : '*'}
             </label>
             <input
               type="text"
               value={ticketDraft ?? d.ticketId ?? ''}
               onChange={(e) => onTicketDraftChange(e.target.value)}
-              placeholder="e.g. AMZN-CASE-12345"
-              className="inp text-xs w-full"
+              placeholder="e.g. FK-DISPUTE-9842"
+              className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
               disabled={!canAct}
             />
           </div>
@@ -62,32 +75,32 @@ function DisputeRow({ dispute, canAct, ticketDraft, onTicketDraftChange, onSaveT
               type="button"
               onClick={onSaveTicket}
               disabled={savingTicket}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-slate-900 text-white text-[11px] font-semibold disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 transition-colors disabled:opacity-50"
             >
-              {savingTicket ? <Loader2 className="w-3 h-3 animate-spin" /> : <Ticket className="w-3 h-3" />}
-              {d.ticketId ? 'Update' : 'Save ticket'}
+              {savingTicket ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Ticket className="w-3.5 h-3.5" />}
+              {d.ticketId ? 'Update Ticket' : 'Save Ticket ID'}
             </button>
           )}
           {canAct && (
             <button
               type="button"
               onClick={onOpenResolve}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-emerald-600 text-white text-[11px] font-semibold hover:bg-emerald-700"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
             >
-              <ShieldCheck className="w-3 h-3" />
-              Resolve dispute
+              <ShieldCheck className="w-3.5 h-3.5" />
+              Resolve Dispute
             </button>
           )}
         </div>
       ) : (
-        <div className="mt-2 pt-2 border-t border-emerald-100 space-y-0.5">
-          {d.ticketId && <div className="text-slate-600"><strong className="text-slate-700">Ticket:</strong> {d.ticketId}</div>}
-          <div className="text-emerald-800">
+        <div className="mt-3 pt-3 border-t border-emerald-100 space-y-1 bg-white/60 p-2.5 rounded-lg">
+          {d.ticketId && <div className="text-slate-600"><strong className="text-slate-700">Ticket ID:</strong> <span className="font-mono text-slate-800">{d.ticketId}</span></div>}
+          <div className="text-emerald-800 font-medium">
             <strong>Resolution:</strong> {DISPUTE_RESOLUTION_TYPES[d.resolution?.type] || d.resolution?.type || '—'}
           </div>
-          <div className="text-slate-600"><strong className="text-slate-700">Remark:</strong> {d.resolution?.remark || '—'}</div>
-          <div className="text-slate-400">
-            {d.resolution?.resolvedByName || 'Team'} · {d.resolution?.resolvedAt ? new Date(d.resolution.resolvedAt).toLocaleString() : ''}
+          {d.resolution?.remark && <div className="text-slate-600"><strong className="text-slate-700">Remark:</strong> {d.resolution.remark}</div>}
+          <div className="text-slate-400 text-[11px]">
+            Resolved by {d.resolution?.resolvedByName || 'Team'} · {d.resolution?.resolvedAt ? new Date(d.resolution.resolvedAt).toLocaleString() : ''}
           </div>
         </div>
       )}
@@ -95,41 +108,57 @@ function DisputeRow({ dispute, canAct, ticketDraft, onTicketDraftChange, onSaveT
   )
 }
 
-/** Resolution type + mandatory remark — required to close any inward dispute. */
+/** Resolution type + mandatory remark modal — required to close any inward dispute. */
 function ResolveDisputeModal({ resolutionType, remark, onResolutionTypeChange, onRemarkChange, onCancel, onConfirm, busy }) {
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-5">
-        <h3 className="text-sm font-bold text-slate-900 mb-1">Resolve inward dispute</h3>
-        <p className="text-xs text-slate-500 mb-4">
-          A resolution type and remark are required. This consignment moves to Archive automatically once every dispute on it is resolved.
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-fade-in">
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-100 w-full max-w-md p-6 overflow-hidden">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600">
+            <ShieldCheck className="w-5 h-5" />
+          </div>
+          <h3 className="text-base font-bold text-slate-900">Resolve Inward Dispute</h3>
+        </div>
+        <p className="text-xs text-slate-500 mb-5 leading-relaxed">
+          Select the agreed dispute resolution type and enter mandatory remarks. Once all open disputes are resolved, the consignment automatically advances to Archive.
         </p>
-        <label className="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Resolution type *</label>
-        <select
-          value={resolutionType}
-          onChange={(e) => onResolutionTypeChange(e.target.value)}
-          className="inp text-xs w-full mb-3"
-        >
-          <option value="">Select resolution…</option>
-          {Object.entries(DISPUTE_RESOLUTION_TYPES).map(([key, label]) => (
-            <option key={key} value={key}>{label}</option>
-          ))}
-        </select>
-        <label className="block text-[10px] font-semibold uppercase text-slate-500 mb-1">
-          Remark {resolutionType === 'other' ? '(required — explain "Other")' : '*'}
-        </label>
-        <textarea
-          value={remark}
-          onChange={(e) => onRemarkChange(e.target.value)}
-          className="inp text-xs w-full min-h-[80px] mb-4"
-          placeholder="Explain how this was resolved…"
-        />
-        <div className="flex justify-end gap-2">
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+              Resolution Type *
+            </label>
+            <select
+              value={resolutionType}
+              onChange={(e) => onResolutionTypeChange(e.target.value)}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+            >
+              <option value="">Select resolution type…</option>
+              {Object.entries(DISPUTE_RESOLUTION_TYPES).map(([key, label]) => (
+                <option key={key} value={key}>{label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+              Resolution Remark *
+            </label>
+            <textarea
+              value={remark}
+              onChange={(e) => onRemarkChange(e.target.value)}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 outline-none transition-all min-h-[90px]"
+              placeholder="Explain how the discrepancy was settled or credited…"
+            />
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2.5 mt-6 pt-4 border-t border-slate-100">
           <button
             type="button"
             onClick={onCancel}
             disabled={busy}
-            className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs font-medium bg-white hover:bg-slate-50 disabled:opacity-50"
+            className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50"
           >
             Cancel
           </button>
@@ -137,10 +166,10 @@ function ResolveDisputeModal({ resolutionType, remark, onResolutionTypeChange, o
             type="button"
             onClick={onConfirm}
             disabled={busy || !resolutionType || !remark.trim()}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700 shadow-sm transition-all disabled:opacity-50"
           >
             {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
-            Resolve
+            Confirm Resolution
           </button>
         </div>
       </div>
@@ -198,6 +227,9 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
   const [savingTicketId, setSavingTicketId] = useState(null)
   const [resolveModal, setResolveModal] = useState({ open: false, disputeId: null, resolutionType: '', remark: '' })
   const [resolvingDispute, setResolvingDispute] = useState(false)
+  const [panelOpen, setPanelOpen] = useState(true)
+  const [showAssignDropdown, setShowAssignDropdown] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
 
   const isElevated = user?.role === 'admin' || user?.role === 'organization_head'
   const canAssign = isElevated || user?.permissions?.consignments === true
@@ -237,6 +269,7 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
   const plannedQty = Number(consignment?.totalRequiredQty) || 0
   const packedQty = Number(consignment?.totalPackedQty) || 0
   const shortQty = Math.max(0, plannedQty - packedQty)
+
   const invoiceDocs = (consignment?.documents || []).filter((d) => {
     const purpose = String(d.purpose || d.description || '').toLowerCase()
     return purpose.includes('invoice') || d.id === consignment?.invoiceDocumentId
@@ -259,7 +292,8 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
     try {
       const res = await workflowAPI.assignGroundTeam(consignment.id, { userId: selectedUserId })
       onUpdated?.(res.data.consignment)
-      addToast('Team member assigned', 'success')
+      setShowAssignDropdown(false)
+      addToast('Team member assigned successfully', 'success')
     } catch (e) {
       addToast(e.response?.data?.error || 'Assign failed', 'error')
     } finally {
@@ -398,477 +432,641 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
     }
   }
 
-  const renderStageForm = (stage) => {
-    if (stage === 'packing_completed') {
-      const f = forms.packing_completed
-      return (
-        <div className="w-full mt-2 grid sm:grid-cols-2 gap-2">
-          <div className="text-[11px] text-slate-600 sm:col-span-2">
-            Planned: <strong>{plannedQty}</strong> · Packed: <strong>{packedQty}</strong>
-            {shortQty > 0 ? <> · Short: <strong className="text-amber-700">{shortQty}</strong></> : null}
-          </div>
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Actual packed qty
-            <input
-              type="number"
-              min="0"
-              value={f.actualPackedQty}
-              onChange={(e) => updateForm('packing_completed', { actualPackedQty: e.target.value })}
-              className="inp text-xs w-full mt-1"
-            />
-          </label>
-          <label className="flex items-center gap-2 text-[11px] text-slate-700 mt-5">
-            <input
-              type="checkbox"
-              checked={Boolean(f.allowShortPack)}
-              onChange={(e) => updateForm('packing_completed', { allowShortPack: e.target.checked })}
-            />
-            Confirm short packing (dispatch available qty)
-          </label>
-          {f.allowShortPack && (
-            <label className="block text-[10px] font-semibold uppercase text-slate-500 sm:col-span-2">
-              Reason for short quantity
-              <textarea
-                value={f.shortReason}
-                onChange={(e) => updateForm('packing_completed', { shortReason: e.target.value })}
-                className="inp text-xs w-full mt-1 min-h-[56px]"
-                placeholder="Required when packed qty is below planned"
-              />
-            </label>
-          )}
-        </div>
-      )
-    }
+  // Active stage determination
+  const activeStage = nextStage || (isArchived ? 'archived' : null)
+  const canConfirmActive = activeStage ? userCanConfirmStageClient(user, activeStage, consignment) : false
+  const isActiveAuto = activeStage ? AUTO_STAGES.has(activeStage) : false
 
-    if (stage === 'invoice_created') {
-      const f = forms.invoice_created
-      return (
-        <div className="w-full mt-2 grid sm:grid-cols-2 gap-2">
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Invoice number *
-            <input
-              type="text"
-              value={f.invoiceNumber}
-              onChange={(e) => updateForm('invoice_created', { invoiceNumber: e.target.value })}
-              className="inp text-xs w-full mt-1"
-              required
-            />
-          </label>
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Invoice date *
-            <input
-              type="date"
-              value={f.invoiceDate}
-              onChange={(e) => updateForm('invoice_created', { invoiceDate: e.target.value })}
-              className="inp text-xs w-full mt-1"
-              required
-            />
-          </label>
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Invoice amount *
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={f.invoiceAmount}
-              onChange={(e) => updateForm('invoice_created', { invoiceAmount: e.target.value })}
-              className="inp text-xs w-full mt-1"
-              required
-            />
-          </label>
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Invoice document (optional)
-            <select
-              value={f.invoiceDocumentId}
-              onChange={(e) => updateForm('invoice_created', { invoiceDocumentId: e.target.value })}
-              className="inp text-xs w-full mt-1"
-            >
-              <option value="">No document</option>
-              {(invoiceDocs.length ? invoiceDocs : (consignment?.documents || [])).map((d) => (
-                <option key={d.id} value={d.id}>{d.originalName || d.id}</option>
-              ))}
-            </select>
-          </label>
-          <p className="text-[10px] text-slate-500 sm:col-span-2">
-            Number, date, and amount are required. Document upload is optional and can be attached later from Documents.
-          </p>
-        </div>
-      )
-    }
-
-    if (stage === 'dispatched') {
-      const f = forms.dispatched
-      return (
-        <div className="w-full mt-2 grid sm:grid-cols-2 gap-2">
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Docket ID
-            <input
-              type="text"
-              value={f.docketNo}
-              onChange={(e) => updateForm('dispatched', { docketNo: e.target.value })}
-              className="inp text-xs w-full mt-1"
-            />
-          </label>
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Courier / transport
-            <select
-              value={f.docketCompany}
-              onChange={(e) => updateForm('dispatched', { docketCompany: e.target.value })}
-              className="inp text-xs w-full mt-1"
-            >
-              <option value="">Select courier…</option>
-              {couriers.map((c) => (
-                <option key={c.id || c.name} value={c.name || c.companyName || c.id}>
-                  {c.name || c.companyName}
-                </option>
-              ))}
-            </select>
-          </label>
-          {!couriers.length && (
-            <label className="block text-[10px] font-semibold uppercase text-slate-500 sm:col-span-2">
-              Courier name
-              <input
-                type="text"
-                value={f.docketCompany}
-                onChange={(e) => updateForm('dispatched', { docketCompany: e.target.value })}
-                className="inp text-xs w-full mt-1"
-              />
-            </label>
-          )}
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Dispatch date
-            <input
-              type="date"
-              value={f.dispatchDate}
-              onChange={(e) => updateForm('dispatched', { dispatchDate: e.target.value })}
-              className="inp text-xs w-full mt-1"
-            />
-          </label>
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Number of boxes
-            <input
-              type="number"
-              min="0"
-              value={f.boxCount}
-              onChange={(e) => updateForm('dispatched', { boxCount: e.target.value })}
-              className="inp text-xs w-full mt-1"
-            />
-          </label>
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Dispatched quantity
-            <input
-              type="number"
-              min="0"
-              value={f.dispatchedQty}
-              onChange={(e) => updateForm('dispatched', { dispatchedQty: e.target.value })}
-              className="inp text-xs w-full mt-1"
-            />
-          </label>
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Docket document (optional)
-            <select
-              value={f.docketDocumentId}
-              onChange={(e) => updateForm('dispatched', { docketDocumentId: e.target.value })}
-              className="inp text-xs w-full mt-1"
-            >
-              <option value="">None</option>
-              {(docketDocs.length ? docketDocs : (consignment?.documents || [])).map((d) => (
-                <option key={d.id} value={d.id}>{d.originalName || d.id}</option>
-              ))}
-            </select>
-          </label>
-        </div>
-      )
-    }
-
-    if (stage === 'inward_completed') {
-      const f = forms.inward_completed
-      const dispatched = Number(consignment?.dispatchDetails?.dispatchedQty || consignment?.totalPackedQty) || 0
-      const inwardQtyNum = f.inwardQty !== '' ? Number(f.inwardQty) : null
-      const variance = inwardQtyNum != null && dispatched > 0 ? inwardQtyNum - dispatched : 0
-      return (
-        <div className="w-full mt-2 grid sm:grid-cols-2 gap-2">
-          <div className="text-[11px] text-slate-600 sm:col-span-2">
-            Dispatched qty: <strong>{dispatched}</strong>
-          </div>
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Inward received qty
-            <input
-              type="number"
-              min="0"
-              value={f.inwardQty}
-              onChange={(e) => updateForm('inward_completed', { inwardQty: e.target.value })}
-              className="inp text-xs w-full mt-1"
-            />
-          </label>
-          <label className="block text-[10px] font-semibold uppercase text-slate-500">
-            Inward date
-            <input
-              type="date"
-              value={f.inwardDate}
-              onChange={(e) => updateForm('inward_completed', { inwardDate: e.target.value })}
-              className="inp text-xs w-full mt-1"
-            />
-          </label>
-          {variance !== 0 && (
-            <div className="sm:col-span-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
-              <strong>{variance < 0 ? `Short by ${Math.abs(variance)}` : `Excess by ${variance}`}.</strong>{' '}
-              Confirming with this qty will open a tracked inward dispute instead of archiving — the consignment stays
-              open until a marketplace ticket is raised and the dispute is resolved with a resolution type + remark.
-            </div>
-          )}
-          <label className="block text-[10px] font-semibold uppercase text-slate-500 sm:col-span-2">
-            Variance / dispute reason {variance !== 0 ? '(required — qty differs)' : '(if qty differs)'}
-            <textarea
-              value={f.inwardVarianceReason}
-              onChange={(e) => updateForm('inward_completed', { inwardVarianceReason: e.target.value })}
-              className="inp text-xs w-full mt-1 min-h-[56px]"
-            />
-          </label>
-          <label className="block text-[10px] font-semibold uppercase text-slate-500 sm:col-span-2">
-            Dispute / issue details (optional extra context)
-            <textarea
-              value={f.disputeDetails}
-              onChange={(e) => updateForm('inward_completed', { disputeDetails: e.target.value })}
-              className="inp text-xs w-full mt-1 min-h-[48px]"
-            />
-          </label>
-        </div>
-      )
-    }
-
-    return null
-  }
+  // Completed stages list for history audit
+  const completedStages = STAGE_ORDER.filter((s) => Boolean(confirmations[s]?.confirmedAt))
 
   return (
     <>
-    <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 lg:p-5 mb-6">
-      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-        <div>
-          <h2 className="text-sm font-bold text-slate-900">Operational workflow</h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Stages advance by department. Packing completed auto-assigns Invoice Creation; invoice completed unlocks dispatch; inward verification archives the consignment — unless inward qty doesn't match, which opens a dispute and holds the consignment out of Archive until it's resolved.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-semibold border ${WORKFLOW_BUCKET_CLASS[bucket] || WORKFLOW_BUCKET_CLASS.active}`}>
-            {WORKFLOW_BUCKET_LABELS[bucket] || bucket}
-          </span>
-          {consignment?.assignedDepartmentLabel && (
-            <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-              {consignment.assignedDepartmentLabel}
-            </span>
-          )}
-          {consignment?.isEscalated && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-800">
-              <AlertTriangle className="w-3 h-3" /> Escalated
-            </span>
-          )}
-          {consignment?.isTatOverdue && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-900">
-              <Clock className="w-3 h-3" /> TAT overdue
-            </span>
-          )}
-          {openDisputes.length > 0 && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-800">
-              <AlertTriangle className="w-3 h-3" /> {openDisputes.length > 1 ? `${openDisputes.length} disputes open` : 'Dispute open'}
-            </span>
-          )}
-          {isArchived && (
-            <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-200 text-slate-700">
-              Archived
-            </span>
-          )}
-        </div>
-      </div>
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs mb-8 overflow-hidden transition-all">
+        {/* Header Bar */}
+        <div className="px-5 py-4 bg-gradient-to-r from-slate-50 via-white to-slate-50/50 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-xl bg-primary-50 text-primary-600">
+              <PackageCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-bold text-slate-900 tracking-tight">Shipment Lifecycle & Handoff</h2>
+                <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${WORKFLOW_BUCKET_CLASS[bucket] || WORKFLOW_BUCKET_CLASS.active}`}>
+                  {WORKFLOW_BUCKET_LABELS[bucket] || bucket}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {isArchived
+                  ? 'All verification stages completed and archived.'
+                  : `Current stage: ${STAGE_LABELS[activeStage] || activeStage || 'In Progress'}`}
+              </p>
+            </div>
+          </div>
 
-      {inwardDisputes.length > 0 && (
-        <div className="mb-4 rounded-xl border border-red-200 bg-red-50/40 overflow-hidden">
-          <div className="px-4 py-3 border-b border-red-100 bg-red-50 flex flex-wrap items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0" />
-            <h3 className="text-sm font-bold text-red-900">Inward Dispute{inwardDisputes.length > 1 ? 's' : ''}</h3>
-            {openDisputes.length > 0 ? (
-              <span className="text-[10px] font-semibold uppercase tracking-wide bg-red-600 text-white px-2 py-0.5 rounded-full">
-                {openDisputes.length} open
-              </span>
-            ) : (
-              <span className="text-[10px] font-semibold uppercase tracking-wide bg-emerald-600 text-white px-2 py-0.5 rounded-full">
-                All resolved
+          <div className="flex items-center gap-2">
+            {consignment?.isEscalated && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-red-100 text-red-800 border border-red-200">
+                <AlertTriangle className="w-3.5 h-3.5" /> Escalated
               </span>
             )}
-          </div>
-          {openDisputes.length > 0 && (
-            <p className="px-4 pt-3 text-[11px] text-red-800">
-              This consignment cannot move to Archive / Records until every dispute below is resolved with a resolution type and remark.
-              {!canActOnDispute ? ' Only the Inward Tracking Team / management can raise a ticket or resolve it.' : ''}
-            </p>
-          )}
-          <div className="p-4 space-y-3">
-            {inwardDisputes.map((d) => (
-              <DisputeRow
-                key={d.id}
-                dispute={d}
-                canAct={canActOnDispute}
-                ticketDraft={ticketDrafts[d.id]}
-                onTicketDraftChange={(value) => setTicketDrafts((prev) => ({ ...prev, [d.id]: value }))}
-                onSaveTicket={() => handleSaveTicket(d.id)}
-                savingTicket={savingTicketId === d.id}
-                onOpenResolve={() => openResolveModal(d.id)}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {isElevated && (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-2">
-          <div className="text-[11px] text-slate-600 min-w-0">
-            <span className="font-semibold text-slate-800">TaskFlow Pro</span>
-            {consignment?.taskflow?.trackingNumber
-              ? <> · {consignment.taskflow.trackingNumber}</>
-              : consignment?.taskflow?.workflowId
-                ? <> · linked</>
-                : <> · not linked yet</>}
-            {consignment?.taskflow?.lastError
-              ? <span className="text-amber-700"> · last sync error</span>
-              : null}
-          </div>
-          <button
-            type="button"
-            onClick={handleTaskflowResync}
-            disabled={resyncingTaskflow}
-            className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-          >
-            {resyncingTaskflow ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-            Resync to TaskFlow
-          </button>
-        </div>
-      )}
-
-      <div className="grid sm:grid-cols-2 gap-3 mb-4 text-xs">
-        <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
-          <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">Assigned to</div>
-          <div className="font-semibold text-slate-900 mt-1">{consignment?.groundTeamName || 'Unassigned'}</div>
-          {consignment?.groundTeamEmail && (
-            <div className="text-slate-500 mt-0.5">{consignment.groundTeamEmail}</div>
-          )}
-          {consignment?.assignedDepartmentLabel && (
-            <div className="text-slate-500 mt-0.5">Dept: {consignment.assignedDepartmentLabel}</div>
-          )}
-        </div>
-        <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
-          <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">Pending action</div>
-          <div className="font-semibold text-amber-800 mt-1">{consignment?.pendingAction || 'None'}</div>
-          {consignment?.packingCompletion?.shortQty > 0 && (
-            <div className="text-slate-500 mt-0.5">
-              Short pack: {consignment.packingCompletion.shortQty} ({consignment.packingCompletion.shortReason || '—'})
-            </div>
-          )}
-        </div>
-      </div>
-
-      {canAssign && !isArchived && (
-        <div className="flex flex-wrap items-end gap-2 mb-4 pb-4 border-b border-slate-100">
-          <div className="flex-1 min-w-[180px]">
-            <label className="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Manual override assignee</label>
-            <select
-              value={selectedUserId}
-              onChange={(e) => setSelectedUserId(e.target.value)}
-              className="inp text-xs w-full"
+            {consignment?.isTatOverdue && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-200">
+                <Clock className="w-3.5 h-3.5" /> TAT Overdue
+              </span>
+            )}
+            {openDisputes.length > 0 && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-red-600 text-white shadow-xs">
+                <AlertTriangle className="w-3.5 h-3.5" /> {openDisputes.length} Dispute{openDisputes.length > 1 ? 's' : ''} Open
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => setPanelOpen((o) => !o)}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors ml-1"
+              title={panelOpen ? 'Collapse Workflow' : 'Expand Workflow'}
             >
-              <option value="">Select person…</option>
-              {assignees.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name} ({u.email}){(u.departmentLabels?.length
-                    ? ` · ${u.departmentLabels.join(', ')}`
-                    : (u.departmentLabel ? ` · ${u.departmentLabel}` : ''))}
-                </option>
-              ))}
-            </select>
+              {panelOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={handleAssign}
-            disabled={assigning || !selectedUserId}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary-600 text-white text-xs font-semibold disabled:opacity-50"
-          >
-            {assigning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />}
-            Assign
-          </button>
         </div>
-      )}
 
-      <ol className="space-y-2">
-        {STAGE_ORDER.map((stage) => {
-          const conf = confirmations[stage]
-          const done = Boolean(conf?.confirmedAt)
-          const isNext = nextStage === stage && !isArchived
-          const canConfirm = userCanConfirmStageClient(user, stage, consignment)
-          const isAuto = AUTO_STAGES.has(stage)
-          return (
-            <li
-              key={stage}
-              className={`rounded-lg border px-3 py-2 text-xs ${
-                done ? 'border-emerald-200 bg-emerald-50/50' : isNext ? 'border-primary-200 bg-primary-50/40' : 'border-slate-100 bg-white'
-              }`}
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  {done ? (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-                  ) : (
-                    <span className={`w-4 h-4 rounded-full border-2 flex-shrink-0 ${isNext ? 'border-primary-500' : 'border-slate-300'}`} />
-                  )}
-                  <div className="min-w-0">
-                    <div className="font-semibold text-slate-800">
-                      {STAGE_LABELS[stage]}
-                      {isAuto && !done && (
-                        <span className="ml-1.5 text-[10px] font-medium text-slate-400">(auto)</span>
-                      )}
-                    </div>
-                    {done && (
-                      <div className="text-slate-500 truncate">
-                        {conf.confirmedByName || 'Confirmed'} · {conf.confirmedAt ? new Date(conf.confirmedAt).toLocaleString() : ''}
-                        {conf.details?.shortQty > 0 ? ` · short ${conf.details.shortQty}` : ''}
-                        {conf.details?.invoiceNumber ? ` · inv ${conf.details.invoiceNumber}` : ''}
-                        {conf.details?.docketNo ? ` · docket ${conf.details.docketNo}` : ''}
-                        {conf.details?.receivedQty != null ? ` · inward ${conf.details.receivedQty}` : ''}
+        {panelOpen && (
+          <div className="p-5 lg:p-6 space-y-6">
+            {/* Visual Stepper / Progress Timeline */}
+            <div className="relative">
+              <div className="hidden sm:block absolute top-5 left-8 right-8 h-0.5 bg-slate-100 -z-0" />
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 relative z-10">
+                {MILESTONES.map((m, idx) => {
+                  const isDone = Boolean(confirmations[m.key]?.confirmedAt) || (m.key === 'archived' && isArchived)
+                  const isCurrent = (activeStage === m.key || (m.key === 'invoice_created' && activeStage === 'ready_for_invoice') || (m.key === 'dispatched' && activeStage === 'ready_for_dispatch')) && !isArchived
+                  const Icon = m.icon
+                  const conf = confirmations[m.key]
+
+                  return (
+                    <div
+                      key={m.key}
+                      className={`flex flex-col items-center text-center p-3 rounded-xl border transition-all ${
+                        isDone
+                          ? 'bg-emerald-50/40 border-emerald-200'
+                          : isCurrent
+                            ? 'bg-primary-50/50 border-primary-300 ring-2 ring-primary-100 shadow-sm'
+                            : 'bg-white border-slate-100 opacity-60'
+                      }`}
+                    >
+                      <div
+                        className={`w-9 h-9 rounded-full flex items-center justify-center mb-2 transition-all ${
+                          isDone
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : isCurrent
+                              ? 'bg-primary-600 text-white shadow-md animate-pulse'
+                              : 'bg-slate-100 text-slate-400 border border-slate-200'
+                        }`}
+                      >
+                        {isDone ? <Check className="w-4 h-4 stroke-[3]" /> : <Icon className="w-4 h-4" />}
                       </div>
+                      <span className={`text-xs font-bold ${isDone ? 'text-emerald-900' : isCurrent ? 'text-primary-900' : 'text-slate-600'}`}>
+                        {idx + 1}. {m.title}
+                      </span>
+                      <span className="text-[10px] text-slate-400 mt-0.5 hidden sm:block truncate max-w-full">
+                        {isDone
+                          ? (conf?.confirmedAt ? new Date(conf.confirmedAt).toLocaleDateString() : 'Completed')
+                          : isCurrent
+                            ? 'Active Stage'
+                            : 'Pending'}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Inward Disputes Alert Card (if any exist) */}
+            {inwardDisputes.length > 0 && (
+              <div className="rounded-2xl border border-red-200 bg-red-50/30 overflow-hidden shadow-xs">
+                <div className="px-5 py-3.5 bg-red-100/60 border-b border-red-200 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                    <h3 className="text-xs font-bold text-red-950 uppercase tracking-wide">
+                      Inward Discrepancy Tracking ({openDisputes.length} Open)
+                    </h3>
+                  </div>
+                  <span className="text-[11px] text-red-700 font-medium">
+                    Archive blocked until all disputes are resolved with marketplace case ID.
+                  </span>
+                </div>
+                <div className="p-4 space-y-3">
+                  {inwardDisputes.map((d) => (
+                    <DisputeRow
+                      key={d.id}
+                      dispute={d}
+                      canAct={canActOnDispute}
+                      ticketDraft={ticketDrafts[d.id]}
+                      onTicketDraftChange={(value) => setTicketDrafts((prev) => ({ ...prev, [d.id]: value }))}
+                      onSaveTicket={() => handleSaveTicket(d.id)}
+                      savingTicket={savingTicketId === d.id}
+                      onOpenResolve={() => openResolveModal(d.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Active Action Section */}
+            {!isArchived && activeStage && (
+              <div className="rounded-2xl border border-primary-200 bg-gradient-to-b from-primary-50/30 to-white p-5 lg:p-6 shadow-xs">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-4 pb-3 border-b border-primary-100/60">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-2.5 h-2.5 rounded-full bg-primary-600 animate-ping" />
+                    <h3 className="text-sm font-bold text-slate-900">
+                      Action Required: {STAGE_LABELS[activeStage]}
+                    </h3>
+                    {isActiveAuto && (
+                      <span className="text-[10px] font-semibold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
+                        System Ready
+                      </span>
                     )}
                   </div>
+                  <div className="text-xs text-slate-500">
+                    Pending Department: <strong className="text-slate-800">{consignment?.assignedDepartmentLabel || 'Assigned Team'}</strong>
+                  </div>
                 </div>
-                {!done && isNext && canConfirm && (
-                  <button
-                    type="button"
-                    onClick={() => handleConfirm(stage)}
-                    disabled={busyStage === stage}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-slate-900 text-white text-[11px] font-semibold disabled:opacity-50"
-                  >
-                    {busyStage === stage ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                    {isAuto ? 'Advance' : 'Confirm'}
-                  </button>
-                )}
-                {!done && isNext && !canConfirm && (
-                  <span className="text-[10px] text-slate-500">Awaiting department confirmation</span>
+
+                {/* Form Body for Current Stage */}
+                {canConfirmActive ? (
+                  <div className="space-y-4">
+                    {/* Stage 1: packing_completed */}
+                    {activeStage === 'packing_completed' && (
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="bg-white p-3 rounded-xl border border-slate-200">
+                            <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Planned Units</span>
+                            <span className="text-base font-bold text-slate-900">{plannedQty}</span>
+                          </div>
+                          <div className="bg-white p-3 rounded-xl border border-slate-200">
+                            <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Actual Packed</span>
+                            <span className="text-base font-bold text-emerald-600">{packedQty}</span>
+                          </div>
+                          <div className="bg-white p-3 rounded-xl border border-slate-200">
+                            <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Shortage</span>
+                            <span className={`text-base font-bold ${shortQty > 0 ? 'text-amber-600' : 'text-slate-400'}`}>
+                              {shortQty > 0 ? shortQty : '0'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="grid sm:grid-cols-2 gap-4 bg-white p-4 rounded-xl border border-slate-100">
+                          <div>
+                            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                              Confirmed Packed Quantity *
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={forms.packing_completed.actualPackedQty}
+                              onChange={(e) => updateForm('packing_completed', { actualPackedQty: e.target.value })}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none transition-all"
+                            />
+                          </div>
+
+                          <div className="flex items-center pt-5">
+                            <label className="flex items-center gap-2.5 text-xs text-slate-700 cursor-pointer select-none">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(forms.packing_completed.allowShortPack)}
+                                onChange={(e) => updateForm('packing_completed', { allowShortPack: e.target.checked })}
+                                className="w-4 h-4 rounded text-primary-600 focus:ring-primary-500 border-slate-300"
+                              />
+                              <span className="font-medium">Confirm short packing (dispatch available units)</span>
+                            </label>
+                          </div>
+
+                          {forms.packing_completed.allowShortPack && (
+                            <div className="sm:col-span-2">
+                              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                                Reason for Short Quantity *
+                              </label>
+                              <textarea
+                                value={forms.packing_completed.shortReason}
+                                onChange={(e) => updateForm('packing_completed', { shortReason: e.target.value })}
+                                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none transition-all min-h-[60px]"
+                                placeholder="State reason for missing/short items (e.g. out of stock, damaged units in QA)..."
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Stage 2: ready_for_invoice (auto) */}
+                    {activeStage === 'ready_for_invoice' && (
+                      <div className="p-4 rounded-xl bg-white border border-slate-200 text-xs text-slate-600">
+                        Packing is finalized. Click below to verify and advance to invoice generation.
+                      </div>
+                    )}
+
+                    {/* Stage 3: invoice_created */}
+                    {activeStage === 'invoice_created' && (
+                      <div className="grid sm:grid-cols-3 gap-3 bg-white p-4 rounded-xl border border-slate-100">
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                            Forward Invoice No *
+                          </label>
+                          <input
+                            type="text"
+                            value={forms.invoice_created.invoiceNumber}
+                            onChange={(e) => updateForm('invoice_created', { invoiceNumber: e.target.value })}
+                            placeholder="e.g. INV-2026-9041"
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                            required
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                            Invoice Date *
+                          </label>
+                          <input
+                            type="date"
+                            value={forms.invoice_created.invoiceDate}
+                            onChange={(e) => updateForm('invoice_created', { invoiceDate: e.target.value })}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                            required
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                            Invoice Amount (₹) *
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={forms.invoice_created.invoiceAmount}
+                            onChange={(e) => updateForm('invoice_created', { invoiceAmount: e.target.value })}
+                            placeholder="0.00"
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                            required
+                          />
+                        </div>
+                        <div className="sm:col-span-3">
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                            Attach Invoice Document (Optional)
+                          </label>
+                          <select
+                            value={forms.invoice_created.invoiceDocumentId}
+                            onChange={(e) => updateForm('invoice_created', { invoiceDocumentId: e.target.value })}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                          >
+                            <option value="">No document attached (can attach later in Documents tab)</option>
+                            {(invoiceDocs.length ? invoiceDocs : (consignment?.documents || [])).map((d) => (
+                              <option key={d.id} value={d.id}>{d.originalName || d.id}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Stage 4: ready_for_dispatch (auto) */}
+                    {activeStage === 'ready_for_dispatch' && (
+                      <div className="p-4 rounded-xl bg-white border border-slate-200 text-xs text-slate-600">
+                        Invoice confirmed. Shipment is cleared for dispatch handover. Click below to proceed to courier logging.
+                      </div>
+                    )}
+
+                    {/* Stage 5: dispatched */}
+                    {activeStage === 'dispatched' && (
+                      <div className="grid sm:grid-cols-3 gap-3 bg-white p-4 rounded-xl border border-slate-100">
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                            Docket / AWB No *
+                          </label>
+                          <input
+                            type="text"
+                            value={forms.dispatched.docketNo}
+                            onChange={(e) => updateForm('dispatched', { docketNo: e.target.value })}
+                            placeholder="e.g. 192837465"
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                            Courier Partner *
+                          </label>
+                          <select
+                            value={forms.dispatched.docketCompany}
+                            onChange={(e) => updateForm('dispatched', { docketCompany: e.target.value })}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                          >
+                            <option value="">Select courier partner…</option>
+                            {couriers.map((c) => (
+                              <option key={c.id || c.name} value={c.name || c.companyName || c.id}>
+                                {c.name || c.companyName}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                            Dispatch Date
+                          </label>
+                          <input
+                            type="date"
+                            value={forms.dispatched.dispatchDate}
+                            onChange={(e) => updateForm('dispatched', { dispatchDate: e.target.value })}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                            Box Count
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={forms.dispatched.boxCount}
+                            onChange={(e) => updateForm('dispatched', { boxCount: e.target.value })}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                            Dispatched Units
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={forms.dispatched.dispatchedQty}
+                            onChange={(e) => updateForm('dispatched', { dispatchedQty: e.target.value })}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                            Docket Document
+                          </label>
+                          <select
+                            value={forms.dispatched.docketDocumentId}
+                            onChange={(e) => updateForm('dispatched', { docketDocumentId: e.target.value })}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                          >
+                            <option value="">None attached</option>
+                            {(docketDocs.length ? docketDocs : (consignment?.documents || [])).map((d) => (
+                              <option key={d.id} value={d.id}>{d.originalName || d.id}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Stage 6: inward_completed */}
+                    {activeStage === 'inward_completed' && (() => {
+                      const dispatched = Number(consignment?.dispatchDetails?.dispatchedQty || consignment?.totalPackedQty) || 0
+                      const inwardQtyNum = forms.inward_completed.inwardQty !== '' ? Number(forms.inward_completed.inwardQty) : null
+                      const variance = inwardQtyNum != null && dispatched > 0 ? inwardQtyNum - dispatched : 0
+                      return (
+                        <div className="space-y-4 bg-white p-4 rounded-xl border border-slate-100">
+                          <div className="grid sm:grid-cols-2 gap-3">
+                            <div>
+                              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                                Inward Received Quantity (Dispatched: {dispatched})
+                              </label>
+                              <input
+                                type="number"
+                                min="0"
+                                value={forms.inward_completed.inwardQty}
+                                onChange={(e) => updateForm('inward_completed', { inwardQty: e.target.value })}
+                                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                                Inward Date
+                              </label>
+                              <input
+                                type="date"
+                                value={forms.inward_completed.inwardDate}
+                                onChange={(e) => updateForm('inward_completed', { inwardDate: e.target.value })}
+                                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none"
+                              />
+                            </div>
+                          </div>
+
+                          {variance !== 0 && (
+                            <div className="p-3.5 rounded-xl border border-amber-200 bg-amber-50 text-xs text-amber-900 space-y-1">
+                              <div className="font-bold flex items-center gap-1.5">
+                                <AlertTriangle className="w-4 h-4 text-amber-600" />
+                                <span>Quantity Discrepancy: {variance < 0 ? `Short by ${Math.abs(variance)} units` : `Excess by ${variance} units`}</span>
+                              </div>
+                              <p className="text-[11px] text-amber-800 leading-relaxed">
+                                Confirming will automatically raise a tracked inward dispute. The consignment will not move to Archive until a marketplace case ticket is registered and resolved.
+                              </p>
+                            </div>
+                          )}
+
+                          <div>
+                            <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                              Variance / Dispute Reason {variance !== 0 ? '*' : '(Optional)'}
+                            </label>
+                            <textarea
+                              value={forms.inward_completed.inwardVarianceReason}
+                              onChange={(e) => updateForm('inward_completed', { inwardVarianceReason: e.target.value })}
+                              placeholder="Reason for discrepancy (damaged in transit, warehouse physical count mismatch)..."
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-primary-500 outline-none min-h-[60px]"
+                            />
+                          </div>
+                        </div>
+                      )
+                    })()}
+
+                    {/* Primary Confirmation Button */}
+                    <div className="flex items-center justify-between pt-2">
+                      <span className="text-[11px] text-slate-400">
+                        {isActiveAuto ? 'No input required.' : 'Verify input values before confirming.'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleConfirm(activeStage)}
+                        disabled={busyStage === activeStage}
+                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow-md hover:shadow-lg transition-all disabled:opacity-50"
+                      >
+                        {busyStage === activeStage ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>Confirming Stage…</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>{isActiveAuto ? 'Advance to Next Stage' : `Confirm & Advance Stage`}</span>
+                            <ArrowRight className="w-4 h-4" />
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-2 text-slate-600">
+                      <Info className="w-4 h-4 text-slate-400 shrink-0" />
+                      <span>
+                        Awaiting confirmation from <strong>{consignment?.assignedDepartmentLabel || 'assigned department team'}</strong>.
+                      </span>
+                    </div>
+                    {canAssign && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAssignDropdown(true)}
+                        className="text-xs font-bold text-primary-600 hover:text-primary-700 underline"
+                      >
+                        Reassign Team
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
-              {!done && isNext && canConfirm && !isAuto && renderStageForm(stage)}
-            </li>
-          )
-        })}
-      </ol>
-    </div>
-    {resolveModal.open && (
-      <ResolveDisputeModal
-        resolutionType={resolveModal.resolutionType}
-        remark={resolveModal.remark}
-        onResolutionTypeChange={(value) => setResolveModal((prev) => ({ ...prev, resolutionType: value }))}
-        onRemarkChange={(value) => setResolveModal((prev) => ({ ...prev, remark: value }))}
-        onCancel={() => setResolveModal({ open: false, disputeId: null, resolutionType: '', remark: '' })}
-        onConfirm={handleResolveDispute}
-        busy={resolvingDispute}
-      />
-    )}
+            )}
+
+            {/* If Archived: Celebration Banner */}
+            {isArchived && (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-5 text-center flex flex-col items-center justify-center">
+                <div className="w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center mb-2 shadow-xs">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+                <h3 className="text-sm font-bold text-emerald-950">Shipment Fully Verified & Archived</h3>
+                <p className="text-xs text-emerald-700 mt-1">All packaging, invoice, logistics, and inward stages have successfully completed.</p>
+              </div>
+            )}
+
+            {/* Completed Stages History Accordion */}
+            {completedStages.length > 0 && (
+              <div className="rounded-xl border border-slate-100 bg-slate-50/50 overflow-hidden text-xs">
+                <button
+                  type="button"
+                  onClick={() => setShowHistory((h) => !h)}
+                  className="w-full px-4 py-3 flex items-center justify-between text-left font-semibold text-slate-700 hover:bg-slate-100/60 transition-colors"
+                >
+                  <span className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>View Completed Stage Verification Audit ({completedStages.length})</span>
+                  </span>
+                  {showHistory ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+                </button>
+                {showHistory && (
+                  <div className="p-4 pt-2 divide-y divide-slate-200/60 space-y-3">
+                    {completedStages.map((stage) => {
+                      const conf = confirmations[stage]
+                      return (
+                        <div key={stage} className="pt-2.5 flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <span className="font-bold text-slate-800">{STAGE_LABELS[stage] || stage}</span>
+                            <div className="text-slate-500 text-[11px] mt-0.5">
+                              Confirmed by {conf.confirmedByName || 'Authorized User'} · {conf.confirmedAt ? new Date(conf.confirmedAt).toLocaleString() : ''}
+                              {conf.details?.shortQty > 0 && <span className="text-amber-700 font-semibold"> · Short: {conf.details.shortQty}</span>}
+                              {conf.details?.invoiceNumber && <span> · Inv: #{conf.details.invoiceNumber}</span>}
+                              {conf.details?.docketNo && <span> · Docket: {conf.details.docketNo}</span>}
+                              {conf.details?.receivedQty != null && <span> · Inward: {conf.details.receivedQty}</span>}
+                            </div>
+                          </div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-full">
+                            Verified
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Bottom Team & TaskFlow Toolbar */}
+            <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center font-bold text-xs">
+                  <User className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <span className="text-slate-400 text-[11px] block">Assigned Operator</span>
+                  <span className="font-bold text-slate-800">{consignment?.groundTeamName || 'Unassigned'}</span>
+                  {consignment?.assignedDepartmentLabel && (
+                    <span className="text-slate-400 text-[11px] ml-1.5">({consignment.assignedDepartmentLabel})</span>
+                  )}
+                </div>
+                {canAssign && !isArchived && !showAssignDropdown && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAssignDropdown(true)}
+                    className="ml-2 text-xs font-semibold text-primary-600 hover:text-primary-700 hover:underline"
+                  >
+                    Change
+                  </button>
+                )}
+              </div>
+
+              {/* Inline Assignee Selector when toggled */}
+              {canAssign && !isArchived && showAssignDropdown && (
+                <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
+                  <select
+                    value={selectedUserId}
+                    onChange={(e) => setSelectedUserId(e.target.value)}
+                    className="px-2.5 py-1 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-800 outline-none"
+                  >
+                    <option value="">Select team member…</option>
+                    {assignees.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name} ({u.email})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleAssign}
+                    disabled={assigning || !selectedUserId}
+                    className="px-3 py-1 bg-primary-600 text-white rounded-lg text-xs font-semibold hover:bg-primary-700 disabled:opacity-50"
+                  >
+                    {assigning ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Assign'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAssignDropdown(false)}
+                    className="px-2 py-1 text-slate-500 hover:text-slate-700 text-xs"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+
+              {/* TaskFlow Status & Resync */}
+              {isElevated && (
+                <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200/80">
+                  <span className="text-[11px] text-slate-500">
+                    TaskFlow: <strong className="text-slate-800">{consignment?.taskflow?.trackingNumber || 'Linked'}</strong>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleTaskflowResync}
+                    disabled={resyncingTaskflow}
+                    className="p-1 rounded-md text-slate-500 hover:text-slate-800 hover:bg-white transition-colors disabled:opacity-50"
+                    title="Resync to TaskFlow"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${resyncingTaskflow ? 'animate-spin text-primary-600' : ''}`} />
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {resolveModal.open && (
+        <ResolveDisputeModal
+          resolutionType={resolveModal.resolutionType}
+          remark={resolveModal.remark}
+          onResolutionTypeChange={(value) => setResolveModal((prev) => ({ ...prev, resolutionType: value }))}
+          onRemarkChange={(value) => setResolveModal((prev) => ({ ...prev, remark: value }))}
+          onCancel={() => setResolveModal({ open: false, disputeId: null, resolutionType: '', remark: '' })}
+          onConfirm={handleResolveDispute}
+          busy={resolvingDispute}
+        />
+      )}
     </>
   )
 }

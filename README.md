@@ -2,7 +2,9 @@
 
 A modern full-stack web application and offline-resilient desktop station for managing consignment packing operations. Built with React, Node.js, Express, PostgreSQL, Cloudflare R2, and Electron.
 
-> **TaskFlow Pro Project ID:** `9513898a-8338-4e3d-9f97-bfdc389f0466`  
+> **TaskFlow Pro Projects:**  
+> - Desktop App & Releases: `9513898a-8338-4e3d-9f97-bfdc389f0466`  
+> - Consignment Detail UX & Clarity Overhaul: `16f34976-652a-4d35-bdc1-c1dee936648a`  
 > **Official Desktop App Releases:** [GitHub Releases](https://github.com/pawanshukla500/consignment-youthnic/releases)
 
 ---

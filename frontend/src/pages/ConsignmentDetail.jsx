@@ -3,7 +3,8 @@ import { useParams, useNavigate, useSearchParams } from 'react-router';
 import {
   ArrowLeft, Package, Box, Video, FileText, Upload, AlertCircle,
   Trash2, Download, Loader2, FileSpreadsheet, CheckCircle2,
-  Copy, ExternalLink, Tag, ChevronDown, ChevronUp, Database, Scale, AlertTriangle, History, Pencil, UploadCloud
+  Copy, ExternalLink, Tag, ChevronDown, ChevronUp, Database, Scale, AlertTriangle, History, Pencil, UploadCloud,
+  PackageCheck
 } from 'lucide-react';
 import ConfirmModal from '../components/ConfirmModal';
 import {
@@ -1208,225 +1209,405 @@ const ConsignmentDetail = () => {
   };
 
   return (
-    <div className="animate-fade-in">
-      <div className="mb-8">
+    <div className="animate-fade-in space-y-6">
+      {/* Top Breadcrumb & Identifier */}
+      <div className="flex items-center justify-between">
         <button
           onClick={() => navigate('/consignments')}
-          className="flex items-center gap-2 text-slate-500 hover:text-slate-700 mb-4"
+          className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
         >
           <ArrowLeft className="w-4 h-4" />
-          Back to Consignments
+          <span>Back to Consignments</span>
         </button>
-        
-        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-3 mb-2">
-              <h1 className="text-3xl font-bold text-slate-900">{consignment.internalShipmentNo || consignment.id}</h1>
-              <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(consignment.status)}`}>
+        <span className="text-xs font-mono text-slate-400">
+          ID: {consignment.id}
+        </span>
+      </div>
+
+      {/* Hero Identity Banner */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-5 lg:p-6 transition-all">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+          <div className="space-y-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              {consignment.marketplace?.name && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-primary-50 text-primary-700 border border-primary-100">
+                  <Tag className="w-3.5 h-3.5" />
+                  {consignment.marketplace.name}
+                </span>
+              )}
+              <span className={`px-3 py-1 rounded-full text-xs font-bold ${getStatusColor(consignment.status)}`}>
                 {consignment.status?.replace('_', ' ')}
               </span>
-              <span className={`px-3 py-1 rounded-full text-xs font-medium ${consignment.shipmentStatus==='Planned'?'bg-slate-100 text-slate-700':consignment.shipmentStatus==='Under Packing'?'bg-orange-100 text-orange-800':consignment.shipmentStatus==='Ready'?'bg-emerald-100 text-emerald-800':consignment.shipmentStatus==='In Transit'||consignment.shipmentStatus==='Forwarded'?'bg-blue-100 text-blue-800':consignment.shipmentStatus==='Inwarded'?'bg-slate-200 text-slate-800':consignment.shipmentStatus==='Missed'?'bg-red-100 text-red-800':'bg-slate-100 text-slate-700'}`}>
+              <span className={`px-3 py-1 rounded-full text-xs font-bold ${consignment.shipmentStatus === 'Planned' ? 'bg-slate-100 text-slate-700' : consignment.shipmentStatus === 'Under Packing' ? 'bg-orange-100 text-orange-800' : consignment.shipmentStatus === 'Ready' ? 'bg-emerald-100 text-emerald-800' : consignment.shipmentStatus === 'In Transit' || consignment.shipmentStatus === 'Forwarded' ? 'bg-blue-100 text-blue-800' : consignment.shipmentStatus === 'Inwarded' ? 'bg-slate-200 text-slate-800' : consignment.shipmentStatus === 'Missed' ? 'bg-red-100 text-red-800' : 'bg-slate-100 text-slate-700'}`}>
                 {consignment.shipmentStatus || 'Planned'}
               </span>
               {(consignment.inwardDisputes || []).some((d) => d.status === 'open') && (
-                <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-800">
-                  <AlertTriangle className="w-3.5 h-3.5" /> Disputed / Inward Issue Pending
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-800 border border-red-200 animate-pulse">
+                  <AlertTriangle className="w-3.5 h-3.5" /> Inward Issue Pending
                 </span>
               )}
-              <CriticalityBadge priority={shipmentPriority} size="lg" />
+              <CriticalityBadge priority={shipmentPriority} size="md" />
             </div>
-            <div className="flex items-center gap-4 text-sm flex-wrap">
-              <p className="text-slate-500 font-mono">{consignment.id}</p>
+
+            <div className="flex flex-wrap items-baseline gap-3">
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
+                <span>{consignment.internalShipmentNo || consignment.id}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(consignment.internalShipmentNo || consignment.id);
+                    addToast('Copied ID to clipboard', 'info');
+                  }}
+                  className="p-1 text-slate-400 hover:text-slate-700 rounded-md transition-colors cursor-pointer"
+                  title="Copy Consignment ID"
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
+              </h1>
+              {consignment.warehouse && (
+                <span className="text-xs font-semibold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg">
+                  WH: {consignment.warehouse}
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
+              {consignment.shipmentNo && (
+                <span className="bg-slate-50 border border-slate-200 px-2 py-0.5 rounded text-[11px] font-semibold text-slate-700">
+                  Shipment Ref: {consignment.shipmentNo}
+                </span>
+              )}
               {consignment.pendingExternalId && (
-                <span className="text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded text-xs font-semibold">
-                  Pending official consignment ID
+                <span className="text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded text-[11px] font-semibold">
+                  Pending official ID
                 </span>
               )}
               {(consignment.pendingExternalId || user?.role === 'admin' || user?.role === 'organization_head') && (
                 <button
                   type="button"
                   onClick={() => { setShowReassignId(true); setNewConsignmentId(''); }}
-                  className="text-xs font-semibold text-primary-600 hover:text-primary-700 underline"
+                  className="font-bold text-primary-600 hover:text-primary-700 underline cursor-pointer"
                 >
-                  Assign official ID
+                  Assign Official ID
                 </button>
               )}
-              {consignment.shipmentNo && (
-                <p className="text-slate-700 bg-slate-100 px-2 py-0.5 rounded text-xs font-semibold">
-                  Shipment: {consignment.shipmentNo}
-                </p>
+              {consignment.pgEnabled === false && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-red-50 text-red-700 border border-red-200">
+                  <Database className="w-3 h-3" /> Legacy Store
+                </span>
               )}
             </div>
           </div>
-          <div className="text-left sm:text-right flex flex-col items-start sm:items-end gap-2">
-            <div>
-              {consignment.marketplace?.name && <p className="text-xs text-primary-600 font-semibold">{consignment.marketplace.name}</p>}
-              {consignment.warehouse && <p className="text-xs text-slate-500 mt-0.5">WH: {consignment.warehouse}</p>}
-            </div>
-            {consignment.pgEnabled === false ? (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-50 text-red-700 border border-red-200">
-                <Database className="w-3.5 h-3.5" /> Not on primary live store — contact admin
-              </span>
-            ) : null}
+
+          {/* Quick Action CTAs */}
+          <div className="flex flex-wrap items-center gap-3 self-start lg:self-center">
+            {consignment.status !== 'completed' && consignment.status !== 'archived' && (
+              <button
+                type="button"
+                onClick={() => navigate(`/packing?consignmentId=${consignment.id}`)}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold shadow-sm hover:shadow-md transition-all cursor-pointer"
+              >
+                <Package className="w-4 h-4" />
+                <span>Open Packing Station</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={downloadAllLabels}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+              title="Download all 4x6 box labels as PDF"
+            >
+              <Download className="w-4 h-4" />
+              <span>Box Labels (PDF)</span>
+            </button>
           </div>
         </div>
       </div>
 
+      {/* 4 Vital KPI Metrics Grid */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Metric 1: Units Progress */}
+        <div className={`bg-white rounded-2xl p-4 lg:p-5 shadow-xs border transition-all ${shipmentPriority.level === 'critical' ? 'border-red-200 bg-red-50/20' : 'border-slate-200/80'}`}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Packing Progress</span>
+            <span className={`text-sm font-extrabold tabular-nums ${shipmentPriority.level === 'critical' ? 'text-red-700' : 'text-slate-900'}`}>
+              {progressPct}%
+            </span>
+          </div>
+          <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden mb-2">
+            <div
+              className={`${progressBarColor} h-2.5 rounded-full transition-all duration-500`}
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+          <div className="flex items-center justify-between text-xs text-slate-500">
+            <span>{consignment.totalPackedQty || 0} / {consignment.totalRequiredQty || 0} packed</span>
+            {consignment.totalRequiredQty > consignment.totalPackedQty && (
+              <span className="text-amber-700 font-semibold">{consignment.totalRequiredQty - consignment.totalPackedQty} remaining</span>
+            )}
+          </div>
+        </div>
+
+        {/* Metric 2: Boxes & Weights */}
+        <div className="bg-white rounded-2xl p-4 lg:p-5 shadow-xs border border-slate-200/80 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Boxes Packed</span>
+              <Box className="w-4 h-4 text-primary-500" />
+            </div>
+            <div className="text-2xl font-extrabold text-slate-900">
+              {boxCount} <span className="text-xs font-semibold text-slate-400">Boxes</span>
+            </div>
+          </div>
+          <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+            <span>Weight: <strong className="text-slate-800">{totalWeightVal > 0 ? `${totalWeightVal.toFixed(2)} ${weightUnit}` : 'N/A'}</strong></span>
+            <span>Avg: <strong className="text-slate-800">{avgBoxWeight} {weightUnit}</strong></span>
+          </div>
+        </div>
+
+        {/* Metric 3: Workflow Stage & Assignee */}
+        <div className="bg-white rounded-2xl p-4 lg:p-5 shadow-xs border border-slate-200/80 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Active Workflow</span>
+              <PackageCheck className="w-4 h-4 text-emerald-500" />
+            </div>
+            <div className="text-base font-extrabold text-slate-900 truncate">
+              {consignment.assignedDepartmentLabel || 'Ground Team'}
+            </div>
+          </div>
+          <div className="pt-2 border-t border-slate-100 text-xs text-slate-500 truncate">
+            Pending: <strong className="text-slate-800">{consignment.pendingAction || 'Verification on track'}</strong>
+          </div>
+        </div>
+
+        {/* Metric 4: Logistics Schedule */}
+        <div className="bg-white rounded-2xl p-4 lg:p-5 shadow-xs border border-slate-200/80 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Expected Date</span>
+              <Scale className="w-4 h-4 text-indigo-500" />
+            </div>
+            <div className="text-base font-extrabold text-slate-900">
+              {consignment.expectedDate || consignment.appointmentDate || 'Not specified'}
+            </div>
+          </div>
+          <div className="pt-2 border-t border-slate-100 text-xs text-slate-500 truncate">
+            {consignment.docketNo ? (
+              <span>Docket: <strong className="text-slate-800">{consignment.docketNo}</strong> ({consignment.docketCompany || 'Courier'})</span>
+            ) : (
+              <span>Status: <strong className="text-slate-800">{consignment.shipmentStatus || 'Planned'}</strong></span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Streamlined Operational Workflow Stepper & Action Center */}
       <ConsignmentWorkflowPanel
         consignment={consignment}
         onUpdated={(next) => setConsignment((prev) => ({ ...prev, ...next }))}
       />
 
-      {/* Progress & Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 lg:gap-6 mb-8">
-        <div className={`bg-white rounded-xl p-4 lg:p-6 shadow-sm border ${shipmentPriority.level === 'critical' ? 'border-red-200 bg-red-50/30' : shipmentPriority.level === 'high' ? 'border-orange-200' : shipmentPriority.level === 'medium' ? 'border-amber-200' : 'border-slate-100'}`}>
-          <p className="text-sm text-slate-500 mb-1">Units Progress</p>
-          <div className="flex items-center gap-3">
-            <div className="flex-1 bg-slate-200 rounded-full h-3">
-              <div 
-                className={`${progressBarColor} h-3 rounded-full transition-all`}
-                style={{ width: `${progressPct}%` }}
-              />
-            </div>
-            <span className={`text-lg font-bold tabular-nums ${shipmentPriority.level === 'critical' ? 'text-red-700' : 'text-slate-900'}`}>{progressPct}%</span>
-          </div>
-          <p className="text-xs text-slate-400 mt-1">{consignment.totalPackedQty || 0} of {consignment.totalRequiredQty || 0} units packed</p>
-        </div>
-        <div className="bg-white rounded-xl p-4 lg:p-6 shadow-sm border border-slate-100">
-          <p className="text-sm text-slate-500 mb-1">Total Items</p>
-          <p className="text-2xl font-bold text-slate-900">{consignment.totalRequiredQty || 0}</p>
-          <p className="text-xs text-slate-400">{consignment.totalPackedQty || 0} packed</p>
-        </div>
-        <div className="bg-white rounded-xl p-4 lg:p-6 shadow-sm border border-slate-100">
-          <p className="text-sm text-slate-500 mb-1">Boxes</p>
-          <p className="text-2xl font-bold text-slate-900">{consignment.boxes?.length || 0}</p>
-        </div>
-        <div className="bg-white rounded-xl p-4 lg:p-6 shadow-sm border border-slate-100">
-          <p className="text-sm text-slate-500 mb-1">Expected Date</p>
-          <p className="text-lg font-bold text-slate-900">{consignment.expectedDate || 'N/A'}</p>
-        </div>
-        <div className="bg-white rounded-xl p-4 lg:p-6 shadow-sm border border-slate-100 flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <p className="text-sm text-slate-500">Weight Summary</p>
-              <Scale className="w-4 h-4 text-primary-500" />
-            </div>
-            <p className="text-2xl font-bold text-slate-900">
-              {totalWeightVal > 0 ? `${totalWeightVal.toFixed(2)} ${weightUnit}` : 'N/A'}
-            </p>
-          </div>
-          <div className="mt-2 pt-2 border-t border-slate-50 flex items-center justify-between text-xs text-slate-400">
-            <span>Avg: {avgBoxWeight} {weightUnit}</span>
-            <span>Boxes: {boxCount}</span>
-          </div>
-        </div>
-      </div>
+      {/* OMSGuru Checklist */}
+      <OmsGuruChecklist consignment={consignment} onToggle={toggleOmsGuru} />
 
-      <div className="mb-6">
-        <OmsGuruChecklist consignment={consignment} onToggle={toggleOmsGuru} />
-      </div>
-
-      {/* Shipment Tracking Details - Collapsible */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-100 mb-8 overflow-hidden">
-        {/* Section header - click to collapse/expand */}
+      {/* Shipment Tracking Details - Clean Collapsible Categorized Section */}
+      <div className="bg-white rounded-2xl shadow-xs border border-slate-200/80 overflow-hidden transition-all">
         <div
-          className="flex items-center justify-between px-5 py-3.5 cursor-pointer select-none hover:bg-slate-50 transition-colors"
-          onClick={() => { if (!editingTracking) setTrackingOpen(o => !o); }}
+          className="flex items-center justify-between px-5 py-4 cursor-pointer select-none hover:bg-slate-50/70 transition-colors"
+          onClick={() => { if (!editingTracking) setTrackingOpen((o) => !o); }}
         >
-          <div className="flex items-center gap-2">
-            <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Shipment Tracking Details</h3>
+          <div className="flex items-center gap-3">
+            <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+              Shipment Tracking & Logistics Details
+            </h3>
             {!trackingOpen && (
-              <span className="text-[10px] bg-primary-100 text-primary-700 px-2 py-0.5 rounded-full font-medium">Collapsed</span>
+              <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-semibold">
+                Click to expand
+              </span>
             )}
           </div>
-          <div className="flex items-center gap-3" onClick={e => e.stopPropagation()}>
+          <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
             {!editingTracking ? (
-              <button onClick={openTrackingEdit} className="text-xs text-primary-600 hover:text-primary-700 font-medium px-2 py-1 hover:bg-primary-50 rounded-lg transition-colors">Edit</button>
+              <button
+                type="button"
+                onClick={openTrackingEdit}
+                className="text-xs text-primary-600 hover:text-primary-700 font-bold px-3 py-1 hover:bg-primary-50 rounded-lg transition-colors cursor-pointer"
+              >
+                Edit Details
+              </button>
             ) : (
               <div className="flex items-center gap-2">
-                <button onClick={() => setEditingTracking(false)} className="text-xs text-slate-500 hover:text-slate-700 font-medium">Cancel</button>
-                <button onClick={saveTracking} disabled={savingTracking} className="text-xs text-white bg-primary-600 hover:bg-primary-700 font-medium px-3 py-1 rounded-lg transition-colors">{savingTracking ? 'Saving...' : 'Save Changes'}</button>
+                <button
+                  type="button"
+                  onClick={() => setEditingTracking(false)}
+                  className="text-xs text-slate-500 hover:text-slate-700 font-semibold px-2 py-1"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={saveTracking}
+                  disabled={savingTracking}
+                  className="text-xs text-white bg-primary-600 hover:bg-primary-700 font-bold px-3.5 py-1.5 rounded-xl shadow-xs transition-colors disabled:opacity-50"
+                >
+                  {savingTracking ? 'Saving…' : 'Save Changes'}
+                </button>
               </div>
             )}
-            <button onClick={() => setTrackingOpen(o => !o)} className="p-1 text-slate-400 hover:text-slate-600 transition-colors">
+            <button
+              type="button"
+              onClick={() => setTrackingOpen((o) => !o)}
+              className="p-1 text-slate-400 hover:text-slate-600 transition-colors"
+            >
               {trackingOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             </button>
           </div>
         </div>
+
         {/* Collapsible body */}
         <div className={`collapsible-content ${trackingOpen ? 'open' : 'closed'}`}>
-        <div className="px-5 pb-5">
-        {editingTracking ? (
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            {[
-              { label: 'Appointment Date', field: 'appointmentDate', type: 'date' },
-              { label: 'Scheduled Dispatch', field: 'scheduledDispatchDate', type: 'date' },
-              { label: 'Actual Dispatch', field: 'actualDispatchDate', type: 'date' },
-              { label: 'Date of Inward', field: 'dateOfInward', type: 'date' },
-              { label: 'PO Expiry Date', field: 'poExpiryDate', type: 'date' },
-              { label: 'Forward Invoice', field: 'forwardInvoiceNo', type: 'text' },
-              { label: 'Docket Company', field: 'docketCompany', type: 'text' },
-              { label: 'Docket No', field: 'docketNo', type: 'text' },
-              { label: 'Ticket ID', field: 'marketplaceTicketId', type: 'text' },
-              { label: 'Shipment Status', field: 'shipmentStatus', type: 'select' },
-              { label: 'Units Shipped', field: 'unitsShipped', type: 'number' },
-              { label: 'Units Received', field: 'unitsReceived', type: 'number' },
-              { label: 'Units Inwarded', field: 'unitsInwarded', type: 'number' },
-              { label: 'QA Fail/Excess', field: 'qaFailExcessQty', type: 'number' },
-            ].map((item) => (
-              <div key={item.field}>
-                <label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">{item.label}</label>
-                {item.type === 'select' ? (
-                  <select value={trackingForm[item.field] || ''} onChange={e => setTrackingForm({...trackingForm, [item.field]: e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none">
-                    <option value="Planned">Planned</option>
-                    <option value="Scheduled">Scheduled</option>
-                    <option value="Under Packing">Under Packing</option>
-                    <option value="Ready">Ready</option>
-                    <option value="In Transit">In Transit</option>
-                    <option value="Forwarded">Forwarded</option>
-                    <option value="Inwarded">Inwarded</option>
-                    <option value="Missed">Missed</option>
-                  </select>
-                ) : (
-                  <input type={item.type} value={trackingForm[item.field] || ''} onChange={e => setTrackingForm({...trackingForm, [item.field]: e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
-                )}
+          <div className="px-5 pb-5">
+            {editingTracking ? (
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 pt-2">
+                {[
+                  { label: 'Appointment Date', field: 'appointmentDate', type: 'date' },
+                  { label: 'Scheduled Dispatch', field: 'scheduledDispatchDate', type: 'date' },
+                  { label: 'Actual Dispatch', field: 'actualDispatchDate', type: 'date' },
+                  { label: 'Date of Inward', field: 'dateOfInward', type: 'date' },
+                  { label: 'PO Expiry Date', field: 'poExpiryDate', type: 'date' },
+                  { label: 'Forward Invoice', field: 'forwardInvoiceNo', type: 'text' },
+                  { label: 'Docket Company', field: 'docketCompany', type: 'text' },
+                  { label: 'Docket No', field: 'docketNo', type: 'text' },
+                  { label: 'Ticket ID', field: 'marketplaceTicketId', type: 'text' },
+                  { label: 'Shipment Status', field: 'shipmentStatus', type: 'select' },
+                  { label: 'Units Shipped', field: 'unitsShipped', type: 'number' },
+                  { label: 'Units Received', field: 'unitsReceived', type: 'number' },
+                  { label: 'Units Inwarded', field: 'unitsInwarded', type: 'number' },
+                  { label: 'QA Fail/Excess', field: 'qaFailExcessQty', type: 'number' },
+                ].map((item) => (
+                  <div key={item.field}>
+                    <label className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block mb-1">
+                      {item.label}
+                    </label>
+                    {item.type === 'select' ? (
+                      <select
+                        value={trackingForm[item.field] || ''}
+                        onChange={(e) => setTrackingForm({ ...trackingForm, [item.field]: e.target.value })}
+                        className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-primary-500 outline-none"
+                      >
+                        <option value="Planned">Planned</option>
+                        <option value="Scheduled">Scheduled</option>
+                        <option value="Under Packing">Under Packing</option>
+                        <option value="Ready">Ready</option>
+                        <option value="In Transit">In Transit</option>
+                        <option value="Forwarded">Forwarded</option>
+                        <option value="Inwarded">Inwarded</option>
+                        <option value="Missed">Missed</option>
+                      </select>
+                    ) : (
+                      <input
+                        type={item.type}
+                        value={trackingForm[item.field] || ''}
+                        onChange={(e) => setTrackingForm({ ...trackingForm, [item.field]: e.target.value })}
+                        className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-primary-500 outline-none"
+                      />
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            {[
-              { label: 'Appointment Date', value: consignment.appointmentDate },
-              { label: 'Scheduled Dispatch', value: consignment.scheduledDispatchDate },
-              { label: 'Actual Dispatch', value: consignment.actualDispatchDate },
-              { label: 'Date of Inward', value: consignment.dateOfInward },
-              { label: 'PO Expiry Date', value: consignment.poExpiryDate },
-              { label: 'Forward Invoice', value: consignment.forwardInvoiceNo },
-              { label: 'Docket Company', value: consignment.docketCompany },
-              { label: 'Docket No', value: consignment.docketNo },
-              { label: 'Ticket ID', value: consignment.marketplaceTicketId },
-              { label: 'Shipment Status', value: consignment.shipmentStatus },
-              { label: 'Planned Qty', value: consignment.totalRequiredQty },
-              { label: 'Total Packed', value: consignment.totalPackedQty },
-              { label: 'Units Shipped', value: consignment.unitsShipped },
-              { label: 'Units Received', value: consignment.unitsReceived },
-              { label: 'Units Inwarded', value: consignment.unitsInwarded },
-              { label: 'Short Qty', value: (consignment.totalRequiredQty || 0) - (consignment.unitsInwarded || 0), color: ((consignment.totalRequiredQty || 0) - (consignment.unitsInwarded || 0)) > 0 ? 'text-red-600' : 'text-emerald-600' },
-              { label: 'QA Fail/Excess', value: consignment.qaFailExcessQty },
-              { label: 'No. of Boxes', value: (consignment.boxes?.length || consignment.boxIds?.length || 0) },
-              { label: 'Total Consignment Weight', value: totalWeightVal > 0 ? `${totalWeightVal.toFixed(2)} ${weightUnit}` : '-' },
-              { label: 'Average Box Weight', value: boxCount > 0 ? `${avgBoxWeight} ${weightUnit}` : '-' },
-            ].map((item, i) => (
-              <div key={i} className="bg-slate-50 rounded-lg p-3">
-                <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">{item.label}</p>
-                <p className={`text-sm font-semibold ${item.color || 'text-slate-900'}`}>{item.value !== undefined && item.value !== '' ? item.value : '-'}</p>
+            ) : (
+              <div className="grid md:grid-cols-3 gap-4 pt-2">
+                {/* Card 1: Logistics & Dates */}
+                <div className="bg-slate-50/70 rounded-xl p-4 border border-slate-100 space-y-2.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block border-b border-slate-200/60 pb-1">
+                    Timeline & Key Dates
+                  </span>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-slate-400 text-[10px] block">Appointment</span>
+                      <span className="font-semibold text-slate-800">{consignment.appointmentDate || '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 text-[10px] block">PO Expiry</span>
+                      <span className="font-semibold text-slate-800">{consignment.poExpiryDate || '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 text-[10px] block">Scheduled Dispatch</span>
+                      <span className="font-semibold text-slate-800">{consignment.scheduledDispatchDate || '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 text-[10px] block">Actual Dispatch</span>
+                      <span className="font-semibold text-slate-800">{consignment.actualDispatchDate || '—'}</span>
+                    </div>
+                    <div className="col-span-2">
+                      <span className="text-slate-400 text-[10px] block">Date of Inward</span>
+                      <span className="font-semibold text-slate-800">{consignment.dateOfInward || '—'}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Card 2: Transport & Identifiers */}
+                <div className="bg-slate-50/70 rounded-xl p-4 border border-slate-100 space-y-2.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block border-b border-slate-200/60 pb-1">
+                    Carrier & Documents
+                  </span>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Courier:</span>
+                      <span className="font-semibold text-slate-800">{consignment.docketCompany || '—'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Docket No:</span>
+                      <span className="font-semibold font-mono text-slate-800">{consignment.docketNo || '—'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Forward Invoice:</span>
+                      <span className="font-semibold font-mono text-slate-800">{consignment.forwardInvoiceNo || '—'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Ticket ID:</span>
+                      <span className="font-semibold font-mono text-slate-800">{consignment.marketplaceTicketId || '—'}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Card 3: Quantities Reconciliation */}
+                <div className="bg-slate-50/70 rounded-xl p-4 border border-slate-100 space-y-2.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block border-b border-slate-200/60 pb-1">
+                    Quantity Reconciliation
+                  </span>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-slate-400 text-[10px] block">Planned Qty</span>
+                      <span className="font-bold text-slate-800">{consignment.totalRequiredQty || 0}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 text-[10px] block">Packed Qty</span>
+                      <span className="font-bold text-slate-800">{consignment.totalPackedQty || 0}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 text-[10px] block">Units Shipped</span>
+                      <span className="font-semibold text-slate-800">{consignment.unitsShipped || '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 text-[10px] block">Units Inwarded</span>
+                      <span className="font-semibold text-slate-800">{consignment.unitsInwarded || '—'}</span>
+                    </div>
+                    <div className="col-span-2 pt-1 border-t border-slate-200/60 flex justify-between items-center">
+                      <span className="text-slate-500 font-medium">Inward Variance:</span>
+                      <span className={`font-bold ${((consignment.totalRequiredQty || 0) - (consignment.unitsInwarded || 0)) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                        {consignment.unitsInwarded != null ? `${(consignment.totalRequiredQty || 0) - (consignment.unitsInwarded || 0)} units` : '—'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </div>
-            ))}
+            )}
           </div>
-        )}
-        </div>{/* /px-5 pb-5 */}
-        </div>{/* /collapsible-content */}
+        </div>
       </div>
+
 
       {/* Tabs */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-100">
