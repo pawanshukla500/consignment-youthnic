@@ -1,6 +1,7 @@
 /**
  * Automated consignment workflow: short pack, invoice gate, dispatch, inward archive, departments.
  */
+require('./ensureTestEnv');
 const assert = require('assert');
 const {
   applyStageConfirmation,

@@ -102,3 +102,27 @@ test('failed chunk remains a finalization blocker even after its promise settles
   await assert.rejects(() => files.finalizeVideo({ videoId: session.videoId, consignmentId: 'c-1', boxNo: '1' }), /chunk was not saved/);
   await assert.doesNotReject(() => fs.stat(session.recoveryPath));
 });
+
+test('discardVideo removes staged .part and manifest files and clears in-memory tracking', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'youthnic-discard-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const files = new LocalFiles(root);
+  const session = await files.startVideo({ videoId: 'discard-1', consignmentId: 'c-1', boxNo: '1' });
+  await files.appendVideoChunk({ videoId: session.videoId, data: Buffer.from('discard me') });
+
+  // Before discard, recovery part and part.json exist on disk
+  await assert.doesNotReject(() => fs.stat(session.recoveryPath));
+  await assert.doesNotReject(() => fs.stat(`${session.recoveryPath}.json`));
+
+  await files.discardVideo(session.videoId);
+
+  // After discard, files must be completely removed from disk
+  await assert.rejects(() => fs.stat(session.recoveryPath));
+  await assert.rejects(() => fs.stat(`${session.recoveryPath}.json`));
+
+  // In-memory maps must be cleaned
+  assert.equal(files.handles.has(session.videoId), false);
+  assert.equal(files.sessions.has(session.videoId), false);
+  assert.equal(files.writeChains.has(session.videoId), false);
+  assert.equal(files.firstChunkLogged.has(session.videoId), false);
+});

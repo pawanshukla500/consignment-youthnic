@@ -142,11 +142,31 @@ class LocalFiles {
   }
 
   async discardVideo(videoId) {
+    const pending = this.writeChains.get(videoId);
+    try {
+      await pending;
+    } catch (_) {
+      // The recording is being discarded; cleanup should still proceed.
+    }
+
+    const session = this.sessions.get(videoId);
+
     const handle = this.handles.get(videoId);
     if (handle) {
       try { await handle.close(); } catch (_) {}
       this.handles.delete(videoId);
     }
+
+    if (session?.consignmentId) {
+      try {
+        const base = await this.ensureConsignmentDirs(session.consignmentId);
+        await Promise.allSettled([
+          fsp.rm(path.join(base, 'videos', 'recovery', `${safePart(videoId)}.part`), { force: true }),
+          fsp.rm(path.join(base, 'videos', 'recovery', `${safePart(videoId)}.part.json`), { force: true }),
+        ]);
+      } catch (_) {}
+    }
+
     this.writeChains.delete(videoId);
     this.sessions.delete(videoId);
     this.writeErrors.delete(videoId);
