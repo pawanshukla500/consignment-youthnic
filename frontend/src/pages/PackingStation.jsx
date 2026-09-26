@@ -351,7 +351,17 @@ export default function PackingStation() {
         setSyncRunning(Boolean(status.running));
         if (status.lastSyncAt) setLastSyncAt(status.lastSyncAt);
         if (Array.isArray(status.boxes)) {
-          setDesktopBoxStates(Object.fromEntries(status.boxes.map((b) => [String(b.box_no), b])));
+          const map = {};
+          for (const b of status.boxes) {
+            const bNo = String(b.box_no);
+            const cid = String(b.consignment_id || '').trim();
+            if (cid) map[`${cid}:${bNo}`] = b;
+            const currentCid = String(cidRef.current || '').trim();
+            if (!currentCid || cid === currentCid) {
+              map[bNo] = b;
+            }
+          }
+          setDesktopBoxStates(map);
         }
         if (status.online === false) setSyncState('offline');
         else if ((status.failedJobs || 0) > 0) setSyncState('failed');
@@ -3083,7 +3093,8 @@ export default function PackingStation() {
                       <td className="px-2 py-1 text-slate-600">{items.length}</td>
                       <td className="px-2 py-1 text-slate-600">{items.reduce((s,i)=>s+i.qty,0)}</td>
                       {isDesktopPacking && (() => {
-                        const st = desktopBoxStates[String(boxNo)];
+                        const currentCid = String(S.consignmentId || cidRef.current || '').trim();
+                        const st = (currentCid && desktopBoxStates[`${currentCid}:${boxNo}`]) || desktopBoxStates[String(boxNo)];
                         const open = !st || st.state === 'OPEN';
                         const synced = st && st.state === 'SYNCED' && st.video_state === 'SYNCED';
                         const label = open ? 'Open — recording' : synced ? 'Synced to cloud ✓' : 'Closed — waiting to sync';

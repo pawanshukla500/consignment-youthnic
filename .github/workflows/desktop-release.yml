@@ -2,18 +2,9 @@ name: Youthnic Packing Station Desktop
 
 on:
   workflow_dispatch:
-    inputs:
-      publish_release:
-        description: 'Publish assets to GitHub Releases'
-        required: true
-        type: boolean
-        default: true
   workflow_run:
     workflows: ["Deploy to Cloud Run"]
     types: [completed]
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
@@ -22,10 +13,7 @@ jobs:
   package:
     # A desktop package is useful only after the exact server revision it needs
     # has passed the deployed protocol/schema verification.
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -79,11 +67,6 @@ jobs:
   publish-release:
     name: Publish to GitHub Releases
     needs: package
-    if: |
-      always() && needs.package.result == 'success' &&
-      (github.event_name == 'push' ||
-       github.event_name == 'workflow_run' ||
-       (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release != 'false'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -98,12 +81,8 @@ jobs:
       - name: Determine Release Tag and Assets
         id: prepare_release
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-          else
-            VERSION=$(node -p "require('./desktop/package.json').version")
-            TAG="v${VERSION}"
-          fi
+          VERSION=$(node -p "require('./desktop/package.json').version")
+          TAG="v${VERSION}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
           mkdir -p dist-assets

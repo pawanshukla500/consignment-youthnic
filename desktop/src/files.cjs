@@ -116,6 +116,9 @@ class LocalFiles {
     await handle.close();
     this.handles.delete(videoId);
     this.writeChains.delete(videoId);
+    this.sessions.delete(videoId);
+    this.writeErrors.delete(videoId);
+    this.firstChunkLogged.delete(videoId);
     const base = await this.ensureConsignmentDirs(consignmentId);
     const recoveryPath = path.join(base, 'videos', 'recovery', `${safePart(videoId)}.part`);
     const ext = String(mimeType).includes('mp4') ? '.mp4' : '.webm';
