@@ -4,7 +4,7 @@ import {
   ArrowLeft, Package, Box, Video, FileText, Upload, AlertCircle,
   Trash2, Download, Loader2, FileSpreadsheet, CheckCircle2,
   Copy, ExternalLink, Tag, ChevronDown, ChevronUp, Database, Scale, AlertTriangle, History, Pencil, UploadCloud,
-  PackageCheck
+  PackageCheck, Search, X, Eye, LayoutList, LayoutGrid
 } from 'lucide-react';
 import ConfirmModal from '../components/ConfirmModal';
 import {
@@ -42,15 +42,6 @@ const PACKING_LIVE_TYPES = new Set([
   'scan_events',
   'consignments',
 ]);
-
-function formatBoxBreakdown(boxQuantities = {}) {
-  const entries = Object.entries(boxQuantities || {}).filter(([, qty]) => Number(qty) > 0);
-  if (!entries.length) return '—';
-  return entries
-    .sort(([a], [b]) => String(a).localeCompare(String(b), undefined, { numeric: true }))
-    .map(([boxNo, qty]) => `Box ${boxNo}: ${qty}`)
-    .join(' · ');
-}
 
 function mergeLivePackingSession(consignment, syncData) {
   if (!consignment || !syncData?.sessionActive) return consignment;
@@ -437,6 +428,9 @@ const ConsignmentDetail = () => {
   const [boxRenameSaving, setBoxRenameSaving] = useState(false);
   const liveRefreshRef = useRef(null);
   const initialTrackingRef = useRef({});
+  const [skuSearch, setSkuSearch] = useState('');
+  const [skuStatusFilter, setSkuStatusFilter] = useState('all');
+  const [boxSearch, setBoxSearch] = useState('');
 
   const openTrackingEdit = () => {
     const initial = {
@@ -506,6 +500,53 @@ const ConsignmentDetail = () => {
       integrityIssues: packingReport.integrityIssues || []
     };
   }, [packingReport]);
+
+  const copyText = async (text, label) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      addToast(`Copied ${label}`, 'info');
+    } catch {
+      addToast(`Could not copy ${label}`, 'warning');
+    }
+  };
+
+  const consignmentSkus = consignment?.skus;
+  const filteredSkus = React.useMemo(() => {
+    const list = consignmentSkus || [];
+    const q = skuSearch.trim().toLowerCase();
+    return list.filter((sku) => {
+      if (skuStatusFilter === 'mismatch' && !sku.inwardMismatch) return false;
+      const required = Number(sku.requiredQty) || 0;
+      const packed = Number(sku.finalPackedQty ?? sku.packedQty) || 0;
+      if (skuStatusFilter === 'packed' && packed < required) return false;
+      if (skuStatusFilter === 'pending' && packed >= required) return false;
+
+      if (!q) return true;
+      const barcode = String(sku.barcode || sku.marketplaceBarcode || '').toLowerCase();
+      const internal = String(sku.internalSku || '').toLowerCase();
+      const mpSku = String(sku.marketplaceSku || '').toLowerCase();
+      return barcode.includes(q) || internal.includes(q) || mpSku.includes(q);
+    });
+  }, [consignmentSkus, skuSearch, skuStatusFilter]);
+
+  const consignmentBoxes = consignment?.boxes;
+  const filteredBoxes = React.useMemo(() => {
+    const list = [...(consignmentBoxes || [])].sort((a, b) =>
+      String(a.boxNo).localeCompare(String(b.boxNo), undefined, { numeric: true })
+    );
+    const q = boxSearch.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((b) => {
+      if (String(b.boxNo).toLowerCase().includes(q)) return true;
+      return (b.items || []).some(
+        (i) =>
+          String(i.internalSku || '').toLowerCase().includes(q) ||
+          String(i.marketplaceSku || '').toLowerCase().includes(q) ||
+          String(i.barcode || '').toLowerCase().includes(q)
+      );
+    });
+  }, [consignmentBoxes, boxSearch]);
 
   useEffect(() => {
     fetchConsignment();
@@ -1635,133 +1676,240 @@ const ConsignmentDetail = () => {
       </div>
 
 
-      {/* Tabs */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-100">
-        <div className="flex border-b border-slate-100 overflow-x-auto sticky top-[60px] bg-white z-20 rounded-t-xl">
+      {/* Tabs Container */}
+      <div className="bg-white rounded-2xl shadow-xs border border-slate-200/80 overflow-hidden">
+        {/* Modern Segmented Navigation Bar */}
+        <div
+          role="tablist"
+          aria-label="Consignment Details Navigation"
+          className="sticky top-[60px] z-20 bg-white/95 backdrop-blur-xs border-b border-slate-200/80 px-3 sm:px-5 py-2.5 flex items-center gap-2 overflow-x-auto no-scrollbar"
+        >
           {[
-            { id: 'skus', label: 'SKU Items', icon: Package },
-            { id: 'boxes', label: 'Boxes', icon: Box },
-            { id: 'report', label: 'Packing Report', icon: FileSpreadsheet },
-            { id: 'videos', label: 'Videos', icon: Video },
-            { id: 'documents', label: 'Documents', icon: FileText },
-          ].map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 lg:px-6 py-4 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-                activeTab === tab.id
-                  ? 'border-primary-500 text-primary-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              <tab.icon className="w-4 h-4" />
-              {tab.label}
-              <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full text-xs">
-                {tab.id === 'skus' ? (consignment.skus?.length || 0) :
-                 tab.id === 'boxes' ? (consignment.boxes?.length || 0) :
-                 tab.id === 'report' ? 'View' :
-                 tab.id === 'videos' ? (consignment.videos?.length || 0) :
-                 (consignment.documents?.length || 0)}
-              </span>
-            </button>
-          ))}
+            { id: 'skus', label: 'SKU Items', subtitle: 'Quantities & Inward', icon: Package, count: consignment.skus?.length || 0 },
+            { id: 'boxes', label: 'Boxes', subtitle: 'Weights & Labels', icon: Box, count: consignment.boxes?.length || 0 },
+            { id: 'report', label: 'Packing Report', subtitle: 'Matrix & Sheets', icon: FileSpreadsheet, count: pivotData?.rows?.length ? `${pivotData.rows.length}` : 'Report' },
+            { id: 'videos', label: 'Videos', subtitle: 'CCTV Proof', icon: Video, count: consignment.videos?.length || 0 },
+            { id: 'documents', label: 'Documents', subtitle: 'Invoices & PODs', icon: FileText, count: consignment.documents?.length || 0 },
+          ].map((tab) => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                role="tab"
+                aria-selected={isActive}
+                id={`tab-${tab.id}`}
+                aria-controls={`panel-${tab.id}`}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs transition-all whitespace-nowrap cursor-pointer ${
+                  isActive
+                    ? 'bg-primary-50 text-primary-800 border border-primary-200 shadow-xs font-bold ring-2 ring-primary-100/50'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 border border-transparent font-semibold'
+                }`}
+              >
+                <tab.icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-primary-600' : 'text-slate-400'}`} />
+                <div className="flex flex-col text-left">
+                  <span className="leading-tight">{tab.label}</span>
+                  <span className="text-[10px] text-slate-400 font-normal hidden lg:inline leading-tight">{tab.subtitle}</span>
+                </div>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold tabular-nums ml-0.5 ${
+                  isActive ? 'bg-primary-100 text-primary-800 border border-primary-200/60' : 'bg-slate-100 text-slate-500'
+                }`}>
+                  {tab.count}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         <div className="p-4 lg:p-6">
           {activeTab === 'skus' && (
             <div className="space-y-5">
-              <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
-                <p className="text-sm text-slate-700 leading-relaxed">
-                  SKU packing totals, post-pack quantity removals, and warehouse inward quantities.
-                  Inward data is stored separately and never overwrites packed quantities.
-                </p>
+              {/* Contextual Info & Quick Actions Banner */}
+              <div className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-primary-100/80 text-primary-700 shrink-0">
+                    <Package className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">SKU Inventory & Inward Ledger</h4>
+                    <p className="text-xs text-slate-500">
+                      Track packed quantities, post-pack removals, and warehouse inward counts. Inward counts never alter packed box records.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={downloadInwardTemplate}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200/80 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-50 transition-colors shadow-2xs"
+                  >
+                    <Download className="w-3.5 h-3.5 text-slate-500" />
+                    Template
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => inwardFileRef.current?.click()}
+                    disabled={inwardUploading}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-colors shadow-2xs disabled:opacity-60"
+                  >
+                    {inwardUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                    {inwardUploading ? 'Uploading…' : 'Upload Inward'}
+                  </button>
+                  <input
+                    ref={inwardFileRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    onChange={handleInwardImport}
+                  />
+                </div>
               </div>
 
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              {/* 5 Summary Metric Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
                 {[
-                  { label: 'Total Required', value: omsGuruSummary.totalRequiredQty },
-                  { label: 'Final Packed', value: omsGuruSummary.totalPackedQty },
-                  { label: 'Total Inward', value: inwardSummary.totalInwardQty },
-                  { label: 'Inward Mismatches', value: inwardSummary.mismatchCount },
+                  { label: 'Total Required', value: omsGuruSummary.totalRequiredQty, color: 'text-slate-900', note: 'Planned units' },
+                  { label: 'Final Packed', value: omsGuruSummary.totalPackedQty, color: 'text-primary-700', note: 'Boxed & confirmed' },
+                  {
+                    label: 'Fulfillment Rate',
+                    value: `${omsGuruSummary.totalRequiredQty > 0 ? Math.min(100, Math.round((omsGuruSummary.totalPackedQty / omsGuruSummary.totalRequiredQty) * 100)) : 0}%`,
+                    color: (omsGuruSummary.totalPackedQty >= omsGuruSummary.totalRequiredQty && omsGuruSummary.totalRequiredQty > 0) ? 'text-emerald-700' : 'text-primary-700',
+                    note: (omsGuruSummary.totalPackedQty >= omsGuruSummary.totalRequiredQty && omsGuruSummary.totalRequiredQty > 0) ? 'Fully packed' : 'In packing'
+                  },
+                  { label: 'Total Inward', value: inwardSummary.totalInwardQty, color: 'text-indigo-700', note: 'Warehouse receipt' },
+                  {
+                    label: 'Inward Mismatches',
+                    value: inwardSummary.mismatchCount || 0,
+                    color: (inwardSummary.mismatchCount || 0) > 0 ? 'text-amber-600' : 'text-slate-900',
+                    note: (inwardSummary.mismatchCount || 0) > 0 ? `${inwardSummary.shortCount || 0} short, ${inwardSummary.excessCount || 0} excess` : 'Zero variance'
+                  },
                 ].map((item) => (
-                  <div key={item.label} className="bg-white rounded-lg p-3 border border-slate-100">
-                    <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">{item.label}</p>
-                    <p className="text-lg font-bold text-slate-900">{item.value}</p>
+                  <div key={item.label} className="bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs">
+                    <p className="text-[10px] uppercase font-bold tracking-wider text-slate-400 mb-1">{item.label}</p>
+                    <p className={`text-xl font-extrabold ${item.color} tabular-nums`}>{item.value}</p>
+                    <p className="text-[10px] text-slate-400 mt-1 font-medium">{item.note}</p>
                   </div>
                 ))}
               </div>
 
+              {/* Inward Mismatch Alert */}
               {(inwardSummary.mismatchCount || 0) > 0 && (
-                <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-                  <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-                  <span>
-                    {inwardSummary.mismatchCount} SKU(s) have packed vs inward mismatches
-                    ({inwardSummary.shortCount || 0} short/partial, {inwardSummary.excessCount || 0} excess).
-                  </span>
+                <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50/70 p-3.5 text-xs text-amber-900">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+                  <div>
+                    <span className="font-bold">Quantity discrepancies identified: </span>
+                    <span>
+                      {inwardSummary.mismatchCount} SKU(s) show differences between packed and inward quantities ({inwardSummary.shortCount || 0} short/partial, {inwardSummary.excessCount || 0} excess).
+                    </span>
+                  </div>
                 </div>
               )}
 
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={downloadInwardTemplate}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 transition-colors"
-                >
-                  <Download className="w-4 h-4" />
-                  Download Inward Template
-                </button>
-                <button
-                  type="button"
-                  onClick={() => inwardFileRef.current?.click()}
-                  disabled={inwardUploading}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-60"
-                >
-                  {inwardUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-                  {inwardUploading ? 'Uploading...' : 'Upload Inward Data'}
-                </button>
-                <input
-                  ref={inwardFileRef}
-                  type="file"
-                  accept=".csv,text/csv"
-                  className="hidden"
-                  onChange={handleInwardImport}
-                />
-                <span className="text-xs text-slate-500">Fill Inward Qty (and optional Inward Date / Remarks).</span>
+              {/* Search & Status Filter Toolbar for SKUs */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-50/70 p-2.5 rounded-xl border border-slate-200/80">
+                <div className="relative flex-1 min-w-[200px]">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={skuSearch}
+                    onChange={(e) => setSkuSearch(e.target.value)}
+                    placeholder="Search by barcode, internal SKU, or marketplace SKU..."
+                    className="w-full pl-9 pr-8 py-2 text-xs bg-white border border-slate-200 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500"
+                  />
+                  {skuSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setSkuSearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1.5 overflow-x-auto text-xs no-scrollbar">
+                  <button
+                    type="button"
+                    onClick={() => setSkuStatusFilter('all')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                      skuStatusFilter === 'all'
+                        ? 'bg-slate-900 text-white shadow-2xs'
+                        : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200/80'
+                    }`}
+                  >
+                    All ({consignment.skus?.length || 0})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSkuStatusFilter('packed')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                      skuStatusFilter === 'packed'
+                        ? 'bg-emerald-600 text-white shadow-2xs'
+                        : 'bg-white text-emerald-700 hover:bg-emerald-50 border border-emerald-200/80'
+                    }`}
+                  >
+                    Packed
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSkuStatusFilter('pending')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                      skuStatusFilter === 'pending'
+                        ? 'bg-amber-600 text-white shadow-2xs'
+                        : 'bg-white text-amber-700 hover:bg-amber-50 border border-amber-200/80'
+                    }`}
+                  >
+                    Pending
+                  </button>
+                  {(inwardSummary.mismatchCount || 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSkuStatusFilter('mismatch')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                        skuStatusFilter === 'mismatch'
+                          ? 'bg-red-600 text-white shadow-2xs'
+                          : 'bg-white text-red-700 hover:bg-red-50 border border-red-200/80'
+                      }`}
+                    >
+                      Mismatches ({inwardSummary.mismatchCount})
+                    </button>
+                  )}
+                </div>
               </div>
 
+              {/* Quantity Removals History */}
               {packingAdjustments.filter((a) => a.status === 'completed').length > 0 && (
-                <div className="rounded-xl border border-slate-200 p-4">
-                  <h4 className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-3 flex items-center gap-2">
-                    <History className="w-4 h-4" /> Quantity removals / edits
+                <div className="rounded-2xl border border-slate-200/80 p-4 bg-slate-50/30">
+                  <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wide mb-3 flex items-center gap-2">
+                    <History className="w-4 h-4 text-slate-500" /> Quantity Removals & Edit Audit
                   </h4>
                   <div className="overflow-x-auto max-h-48 overflow-y-auto">
                     <table className="w-full text-xs">
                       <thead>
-                        <tr className="border-b border-slate-100 text-slate-500 uppercase">
-                          <th className="py-1.5 text-left">Box</th>
-                          <th className="py-1.5 text-left">SKU</th>
-                          <th className="py-1.5 text-left">Action</th>
-                          <th className="py-1.5 text-right">Qty</th>
-                          <th className="py-1.5 text-left">Reason</th>
-                          <th className="py-1.5 text-left">By / When</th>
+                        <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px]">
+                          <th className="py-2 text-left font-bold">Box</th>
+                          <th className="py-2 text-left font-bold">SKU</th>
+                          <th className="py-2 text-left font-bold">Action</th>
+                          <th className="py-2 text-right font-bold">Qty</th>
+                          <th className="py-2 text-left font-bold">Reason</th>
+                          <th className="py-2 text-left font-bold">Operator & Time</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-50">
+                      <tbody className="divide-y divide-slate-100">
                         {packingAdjustments.filter((a) => a.status === 'completed').map((a) => (
-                          <tr key={a.id}>
-                            <td className="py-1.5 font-semibold">#{a.boxNo}</td>
-                            <td className="py-1.5">{a.internalSku || a.skuId}</td>
-                            <td className="py-1.5 capitalize">{a.actionType}{a.editAction ? ` (${a.editAction})` : ''}</td>
-                            <td className="py-1.5 text-right font-bold">
+                          <tr key={a.id} className="hover:bg-slate-50/60">
+                            <td className="py-2 font-mono font-bold text-slate-800">#{a.boxNo}</td>
+                            <td className="py-2 font-mono text-slate-700">{a.internalSku || a.skuId}</td>
+                            <td className="py-2 capitalize font-medium text-slate-600">{a.actionType}{a.editAction ? ` (${a.editAction})` : ''}</td>
+                            <td className="py-2 text-right font-bold tabular-nums text-slate-900">
                               {a.actionType === 'edit'
                                 ? `${a.previousQuantity} → ${a.updatedQuantity}`
                                 : a.quantity}
                             </td>
-                            <td className="py-1.5">{a.reasonLabel || a.reason || '—'}</td>
-                            <td className="py-1.5 text-slate-500">
-                              {a.removedByName || a.userName || '—'}
-                              <br />
-                              {a.completedAt ? new Date(a.completedAt).toLocaleString() : '—'}
+                            <td className="py-2 text-slate-600">{a.reasonLabel || a.reason || '—'}</td>
+                            <td className="py-2 text-slate-500 text-[11px]">
+                              {a.removedByName || a.userName || '—'} · {a.completedAt ? new Date(a.completedAt).toLocaleString() : '—'}
                             </td>
                           </tr>
                         ))}
@@ -1771,92 +1919,165 @@ const ConsignmentDetail = () => {
                 </div>
               )}
 
-              <div className="overflow-x-auto">
-                <table className="w-full">
+              {/* SKU Items Table */}
+              <div className="overflow-x-auto rounded-xl border border-slate-200/80">
+                <table className="w-full text-left">
                   <thead>
-                    <tr className="border-b border-slate-100">
-                      <th className="text-left text-xs font-semibold text-slate-500 uppercase py-3">Barcode / Marketplace</th>
-                      <th className="text-left text-xs font-semibold text-slate-500 uppercase py-3">Internal SKU</th>
-                      <th className="text-right text-xs font-semibold text-slate-500 uppercase py-3">Required</th>
-                      <th className="text-right text-xs font-semibold text-slate-500 uppercase py-3">Original Packed</th>
-                      <th className="text-right text-xs font-semibold text-slate-500 uppercase py-3">Removed</th>
-                      <th className="text-right text-xs font-semibold text-slate-500 uppercase py-3">Final Packed</th>
-                      <th className="text-left text-xs font-semibold text-slate-500 uppercase py-3">Boxes</th>
-                      <th className="text-right text-xs font-semibold text-slate-500 uppercase py-3">Inward Qty</th>
-                      <th className="text-right text-xs font-semibold text-slate-500 uppercase py-3">Diff</th>
-                      <th className="text-left text-xs font-semibold text-slate-500 uppercase py-3">Inward Status</th>
+                    <tr className="bg-slate-50/80 border-b border-slate-200/80 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                      <th className="py-3 px-3">Barcode / Marketplace</th>
+                      <th className="py-3 px-3">Internal SKU</th>
+                      <th className="py-3 px-3 text-right">Required</th>
+                      <th className="py-3 px-3 text-right">Orig Packed</th>
+                      <th className="py-3 px-3 text-right">Removed</th>
+                      <th className="py-3 px-3 text-right">Final Packed</th>
+                      <th className="py-3 px-3">Box Breakdown</th>
+                      <th className="py-3 px-3 text-right">Inward Qty</th>
+                      <th className="py-3 px-3 text-right">Diff</th>
+                      <th className="py-3 px-3">Status</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {consignment.skus?.length > 0 ? (
-                      consignment.skus.map((sku) => {
-                        const requiredQty = Number(sku.requiredQty) || 0
-                        const packedQty = Number(sku.finalPackedQty ?? sku.packedQty) || 0
-                        const removedQty = Number(sku.postPackRemovedQty) || 0
-                        const originalPacked = Number(sku.originallyPackedQty) || (packedQty + removedQty)
-                        const inwardQty = Number(sku.inwardQty) || 0
-                        const diff = Number(sku.quantityDifference ?? (inwardQty - packedQty))
-                        const mismatch = sku.inwardMismatch
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {filteredSkus.length > 0 ? (
+                      filteredSkus.map((sku) => {
+                        const requiredQty = Number(sku.requiredQty) || 0;
+                        const packedQty = Number(sku.finalPackedQty ?? sku.packedQty) || 0;
+                        const removedQty = Number(sku.postPackRemovedQty) || 0;
+                        const originalPacked = Number(sku.originallyPackedQty) || (packedQty + removedQty);
+                        const inwardQty = Number(sku.inwardQty) || 0;
+                        const diff = Number(sku.quantityDifference ?? (inwardQty - packedQty));
+                        const mismatch = sku.inwardMismatch;
+                        const barcode = sku.barcode || sku.marketplaceBarcode || '';
+                        const boxEntries = Object.entries(sku.boxQuantities || {}).filter(([, qty]) => Number(qty) > 0);
+
                         return (
                           <tr
                             key={sku.id}
-                            className={`hover:bg-slate-50 ${mismatch ? 'bg-amber-50/70' : ''}`}
+                            className={`hover:bg-slate-50/80 transition-colors ${mismatch ? 'bg-amber-50/40' : ''}`}
                           >
-                            <td className="py-3 text-sm font-mono text-slate-500">
-                              <div>{sku.barcode || sku.marketplaceBarcode || '—'}</div>
-                              <div className="text-[10px] text-slate-400">{sku.marketplaceSku || ''}</div>
+                            <td className="py-3 px-3">
+                              <div className="flex items-center gap-1.5 font-mono text-xs text-slate-800">
+                                <span>{barcode || '—'}</span>
+                                {barcode && (
+                                  <button
+                                    type="button"
+                                    onClick={() => copyText(barcode, 'Barcode')}
+                                    className="text-slate-300 hover:text-slate-600 transition-colors p-0.5"
+                                    title="Copy Barcode"
+                                  >
+                                    <Copy className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                              {sku.marketplaceSku && (
+                                <div className="text-[10px] font-mono text-slate-400 truncate max-w-[180px]" title={sku.marketplaceSku}>
+                                  {sku.marketplaceSku}
+                                </div>
+                              )}
                             </td>
-                            <td className="py-3 text-sm font-medium text-slate-900">{sku.internalSku || '—'}</td>
-                            <td className="py-3 text-sm text-right text-slate-600">{requiredQty}</td>
-                            <td className="py-3 text-sm text-right text-slate-600">{originalPacked}</td>
-                            <td className={`py-3 text-sm text-right font-medium ${removedQty > 0 ? 'text-red-600' : 'text-slate-500'}`}>{removedQty}</td>
-                            <td className="py-3 text-sm text-right font-semibold text-slate-800">{packedQty}</td>
-                            <td className="py-3 text-xs text-slate-500 max-w-[160px]">{formatBoxBreakdown(sku.boxQuantities)}</td>
-                            <td className="py-3 text-sm text-right text-slate-700">{inwardQty}</td>
-                            <td className={`py-3 text-sm text-right font-medium ${diff !== 0 && inwardQty > 0 ? 'text-amber-700' : 'text-slate-500'}`}>{inwardQty > 0 ? diff : '—'}</td>
-                            <td className="py-3">
-                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${inwardStatusClass(sku.inwardStatus)}`}>
+                            <td className="py-3 px-3 font-bold text-slate-900">
+                              <div className="flex items-center gap-1.5">
+                                <span>{sku.internalSku || '—'}</span>
+                                {sku.internalSku && (
+                                  <button
+                                    type="button"
+                                    onClick={() => copyText(sku.internalSku, 'Internal SKU')}
+                                    className="text-slate-300 hover:text-slate-600 transition-colors p-0.5"
+                                    title="Copy SKU"
+                                  >
+                                    <Copy className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                            <td className="py-3 px-3 text-right font-semibold text-slate-600 tabular-nums">{requiredQty}</td>
+                            <td className="py-3 px-3 text-right text-slate-500 tabular-nums">{originalPacked}</td>
+                            <td className={`py-3 px-3 text-right font-bold tabular-nums ${removedQty > 0 ? 'text-red-600' : 'text-slate-400'}`}>
+                              {removedQty}
+                            </td>
+                            <td className="py-3 px-3 text-right font-extrabold text-slate-900 tabular-nums">
+                              {packedQty}
+                            </td>
+                            <td className="py-3 px-3 max-w-[200px]">
+                              {boxEntries.length > 0 ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {boxEntries.map(([boxNo, qty]) => (
+                                    <span key={boxNo} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-700 font-mono text-[10px] font-semibold border border-slate-200/60">
+                                      <span className="text-slate-400">#</span>{boxNo}:<strong className="text-primary-700">{qty}</strong>
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-slate-300 font-mono text-xs">—</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-3 text-right font-bold text-slate-800 tabular-nums">{inwardQty}</td>
+                            <td className="py-3 px-3 text-right">
+                              {inwardQty > 0 ? (
+                                diff < 0 ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-200 tabular-nums">
+                                    {diff} Short
+                                  </span>
+                                ) : diff > 0 ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200 tabular-nums">
+                                    +{diff} Excess
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                    Match
+                                  </span>
+                                )
+                              ) : (
+                                <span className="text-slate-300 font-mono text-xs">—</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-3">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${inwardStatusClass(sku.inwardStatus)}`}>
                                 {inwardStatusLabel(sku.inwardStatus)}
                               </span>
                             </td>
                           </tr>
-                        )
+                        );
                       })
                     ) : (
                       <tr>
-                        <td colSpan="10" className="py-8 text-center text-slate-400">No SKUs found</td>
+                        <td colSpan="10" className="py-12 text-center text-slate-400">
+                          {skuSearch || skuStatusFilter !== 'all'
+                            ? 'No SKUs match your filter criteria'
+                            : 'No SKUs registered for this consignment'}
+                        </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
               </div>
 
+              {/* Inward Upload History (Admin) */}
               {isAdmin && (
-                <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+                <div className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-4">
                   <div className="flex items-center gap-2 mb-3">
                     <History className="w-4 h-4 text-slate-500" />
-                    <h4 className="text-sm font-bold text-slate-800 uppercase tracking-wide">Inward Upload History (Admin)</h4>
+                    <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Inward Upload History (Admin)</h4>
                   </div>
                   {inwardUploads.length === 0 ? (
-                    <p className="text-sm text-slate-500">No inward uploads recorded yet. Upload a sheet to create history.</p>
+                    <p className="text-xs text-slate-500">No inward uploads recorded yet.</p>
                   ) : (
                     <div className="overflow-x-auto">
                       <table className="w-full text-xs">
                         <thead>
-                          <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider">
-                            <th className="py-2 px-2 text-left font-semibold">Uploaded At</th>
-                            <th className="py-2 px-2 text-left font-semibold">File</th>
-                            <th className="py-2 px-2 text-left font-semibold">By</th>
-                            <th className="py-2 px-2 text-right font-semibold">Updated SKUs</th>
+                          <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px]">
+                            <th className="py-2 px-2 text-left font-bold">Uploaded At</th>
+                            <th className="py-2 px-2 text-left font-bold">File</th>
+                            <th className="py-2 px-2 text-left font-bold">By</th>
+                            <th className="py-2 px-2 text-right font-bold">Updated SKUs</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                           {inwardUploads.map((entry) => (
                             <tr key={entry.id}>
-                              <td className="py-2 px-2">{entry.createdAt ? new Date(entry.createdAt).toLocaleString() : '—'}</td>
-                              <td className="py-2 px-2">{entry.fileName || '—'}</td>
-                              <td className="py-2 px-2">{entry.uploadedByName || '—'}</td>
-                              <td className="py-2 px-2 text-right font-semibold">{entry.updatedSkuCount ?? 0}</td>
+                              <td className="py-2 px-2 font-mono text-slate-600">{entry.createdAt ? new Date(entry.createdAt).toLocaleString() : '—'}</td>
+                              <td className="py-2 px-2 font-medium text-slate-800">{entry.fileName || '—'}</td>
+                              <td className="py-2 px-2 text-slate-600">{entry.uploadedByName || '—'}</td>
+                              <td className="py-2 px-2 text-right font-bold text-slate-900 tabular-nums">{entry.updatedSkuCount ?? 0}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -1869,141 +2090,229 @@ const ConsignmentDetail = () => {
           )}
 
           {activeTab === 'boxes' && (
-            <div className="space-y-4">
-              {consignment.boxes?.length > 0 && (
-                <div className="flex justify-end gap-2 flex-wrap">
-                  <button onClick={downloadWeightReport} className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 transition-colors">
-                    <Download className="w-4 h-4" />Download Weight Report (CSV)
-                  </button>
-                  <button onClick={printWeightSummary} className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 transition-colors">
-                    <Scale className="w-4 h-4" />Print Weight Summary
-                  </button>
-                  <button onClick={printAllLabels} className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg text-sm font-medium hover:bg-slate-700 transition-colors">
-                    <Tag className="w-4 h-4" />Print All {consignment.boxes.length} Labels
-                  </button>
-                  <button onClick={downloadAllLabels} title="One 4 x 6 in PDF with every box label" className="flex items-center gap-2 px-4 py-2 border border-slate-300 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-100 transition-colors">
-                    <Download className="w-4 h-4" />Download All Labels (PDF)
-                  </button>
+            <div className="space-y-5">
+              {/* Box Summary KPI Banner */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs">
+                  <p className="text-[10px] uppercase font-bold tracking-wider text-slate-400 mb-1">Total Boxes</p>
+                  <p className="text-xl font-extrabold text-slate-900 tabular-nums">{consignment.boxes?.length || 0}</p>
+                  <p className="text-[10px] text-slate-400 mt-1 font-medium">Consignment containers</p>
                 </div>
-              )}
+                <div className="bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs">
+                  <p className="text-[10px] uppercase font-bold tracking-wider text-slate-400 mb-1">Total Packed Items</p>
+                  <p className="text-xl font-extrabold text-primary-700 tabular-nums">{omsGuruSummary.totalPackedQty || 0} units</p>
+                  <p className="text-[10px] text-slate-400 mt-1 font-medium">Units securely packed</p>
+                </div>
+                <div className="bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs">
+                  <p className="text-[10px] uppercase font-bold tracking-wider text-slate-400 mb-1">Shipment Weight</p>
+                  <p className="text-xl font-extrabold text-indigo-700 tabular-nums">
+                    {(consignment.boxes || []).reduce((acc, b) => acc + (Number(b.weight) || 0), 0) > 0
+                      ? `${(consignment.boxes || []).reduce((acc, b) => acc + (Number(b.weight) || 0), 0).toFixed(2)} ${consignment.weightUnit || 'KG'}`
+                      : (consignment.totalWeight ? `${Number(consignment.totalWeight).toFixed(2)} ${consignment.weightUnit || 'KG'}` : 'Not Recorded')}
+                  </p>
+                  <p className="text-[10px] text-slate-400 mt-1 font-medium">Recorded scale weight</p>
+                </div>
+                <div className="bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs">
+                  <p className="text-[10px] uppercase font-bold tracking-wider text-slate-400 mb-1">Station Video Proof</p>
+                  <p className="text-xl font-extrabold text-slate-900 tabular-nums">
+                    {consignment.videos?.length || 0} {(consignment.videos?.length === 1) ? 'video' : 'videos'}
+                  </p>
+                  <p className="text-[10px] text-slate-400 mt-1 font-medium">CCTV audit recordings</p>
+                </div>
+              </div>
 
-              {/* Shipment Level Weight ledger/table */}
+              {/* Box Actions Toolbar & Search */}
+              <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 bg-slate-50/70 p-3 rounded-2xl border border-slate-200/80">
+                <div className="relative flex-1 min-w-[200px]">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={boxSearch}
+                    onChange={(e) => setBoxSearch(e.target.value)}
+                    placeholder="Search boxes by number or contained SKU..."
+                    className="w-full pl-9 pr-8 py-2 text-xs bg-white border border-slate-200 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500"
+                  />
+                  {boxSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setBoxSearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                {consignment.boxes?.length > 0 && (
+                  <div className="flex items-center gap-2 flex-wrap shrink-0">
+                    <button
+                      type="button"
+                      onClick={printAllLabels}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-colors shadow-2xs cursor-pointer"
+                    >
+                      <Tag className="w-3.5 h-3.5" /> Print All ({consignment.boxes.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={downloadAllLabels}
+                      title="Download 4x6 in PDF with every box label"
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-bold transition-colors shadow-2xs cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5 text-slate-500" /> PDF Labels
+                    </button>
+                    <button
+                      type="button"
+                      onClick={printWeightSummary}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-colors shadow-2xs cursor-pointer"
+                    >
+                      <Scale className="w-3.5 h-3.5" /> Print Weight
+                    </button>
+                    <button
+                      type="button"
+                      onClick={downloadWeightReport}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors shadow-2xs cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" /> Weight CSV
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Shipment Weight Ledger (Collapsible / Clean) */}
               {consignment.boxes?.length > 0 && (
-                <div className="bg-slate-50/50 border border-slate-200 rounded-xl p-5 mb-6">
-                  <h4 className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-3 flex items-center gap-2">
+                <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs">
+                  <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider mb-3 flex items-center gap-2">
                     <Scale className="w-4 h-4 text-primary-500" />
-                    Shipment Weight Records (Ledger)
+                    Shipment Weight Records Ledger
                   </h4>
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs border-collapse">
                       <thead>
-                        <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider">
-                          <th className="py-2 px-3 text-left font-semibold">Box No</th>
-                          <th className="py-2 px-3 text-right font-semibold">Weight</th>
-                          <th className="py-2 px-3 text-left font-semibold">Captured By</th>
-                          <th className="py-2 px-3 text-left font-semibold">Captured At</th>
-                          <th className="py-2 px-3 text-center font-semibold">Proof</th>
+                        <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px]">
+                          <th className="py-2 px-3 text-left font-bold">Box No</th>
+                          <th className="py-2 px-3 text-right font-bold">Weight</th>
+                          <th className="py-2 px-3 text-left font-bold">Captured By</th>
+                          <th className="py-2 px-3 text-left font-bold">Captured At</th>
+                          <th className="py-2 px-3 text-center font-bold">Proof</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {[...consignment.boxes]
-                          .sort((a, b) => String(a.boxNo).localeCompare(String(b.boxNo), undefined, { numeric: true }))
-                          .map((box) => (
-                            <tr key={box.id} className="hover:bg-slate-100/50">
-                              <td className="py-2 px-3 font-semibold text-slate-700">
-                                <span className="inline-flex items-center gap-1.5">
-                                  Box #{box.boxNo}
-                                  {canEditBoxQuantities && (
-                                    <button
-                                      type="button"
-                                      title="Correct a mis-scanned box number"
-                                      onClick={() => setBoxRename({ boxNo: box.boxNo, newBoxNo: '', reason: '', remarks: '' })}
-                                      className="text-slate-400 hover:text-primary-600 transition-colors"
-                                    >
-                                      <Pencil className="w-3 h-3" />
-                                    </button>
-                                  )}
-                                </span>
-                              </td>
-                              <td className="py-2 px-3 text-right font-bold text-slate-900">
-                                {box.weight ? `${box.weight.toFixed(2)} ${box.weightUnit || 'KG'}` : '-'}
-                              </td>
-                              <td className="py-2 px-3 text-slate-600">{box.weightCapturedByName || '-'}</td>
-                              <td className="py-2 px-3 text-slate-500">
-                                {box.weightCapturedAt ? new Date(box.weightCapturedAt).toLocaleString() : '-'}
-                              </td>
-                              <td className="py-2 px-3 text-center">
-                                {box.weightImageId ? (
+                        {filteredBoxes.map((box) => (
+                          <tr key={box.id} className="hover:bg-slate-50/60 transition-colors">
+                            <td className="py-2 px-3 font-semibold text-slate-800 font-mono">
+                              <span className="inline-flex items-center gap-1.5">
+                                Box #{box.boxNo}
+                                {canEditBoxQuantities && (
                                   <button
-                                    onClick={() => openWeightImagePreview(box.weightImageId, box.boxNo)}
-                                    className="text-primary-600 hover:text-primary-800 font-medium hover:underline text-xs inline-flex items-center gap-1"
+                                    type="button"
+                                    title="Correct box number"
+                                    onClick={() => setBoxRename({ boxNo: box.boxNo, newBoxNo: '', reason: '', remarks: '' })}
+                                    className="text-slate-400 hover:text-primary-600 transition-colors"
                                   >
-                                    View Image
+                                    <Pencil className="w-3 h-3" />
                                   </button>
-                                ) : (
-                                  <span className="text-slate-400">-</span>
                                 )}
-                              </td>
-                            </tr>
-                          ))}
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 text-right font-extrabold text-slate-900 tabular-nums">
+                              {box.weight ? `${Number(box.weight).toFixed(2)} ${box.weightUnit || 'KG'}` : '—'}
+                            </td>
+                            <td className="py-2 px-3 text-slate-600">{box.weightCapturedByName || '—'}</td>
+                            <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">
+                              {box.weightCapturedAt ? new Date(box.weightCapturedAt).toLocaleString() : '—'}
+                            </td>
+                            <td className="py-2 px-3 text-center">
+                              {box.weightImageId ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openWeightImagePreview(box.weightImageId, box.boxNo)}
+                                  className="text-primary-600 hover:text-primary-800 font-bold hover:underline text-xs inline-flex items-center gap-1"
+                                >
+                                  <Eye className="w-3.5 h-3.5" /> Proof
+                                </button>
+                              ) : (
+                                <span className="text-slate-300">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   </div>
                 </div>
               )}
 
-              {consignment.boxes?.length > 0 ? (
-                consignment.boxes.map((box) => (
-                  <div key={box.id} className="border border-slate-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-3">
+              {/* Individual Box Cards */}
+              {filteredBoxes.length > 0 ? (
+                filteredBoxes.map((box) => (
+                  <div key={box.id} className="bg-white border border-slate-200/80 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-slate-300 transition-all">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
                       <div className="flex items-center gap-3">
-                        <Box className="w-5 h-5 text-primary-600" />
-                        <span className="font-medium text-slate-900">Box #{box.boxNo}</span>
-                        {box.liveUnsaved && (
-                          <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                        <div className="px-3 py-1 rounded-xl bg-primary-50 text-primary-800 font-extrabold text-sm border border-primary-200/60 flex items-center gap-2">
+                          <Box className="w-4 h-4 text-primary-600" />
+                          <span>Box #{box.boxNo}</span>
+                        </div>
+                        {box.liveUnsaved ? (
+                          <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
                             In progress
                           </span>
+                        ) : (
+                          <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                            Saved Box
+                          </span>
                         )}
+                        <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-2.5 py-0.5 rounded-lg">
+                          {box.totalQty} items
+                        </span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <button onClick={() => printBoxLabel(box)} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-medium hover:bg-slate-700 transition-colors">
-                          <Tag className="w-3.5 h-3.5" />Print Label
+                        <button
+                          type="button"
+                          onClick={() => printBoxLabel(box)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-colors shadow-2xs cursor-pointer"
+                        >
+                          <Tag className="w-3.5 h-3.5" /> Print
                         </button>
-                        <button onClick={() => downloadBoxLabel(box)} title="Download this label as a 4 x 6 in PDF" className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-300 text-slate-700 rounded-lg text-xs font-medium hover:bg-slate-100 transition-colors">
-                          <Download className="w-3.5 h-3.5" />Download
+                        <button
+                          type="button"
+                          onClick={() => downloadBoxLabel(box)}
+                          title="Download 4x6 in PDF"
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-bold transition-colors shadow-2xs cursor-pointer"
+                        >
+                          <Download className="w-3.5 h-3.5 text-slate-500" /> PDF
                         </button>
-                        <span className="text-sm text-slate-500">{box.totalQty} items</span>
+                        {canEditBoxQuantities && (
+                          <button
+                            type="button"
+                            onClick={() => setBoxRename({ boxNo: box.boxNo, newBoxNo: '', reason: '', remarks: '' })}
+                            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                            title="Rename Box Number"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     </div>
 
-                    {box.history && (
-                      <div className="mb-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
-                        <div className="rounded-md bg-slate-50 border border-slate-100 px-2 py-1.5">Originally packed: <strong>{box.history.originallyPacked}</strong></div>
-                        <div className="rounded-md bg-slate-50 border border-slate-100 px-2 py-1.5">Added later: <strong>{box.history.addedLater}</strong></div>
-                        <div className="rounded-md bg-slate-50 border border-slate-100 px-2 py-1.5">Removed later: <strong>{box.history.removedLater}</strong></div>
-                        <div className="rounded-md bg-slate-50 border border-slate-100 px-2 py-1.5">Final: <strong>{box.history.finalQuantity}</strong></div>
-                      </div>
-                    )}
-
-                    {/* Weight Details */}
-                    <div className="mb-3 px-3 py-2 bg-slate-50 rounded-lg border border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <div className="flex items-center gap-4">
+                    {/* Weight Details Strip */}
+                    <div className="mb-4 px-3.5 py-2.5 bg-slate-50/80 rounded-xl border border-slate-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+                      <div className="flex flex-wrap items-center gap-4 sm:gap-6">
                         <div>
-                          <span className="text-slate-400 block text-[10px] uppercase font-semibold">Weight</span>
-                          <span className="font-bold text-slate-800">
-                            {box.weight ? `${box.weight.toFixed(2)} ${box.weightUnit || 'KG'}` : 'Not Captured'}
+                          <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Weight</span>
+                          <span className="font-extrabold text-slate-900">
+                            {box.weight ? `${Number(box.weight).toFixed(2)} ${box.weightUnit || 'KG'}` : 'Not Captured'}
                           </span>
                         </div>
                         {box.weightCapturedByName && (
                           <div>
-                            <span className="text-slate-400 block text-[10px] uppercase font-semibold">Captured By</span>
-                            <span className="text-slate-700 font-medium">{box.weightCapturedByName}</span>
+                            <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Captured By</span>
+                            <span className="text-slate-700 font-semibold">{box.weightCapturedByName}</span>
                           </div>
                         )}
                         {box.weightCapturedAt && (
                           <div>
-                            <span className="text-slate-400 block text-[10px] uppercase font-semibold">Captured At</span>
-                            <span className="text-slate-700 font-medium">
+                            <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">Captured At</span>
+                            <span className="text-slate-600 font-mono text-[11px]">
                               {new Date(box.weightCapturedAt).toLocaleString()}
                             </span>
                           </div>
@@ -2011,38 +2320,40 @@ const ConsignmentDetail = () => {
                       </div>
                       {box.weightImageId && (
                         <button
+                          type="button"
                           onClick={() => openWeightImagePreview(box.weightImageId, box.boxNo)}
-                          className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-md font-medium shadow-sm transition-colors text-[10px] inline-flex items-center gap-1"
+                          className="px-3 py-1 bg-white border border-slate-200/80 hover:bg-slate-100 text-slate-700 rounded-lg font-bold shadow-2xs transition-colors text-xs inline-flex items-center gap-1.5 cursor-pointer"
                         >
-                          ⚖️ View Proof Image
+                          <Eye className="w-3.5 h-3.5 text-primary-600" /> View Proof
                         </button>
                       )}
                     </div>
 
+                    {/* Box Items Table */}
                     {box.items?.length > 0 && (
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
+                      <div className="overflow-x-auto rounded-xl border border-slate-100">
+                        <table className="w-full text-xs">
                           <thead>
-                            <tr className="border-b border-slate-100 text-xs text-slate-500 uppercase">
-                              <th className="text-left py-2 pr-3 font-semibold">Internal SKU</th>
-                              <th className="text-left py-2 pr-3 font-semibold">Marketplace SKU</th>
-                              <th className="text-left py-2 pr-3 font-semibold">Barcode</th>
-                              <th className="text-right py-2 font-semibold">Qty</th>
-                              {canEditBoxQuantities && <th className="text-right py-2 font-semibold">Edit</th>}
+                            <tr className="bg-slate-50/80 border-b border-slate-100 text-[10px] text-slate-500 uppercase font-bold tracking-wider">
+                              <th className="text-left py-2 px-3">Internal SKU</th>
+                              <th className="text-left py-2 px-3">Marketplace SKU</th>
+                              <th className="text-left py-2 px-3">Barcode</th>
+                              <th className="text-right py-2 px-3">Quantity</th>
+                              {canEditBoxQuantities && <th className="text-right py-2 px-3">Edit</th>}
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-50">
                             {box.items.map((item, idx) => (
-                              <tr key={`${item.skuId || item.internalSku}-${idx}`}>
-                                <td className="py-2 pr-3 font-medium text-slate-800">{item.internalSku || item.name || '—'}</td>
-                                <td className="py-2 pr-3 font-mono text-slate-600">{item.marketplaceSku || '—'}</td>
-                                <td className="py-2 pr-3 font-mono text-slate-500 text-xs">{item.barcode || item.marketplaceBarcode || '—'}</td>
-                                <td className="py-2 text-right font-bold text-slate-900">{item.qty || 0}</td>
+                              <tr key={`${item.skuId || item.internalSku}-${idx}`} className="hover:bg-slate-50/60">
+                                <td className="py-2 px-3 font-bold text-slate-900">{item.internalSku || item.name || '—'}</td>
+                                <td className="py-2 px-3 font-mono text-slate-600">{item.marketplaceSku || '—'}</td>
+                                <td className="py-2 px-3 font-mono text-slate-500">{item.barcode || item.marketplaceBarcode || '—'}</td>
+                                <td className="py-2 px-3 text-right font-extrabold text-slate-900 tabular-nums">{item.qty || 0}</td>
                                 {canEditBoxQuantities && (
-                                  <td className="py-2 text-right">
+                                  <td className="py-2 px-3 text-right">
                                     <button
                                       type="button"
-                                      className="text-xs font-semibold text-primary-600 hover:underline"
+                                      className="text-xs font-bold text-primary-600 hover:text-primary-800 hover:underline cursor-pointer"
                                       onClick={() => setBoxEdit({
                                         boxNo: box.boxNo,
                                         skuId: item.skuId,
@@ -2052,7 +2363,7 @@ const ConsignmentDetail = () => {
                                         remarks: '',
                                       })}
                                     >
-                                      Edit qty
+                                      Edit
                                     </button>
                                   </td>
                                 )}
@@ -2063,20 +2374,24 @@ const ConsignmentDetail = () => {
                       </div>
                     )}
 
+                    {/* Box History Audit */}
                     {(box.adjustments || []).filter((a) => a.status === 'completed').length > 0 && (
                       <div className="mt-3 border-t border-slate-100 pt-3">
-                        <p className="text-[10px] uppercase font-semibold text-slate-400 mb-1.5">Box history</p>
-                        <ul className="space-y-1 text-[11px] text-slate-600">
+                        <p className="text-[10px] uppercase font-bold tracking-wider text-slate-400 mb-1.5">Box Change Audit</p>
+                        <ul className="space-y-1 text-xs text-slate-600">
                           {(box.adjustments || []).filter((a) => a.status === 'completed').map((a) => (
-                            <li key={a.id}>
-                              <strong className="capitalize">{a.actionType}</strong>
-                              {' '}{a.internalSku || a.skuId}:{' '}
-                              {a.actionType === 'edit'
-                                ? `${a.previousQuantity} → ${a.updatedQuantity}`
-                                : a.quantity}
-                              {' · '}{a.reasonLabel || a.reason || '—'}
-                              {' · '}{a.removedByName || a.userName || '—'}
-                              {' · '}{a.completedAt ? new Date(a.completedAt).toLocaleString() : ''}
+                            <li key={a.id} className="flex items-center gap-2">
+                              <span className="font-semibold capitalize text-slate-800">{a.actionType}</span>
+                              <span className="font-mono text-slate-700">{a.internalSku || a.skuId}</span>
+                              <span className="font-bold text-slate-900">
+                                {a.actionType === 'edit' ? `${a.previousQuantity} → ${a.updatedQuantity}` : a.quantity}
+                              </span>
+                              <span className="text-slate-400">·</span>
+                              <span className="text-slate-500">{a.reasonLabel || a.reason || '—'}</span>
+                              <span className="text-slate-400">·</span>
+                              <span className="text-slate-400 text-[11px] font-mono">
+                                {a.removedByName || a.userName || '—'} ({a.completedAt ? new Date(a.completedAt).toLocaleString() : ''})
+                              </span>
                             </li>
                           ))}
                         </ul>
@@ -2085,7 +2400,9 @@ const ConsignmentDetail = () => {
                   </div>
                 ))
               ) : (
-                <div className="text-center py-8 text-slate-400">No boxes found</div>
+                <div className="text-center py-12 text-slate-400 bg-slate-50/50 rounded-2xl border border-slate-200/60">
+                  {boxSearch ? 'No boxes match your search' : 'No boxes recorded for this consignment yet'}
+                </div>
               )}
             </div>
           )}
@@ -2111,17 +2428,17 @@ const ConsignmentDetail = () => {
                       type="button"
                       onClick={() => setReportView('compact')}
                       title="One row per SKU, box quantities shown as a compact list"
-                      className={`px-3 py-1.5 transition-colors ${reportView === 'compact' ? 'bg-primary-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 transition-colors font-semibold ${reportView === 'compact' ? 'bg-primary-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
                     >
-                      Compact
+                      <LayoutList className="w-3.5 h-3.5" /> Compact
                     </button>
                     <button
                       type="button"
                       onClick={() => setReportView('grid')}
                       title={`Full matrix — one column per box (${pivotData.boxes.length})`}
-                      className={`px-3 py-1.5 transition-colors border-l border-slate-200 ${reportView === 'grid' ? 'bg-primary-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 transition-colors border-l border-slate-200 font-semibold ${reportView === 'grid' ? 'bg-primary-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
                     >
-                      Grid
+                      <LayoutGrid className="w-3.5 h-3.5" /> Grid
                     </button>
                   </div>
                   <button onClick={() => exportCsv('packed')} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-700 transition-colors">
@@ -2141,9 +2458,17 @@ const ConsignmentDetail = () => {
                       : <UploadCloud className="w-3.5 h-3.5" />}
                     {sheetPushing ? 'Pushing…' : 'Push to Google Sheet'}
                   </button>
-                  <span className="text-xs text-slate-500 ml-2">
-                    {pivotData.summary.packedSkuCount || 0} packed, {pivotData.summary.pendingSkuCount || 0} pending, {pivotData.summary.completeSkuCount || 0} complete
-                  </span>
+                  <div className="flex items-center gap-1.5 ml-2 flex-wrap">
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      {pivotData.summary.completeSkuCount || 0} complete
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary-100 text-primary-800 border border-primary-200">
+                      {pivotData.summary.packedSkuCount || 0} packed
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                      {pivotData.summary.pendingSkuCount || 0} pending
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -2232,9 +2557,9 @@ const ConsignmentDetail = () => {
               })()}
 
               {reportView === 'compact' && (
-                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <div className="overflow-x-auto max-h-[600px] overflow-y-auto rounded-xl border border-slate-200">
                   <table className="w-full text-sm border-collapse">
-                    <thead>
+                    <thead className="sticky top-0 z-10 bg-slate-100 shadow-2xs">
                       <tr className="bg-slate-100">
                         <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">#</th>
                         <th className="text-left px-3 py-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">Barcode SKU</th>
@@ -2296,8 +2621,8 @@ const ConsignmentDetail = () => {
               )}
 
               {reportView === 'grid' && (
-              <div className="overflow-x-auto rounded-xl border border-slate-200">
-                <table className="w-full text-sm border-collapse">
+                <div className="overflow-x-auto max-h-[600px] overflow-y-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-sm border-collapse">
                   <thead>
                     {/* Group headers */}
                     <tr>
@@ -2522,13 +2847,66 @@ const ConsignmentDetail = () => {
                   })}
                 </div>
               ) : (
-                <div className="text-center py-8 text-slate-400">No boxes or videos for this consignment yet</div>
+                <div className="text-center py-12 px-4 rounded-xl border border-dashed border-slate-200 bg-slate-50/50">
+                  <div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
+                    <Video className="w-6 h-6" />
+                  </div>
+                  <h4 className="text-sm font-bold text-slate-800">No box packing videos yet</h4>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                    Once boxes are packed at the packing station with camera recording active, surveillance recordings will be archived here per box.
+                  </p>
+                </div>
               )}
             </div>
           )}
 
           {activeTab === 'documents' && (
             <div className="space-y-6">
+              {/* Documents KPI & Summary Strip */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-slate-50/80 rounded-xl p-3 border border-slate-200/80">
+                  <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Total Documents</span>
+                  <div className="text-xl font-bold font-mono text-slate-900 mt-1">
+                    {consignment.documents?.length || 0}
+                  </div>
+                  <span className="text-[11px] text-slate-500">Audit &amp; legal files</span>
+                </div>
+                <div className="bg-slate-50/80 rounded-xl p-3 border border-slate-200/80">
+                  <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Invoice File</span>
+                  <div className="text-sm font-bold text-slate-900 mt-1.5 flex items-center gap-1.5 truncate">
+                    {consignment.invoiceDocumentId ? (
+                      <span className="text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-md text-xs font-semibold">Attached</span>
+                    ) : consignment.forwardInvoiceNo || consignment.invoice?.number ? (
+                      <span className="text-amber-800 bg-amber-100/80 px-2 py-0.5 rounded-md text-xs font-semibold font-mono">No. Recorded</span>
+                    ) : (
+                      <span className="text-slate-500 bg-slate-200/60 px-2 py-0.5 rounded-md text-xs font-semibold">Pending</span>
+                    )}
+                  </div>
+                  <span className="text-[11px] text-slate-500">Commercial billing</span>
+                </div>
+                <div className="bg-slate-50/80 rounded-xl p-3 border border-slate-200/80">
+                  <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Docket / LR</span>
+                  <div className="text-sm font-bold text-slate-900 mt-1.5 flex items-center gap-1.5 truncate">
+                    {consignment.docketNo ? (
+                      <span className="font-mono text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md truncate max-w-[130px]">
+                        {consignment.docketNo}
+                      </span>
+                    ) : (
+                      <span className="text-slate-500 bg-slate-200/60 px-2 py-0.5 rounded-md text-xs font-semibold">Not Assigned</span>
+                    )}
+                  </div>
+                  <span className="text-[11px] text-slate-500">Transport manifest</span>
+                </div>
+                <div className="bg-slate-50/80 rounded-xl p-3 border border-slate-200/80">
+                  <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Cloud Storage</span>
+                  <div className="text-sm font-bold text-slate-900 mt-1.5 flex items-center gap-1 text-teal-700">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                    <span>Cloudflare R2</span>
+                  </div>
+                  <span className="text-[11px] text-slate-500">Immutable object vault</span>
+                </div>
+              </div>
+
               {consignment?.stageConfirmations?.packing_completed?.confirmedAt && !consignment?.stageConfirmations?.invoice_created?.confirmedAt && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-4">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-2">
@@ -2579,28 +2957,31 @@ const ConsignmentDetail = () => {
               )}
 
               {consignment?.invoice && (
-                <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs grid sm:grid-cols-3 gap-2">
+                <div className="rounded-xl border border-slate-200 bg-white p-3.5 text-xs grid sm:grid-cols-3 gap-3 shadow-2xs">
                   <div>
-                    <div className="text-[10px] uppercase text-slate-500 font-semibold">Invoice number</div>
-                    <div className="font-semibold text-slate-900 mt-0.5">{consignment.invoice.number || consignment.forwardInvoiceNo || '—'}</div>
+                    <div className="text-[10px] uppercase text-slate-500 font-semibold tracking-wider">Invoice Number</div>
+                    <div className="font-bold font-mono text-slate-900 mt-1">{consignment.invoice.number || consignment.forwardInvoiceNo || '—'}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] uppercase text-slate-500 font-semibold">Invoice date</div>
-                    <div className="font-semibold text-slate-900 mt-0.5">{consignment.invoice.date || '—'}</div>
+                    <div className="text-[10px] uppercase text-slate-500 font-semibold tracking-wider">Invoice Date</div>
+                    <div className="font-semibold text-slate-900 mt-1">{consignment.invoice.date || '—'}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] uppercase text-slate-500 font-semibold">Amount</div>
-                    <div className="font-semibold text-slate-900 mt-0.5">{consignment.invoice.amount != null ? consignment.invoice.amount : '—'}</div>
+                    <div className="text-[10px] uppercase text-slate-500 font-semibold tracking-wider">Invoice Amount</div>
+                    <div className="font-bold font-mono text-slate-900 mt-1">{consignment.invoice.amount != null ? `₹${Number(consignment.invoice.amount).toLocaleString('en-IN')}` : '—'}</div>
                   </div>
                 </div>
               )}
 
               <div>
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
-                  <h3 className="text-lg font-semibold text-slate-900">Documents</h3>
-                  <label className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 cursor-pointer transition-colors text-sm">
-                    <Upload className="w-4 h-4" />
-                    {uploading ? 'Uploading...' : 'Upload Document'}
+                  <div>
+                    <h3 className="text-lg font-semibold text-slate-900">Shipment Documents &amp; Evidence</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">Carrier dockets, tax invoices, shipping manifests, and delivery PODs</p>
+                  </div>
+                  <label className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 cursor-pointer transition-colors text-xs font-semibold shadow-xs">
+                    {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                    <span>{uploading ? 'Uploading...' : 'Upload Document'}</span>
                     <input
                       type="file"
                       accept=".pdf,.doc,.docx,.xlsx,.xls,.csv"
@@ -2613,44 +2994,47 @@ const ConsignmentDetail = () => {
                 <div className="space-y-3">
                   {consignment.documents?.length > 0 ? (
                     consignment.documents.map((doc) => (
-                      <div key={doc.id} className="flex items-center justify-between p-4 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
-                        <div className="flex items-center gap-3">
-                          <FileText className="w-8 h-8 text-primary-600" />
-                          <div>
-                            <p className="text-sm font-medium text-slate-900">
+                      <div key={doc.id} className="flex items-center justify-between p-4 border border-slate-200 rounded-xl bg-white hover:border-slate-300 hover:shadow-xs transition-all">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-10 h-10 rounded-xl bg-primary-50 text-primary-600 flex items-center justify-center shrink-0 border border-primary-100/60">
+                            <FileText className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-900 truncate">
                               {doc.originalName}
                               {doc.purpose === 'invoice' && (
-                                <span className="ml-2 text-[10px] font-semibold uppercase text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">Invoice</span>
+                                <span className="ml-2 text-[10px] font-bold uppercase tracking-wider text-amber-800 bg-amber-100 border border-amber-200 px-1.5 py-0.5 rounded">Invoice</span>
                               )}
                               {doc.purpose === 'docket' && (
-                                <span className="ml-2 text-[10px] font-semibold uppercase text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">Docket</span>
+                                <span className="ml-2 text-[10px] font-bold uppercase tracking-wider text-indigo-800 bg-indigo-100 border border-indigo-200 px-1.5 py-0.5 rounded">Docket</span>
                               )}
                             </p>
-                            <p className="text-xs text-slate-500">
-                              {new Date(doc.uploadedAt).toLocaleDateString()} - {(doc.size / 1024).toFixed(1)} KB
+                            <p className="text-xs text-slate-500 mt-0.5 font-mono">
+                              {new Date(doc.uploadedAt).toLocaleDateString('en-GB')} · {(doc.size / 1024).toFixed(1)} KB
                             </p>
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1">
                           <button
                             type="button"
                             onClick={() => openDocument(doc)}
-                            className="p-2 text-slate-400 hover:text-primary-600 transition-colors"
-                            title="Open"
+                            className="p-2 text-slate-500 hover:text-primary-600 hover:bg-slate-100 rounded-lg transition-colors"
+                            title="Open in new tab"
                           >
                             <ExternalLink className="w-4 h-4" />
                           </button>
                           <button
                             type="button"
                             onClick={() => downloadDocument(doc)}
-                            className="p-2 text-slate-400 hover:text-emerald-600 transition-colors"
-                            title="Download"
+                            className="p-2 text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                            title="Download document"
                           >
                             <Download className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => setDeleteFile({ id: doc.id, type: 'document', name: doc.originalName })}
-                            className="p-2 text-slate-400 hover:text-red-600 transition-colors"
+                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            title="Delete document"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -2658,7 +3042,26 @@ const ConsignmentDetail = () => {
                       </div>
                     ))
                   ) : (
-                    <div className="text-center py-8 text-slate-400">No documents uploaded</div>
+                    <div className="text-center py-12 px-4 rounded-xl border border-dashed border-slate-200 bg-slate-50/50">
+                      <div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
+                        <FileText className="w-6 h-6" />
+                      </div>
+                      <h4 className="text-sm font-bold text-slate-800">No documents attached yet</h4>
+                      <p className="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-4">
+                        Upload invoice copies, carrier dockets, weight slips, or delivery receipts for permanent audit storage.
+                      </p>
+                      <label className="inline-flex items-center gap-2 px-3.5 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors text-xs font-semibold shadow-2xs">
+                        <Upload className="w-3.5 h-3.5 text-primary-600" />
+                        <span>Choose File to Upload</span>
+                        <input
+                          type="file"
+                          accept=".pdf,.doc,.docx,.xlsx,.xls,.csv"
+                          className="hidden"
+                          onChange={(e) => handleFileUpload(e, 'document')}
+                          disabled={uploading}
+                        />
+                      </label>
+                    </div>
                   )}
                 </div>
               </div>

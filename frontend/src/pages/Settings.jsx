@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, Navigate } from 'react-router';
 import { useAuth } from '../context/AuthContext';
-import { Save, Trash2, AlertTriangle, ChevronLeft, Loader2, Clock, Database, Play, Server, CheckCircle2, RefreshCw, ShieldCheck, HardDrive, Activity, BarChart3, ExternalLink, ClipboardPaste, Factory, MessageCircle } from 'lucide-react';
+import { Save, Trash2, AlertTriangle, ChevronLeft, Loader2, Clock, Database, Play, Server, CheckCircle2, RefreshCw, ShieldCheck, HardDrive, Activity, BarChart3, ExternalLink, ClipboardPaste, Factory, MessageCircle, Sliders } from 'lucide-react';
 import { settingsAPI, usersAPI, whatsappAdminAPI } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import ConfirmModal from '../components/ConfirmModal';
@@ -53,6 +53,7 @@ export default function Settings() {
     fetchSettings();
     fetchDbInfo();
     usersAPI.secureAccessStatus().then(r => setFbAuthEnabled(r.data.enabled)).catch(() => setFbAuthEnabled(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchLiveLogs = async () => {
@@ -220,26 +221,39 @@ export default function Settings() {
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex border-b border-slate-200 mb-6 max-w-5xl">
+      <div className="flex items-center gap-2 p-1.5 bg-slate-100/90 rounded-2xl border border-slate-200/80 mb-6 max-w-xl backdrop-blur-xs shadow-2xs" role="tablist" aria-label="Settings Navigation">
         <button
+          role="tab"
+          id="tab-settings-general"
+          aria-selected={activeTab === 'general'}
+          aria-controls="panel-settings-general"
           onClick={() => setActiveTab('general')}
-          className={`py-3 px-6 font-semibold text-sm border-b-2 transition-all ${
+          className={`flex-1 py-2.5 px-4 font-semibold text-xs sm:text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 ${
             activeTab === 'general'
-              ? 'border-primary-600 text-primary-600 font-bold'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
+              ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-900/5 font-bold'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          General &amp; Retention
+          <Sliders className={`w-4 h-4 transition-colors ${activeTab === 'general' ? 'text-primary-600' : 'text-slate-400'}`} />
+          <span>General &amp; Retention</span>
         </button>
         <button
+          role="tab"
+          id="tab-settings-monitoring"
+          aria-selected={activeTab === 'monitoring'}
+          aria-controls="panel-settings-monitoring"
           onClick={() => setActiveTab('monitoring')}
-          className={`py-3 px-6 font-semibold text-sm border-b-2 transition-all flex items-center gap-2 ${
+          className={`flex-1 py-2.5 px-4 font-semibold text-xs sm:text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 ${
             activeTab === 'monitoring'
-              ? 'border-primary-600 text-primary-600 font-bold'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
+              ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-900/5 font-bold'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          <Activity className="w-4 h-4 text-violet-500" /> System Logs &amp; Dashboards
+          <Activity className={`w-4 h-4 transition-colors ${activeTab === 'monitoring' ? 'text-violet-600' : 'text-slate-400'}`} />
+          <span>System Logs &amp; Dashboards</span>
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-violet-100 text-violet-700 tracking-tight">
+            Realtime
+          </span>
         </button>
       </div>
 

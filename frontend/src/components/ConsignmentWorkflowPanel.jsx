@@ -241,14 +241,7 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
   useEffect(() => {
     setSelectedUserId(consignment?.groundTeamUserId || '')
     setForms(emptyForms(consignment))
-  }, [
-    consignment?.id,
-    consignment?.groundTeamUserId,
-    consignment?.totalPackedQty,
-    consignment?.forwardInvoiceNo,
-    consignment?.invoiceDocumentId,
-    consignment?.docketNo,
-  ])
+  }, [consignment])
 
   useEffect(() => {
     if (!canAssign) return
