@@ -111,7 +111,15 @@ class LocalFiles {
     const handle = this.handles.get(videoId);
     if (!handle) throw new Error('Recording session is not open or was already finalized');
     await (this.writeChains.get(videoId) || Promise.resolve());
-    if (this.writeErrors.has(videoId)) throw new Error('A recording chunk was not saved. The partial video is preserved for recovery.');
+    if (this.writeErrors.has(videoId)) {
+      try { await handle.close(); } catch (_) {}
+      this.handles.delete(videoId);
+      this.writeChains.delete(videoId);
+      this.sessions.delete(videoId);
+      this.writeErrors.delete(videoId);
+      this.firstChunkLogged.delete(videoId);
+      throw new Error('A recording chunk was not saved. The partial video is preserved for recovery.');
+    }
     await handle.sync();
     await handle.close();
     this.handles.delete(videoId);
@@ -131,6 +139,18 @@ class LocalFiles {
     await this.writeDurable(`${localPath}.json`, Buffer.from(JSON.stringify(result)));
     this.logger?.info('video.finalized', { videoId, consignmentId, boxNo, sizeBytes: stat.size });
     return result;
+  }
+
+  async discardVideo(videoId) {
+    const handle = this.handles.get(videoId);
+    if (handle) {
+      try { await handle.close(); } catch (_) {}
+      this.handles.delete(videoId);
+    }
+    this.writeChains.delete(videoId);
+    this.sessions.delete(videoId);
+    this.writeErrors.delete(videoId);
+    this.firstChunkLogged.delete(videoId);
   }
 
   async writeProof({ proofId = crypto.randomUUID(), consignmentId, boxNo, data, fileName = null }) {

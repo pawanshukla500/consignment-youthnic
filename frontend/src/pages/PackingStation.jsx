@@ -72,6 +72,17 @@ function getScanMessage(reason, data = {}) {
   return data.message || 'Scan rejected';
 }
 
+function indexDesktopBoxStates(boxes, activeCid) {
+  const map = {};
+  for (const box of boxes || []) {
+    const cid = String(box.consignment_id || '').trim();
+    const boxNo = String(box.box_no);
+    if (cid) map[`${cid}:${boxNo}`] = box;
+    if (!activeCid || cid === activeCid) map[boxNo] = box;
+  }
+  return map;
+}
+
 /* ═══ SOUND ENGINE ═══ */
 import { sfx } from '../utils/scanAudio';
 
@@ -351,17 +362,7 @@ export default function PackingStation() {
         setSyncRunning(Boolean(status.running));
         if (status.lastSyncAt) setLastSyncAt(status.lastSyncAt);
         if (Array.isArray(status.boxes)) {
-          const map = {};
-          for (const b of status.boxes) {
-            const bNo = String(b.box_no);
-            const cid = String(b.consignment_id || '').trim();
-            if (cid) map[`${cid}:${bNo}`] = b;
-            const currentCid = String(cidRef.current || '').trim();
-            if (!currentCid || cid === currentCid) {
-              map[bNo] = b;
-            }
-          }
-          setDesktopBoxStates(map);
+          setDesktopBoxStates(indexDesktopBoxStates(status.boxes, String(cidRef.current || S.consignmentId || '').trim()));
         }
         if (status.online === false) setSyncState('offline');
         else if ((status.failedJobs || 0) > 0) setSyncState('failed');
@@ -488,7 +489,7 @@ export default function PackingStation() {
         setSyncRunning(Boolean(status.running));
         if (status.lastSyncAt) setLastSyncAt(status.lastSyncAt);
         if (Array.isArray(status.boxes)) {
-          setDesktopBoxStates(Object.fromEntries(status.boxes.map((b) => [String(b.box_no), b])));
+          setDesktopBoxStates(indexDesktopBoxStates(status.boxes, String(cidRef.current || S.consignmentId || '').trim()));
         }
         if (status.online === false) setSyncState('offline');
         else if ((status.failedJobs || 0) > 0) setSyncState('failed');
@@ -569,7 +570,7 @@ export default function PackingStation() {
         setSyncRunning(Boolean(status.running));
         if (status.lastSyncAt) setLastSyncAt(status.lastSyncAt);
         if (Array.isArray(status.boxes)) {
-          setDesktopBoxStates(Object.fromEntries(status.boxes.map((b) => [String(b.box_no), b])));
+          setDesktopBoxStates(indexDesktopBoxStates(status.boxes, String(consignmentId || cidRef.current || S.consignmentId || '').trim()));
         }
         if (status.online === false) setSyncState('offline');
         else if ((status.failedJobs || 0) > 0) setSyncState('failed');
