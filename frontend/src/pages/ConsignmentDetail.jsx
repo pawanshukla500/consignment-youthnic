@@ -436,9 +436,10 @@ const ConsignmentDetail = () => {
   const [boxRename, setBoxRename] = useState(null); // { boxNo, newBoxNo, reason, remarks }
   const [boxRenameSaving, setBoxRenameSaving] = useState(false);
   const liveRefreshRef = useRef(null);
+  const initialTrackingRef = useRef({});
 
   const openTrackingEdit = () => {
-    setTrackingForm({
+    const initial = {
       appointmentDate: consignment.appointmentDate || '',
       scheduledDispatchDate: consignment.scheduledDispatchDate || '',
       actualDispatchDate: consignment.actualDispatchDate || '',
@@ -449,11 +450,13 @@ const ConsignmentDetail = () => {
       docketNo: consignment.docketNo || '',
       marketplaceTicketId: consignment.marketplaceTicketId || '',
       shipmentStatus: consignment.shipmentStatus || 'Planned',
-      unitsShipped: consignment.unitsShipped || 0,
-      unitsReceived: consignment.unitsReceived || 0,
-      unitsInwarded: consignment.unitsInwarded || 0,
-      qaFailExcessQty: consignment.qaFailExcessQty || 0,
-    });
+      unitsShipped: consignment.unitsShipped != null ? consignment.unitsShipped : '',
+      unitsReceived: consignment.unitsReceived != null ? consignment.unitsReceived : '',
+      unitsInwarded: consignment.unitsInwarded != null ? consignment.unitsInwarded : '',
+      qaFailExcessQty: consignment.qaFailExcessQty != null ? consignment.qaFailExcessQty : '',
+    };
+    initialTrackingRef.current = initial;
+    setTrackingForm(initial);
     setEditingTracking(true);
     setTrackingOpen(true);
   };
@@ -461,21 +464,36 @@ const ConsignmentDetail = () => {
   const saveTracking = async () => {
     setSavingTracking(true);
     try {
-      const payload = {
-        ...trackingForm,
-        unitsShipped: Number(trackingForm.unitsShipped) || 0,
-        unitsReceived: Number(trackingForm.unitsReceived) || 0,
-        unitsInwarded: Number(trackingForm.unitsInwarded) || 0,
-        qaFailExcessQty: Number(trackingForm.qaFailExcessQty) || 0,
-      };
-      await consignmentsAPI.update(id, payload);
-      addToast('Tracking details updated', 'success');
+      // Prevent race conditions: only update fields that were actually modified by the user
+      // so concurrent workflow updates (e.g. invoice, dispatch, status, inward) are not overwritten
+      const initial = initialTrackingRef.current || {};
+      const numericFields = new Set(['unitsShipped', 'unitsReceived', 'unitsInwarded', 'qaFailExcessQty']);
+      const dirtyPayload = {};
+
+      Object.entries(trackingForm).forEach(([key, val]) => {
+        if (val !== initial[key]) {
+          if (numericFields.has(key)) {
+            dirtyPayload[key] = val === '' ? null : (Number(val) || 0);
+          } else {
+            dirtyPayload[key] = val;
+          }
+        }
+      });
+
+      if (Object.keys(dirtyPayload).length > 0) {
+        await consignmentsAPI.update(id, dirtyPayload);
+        addToast('Tracking details updated', 'success');
+      } else {
+        addToast('No changes detected', 'info');
+      }
+
       setEditingTracking(false);
-      fetchConsignment();
+      await fetchConsignment({ silent: true });
     } catch (error) {
-      addToast('Update failed', 'error');
+      addToast(error.response?.data?.error || 'Update failed', 'error');
+    } finally {
+      setSavingTracking(false);
     }
-    setSavingTracking(false);
   };
 
   const pivotData = React.useMemo(() => {
@@ -1588,11 +1606,15 @@ const ConsignmentDetail = () => {
                     </div>
                     <div>
                       <span className="text-slate-400 text-[10px] block">Units Shipped</span>
-                      <span className="font-semibold text-slate-800">{consignment.unitsShipped || '—'}</span>
+                      <span className="font-semibold text-slate-800">
+                        {consignment.unitsShipped != null && consignment.unitsShipped !== '' ? consignment.unitsShipped : '—'}
+                      </span>
                     </div>
                     <div>
                       <span className="text-slate-400 text-[10px] block">Units Inwarded</span>
-                      <span className="font-semibold text-slate-800">{consignment.unitsInwarded || '—'}</span>
+                      <span className="font-semibold text-slate-800">
+                        {consignment.unitsInwarded != null && consignment.unitsInwarded !== '' ? consignment.unitsInwarded : '—'}
+                      </span>
                     </div>
                     <div className="col-span-2 pt-1 border-t border-slate-200/60 flex justify-between items-center">
                       <span className="text-slate-500 font-medium">Inward Variance:</span>
