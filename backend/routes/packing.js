@@ -1650,22 +1650,18 @@ router.post('/quantity-removal/:id/complete', authenticateToken, async (req, res
             .filter(Boolean);
           const unique = [...new Set(recipients)];
           if (unique.length) {
-            const subject = `[Invoice correction] Quantity removed — ${result.adjustment.internalShipmentNo || result.adjustment.consignmentId}`;
-            const text = [
-              result.invoiceWarning,
-              `Consignment: ${result.adjustment.consignmentId}`,
-              `Box: ${result.adjustment.boxNo}`,
-              `SKU: ${result.adjustment.internalSku || result.adjustment.skuId}`,
-              `Removed: ${result.adjustment.quantity}`,
-              `Final SKU qty in box: ${result.adjustment.finalQty}`,
-              `By: ${result.adjustment.removedByName || req.user.name || req.user.email}`,
-              'Dispatch is blocked until invoice quantity matches final packed quantity (or an authorized exception is approved).',
-            ].join('\n');
+            const { buildInvoiceCorrectionEmail } = require('../utils/emailTemplates');
+            const { subject, html, text } = buildInvoiceCorrectionEmail({
+              adjustment: result.adjustment,
+              invoiceWarning: result.invoiceWarning,
+              actorName: req.user.name || req.user.email,
+              consignmentId: result.adjustment.consignmentId,
+            });
             await sendViaResend({
               to: unique,
               subject,
               text,
-              html: `<pre style="font-family:inherit;white-space:pre-wrap">${text.replace(/</g, '&lt;')}</pre>`,
+              html,
               tags: ['quantity-removal', 'invoice-correction'],
             });
           }

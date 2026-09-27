@@ -11,7 +11,7 @@ const { authenticateToken, requireRole } = require('../middleware/auth');
 const { requireAnyPermission } = require('../utils/permissions');
 const { addAuditLog, firestoreHelpers } = require('../utils/helpers');
 const { sendViaResend, isResendConfigured, USER_DOMAIN, FROM_EMAIL } = require('../utils/resend');
-const { buildWorkflowEmail } = require('../utils/emailTemplates');
+const { buildWorkflowEmail, emailShell, ctaButton, BRAND } = require('../utils/emailTemplates');
 const { sendPasswordResetEmail } = require('../utils/passwordReset');
 const { normalizeEmail } = require('../utils/defaultAdmin');
 
@@ -47,68 +47,62 @@ function buildWelcomeEmail({ name, email, role, setupUrl }) {
   const loginUrl = `${APP_URL()}/login`;
   const firstName = escapeHtml(String(name || '').split(' ')[0] || 'there');
   const safeEmail = escapeHtml(email);
-  const safeName = escapeHtml(name);
-  const permLabel = role === 'admin' ? 'Administrator (full access)' : 'Standard User';
+  const safeName = escapeHtml(name || email);
+  const permLabel = role === 'admin' ? 'Administrator (full access)' : (role === 'packer' ? 'Packing Station Operator' : 'Standard User');
   const setupHref = setupUrl || loginUrl;
+  const subject = 'Welcome to Consignment App — Set your password';
 
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Welcome to Consignment App</title></head>
-<body style="margin:0;padding:0;background:#f1f5f9;font-family:Inter,Arial,sans-serif">
-  <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-    <tr><td align="center" style="padding:32px 16px">
-      <table width="560" cellpadding="0" cellspacing="0" role="presentation" style="max-width:560px;width:100%">
-        <tr><td style="background:#0f172a;border-radius:16px 16px 0 0;padding:32px;text-align:center">
-          <p style="margin:0;font-size:28px;font-weight:800;color:#fff;letter-spacing:-0.5px">Consignment App</p>
-          <p style="margin:6px 0 0;font-size:13px;color:rgba(255,255,255,.65);letter-spacing:1px;text-transform:uppercase">Youthnic Packing</p>
-        </td></tr>
-        <tr><td style="background:#fff;padding:36px 40px">
-          <p style="margin:0 0 8px;font-size:22px;font-weight:700;color:#0f172a">Welcome, ${firstName}</p>
-          <p style="margin:0 0 28px;font-size:14px;color:#64748b;line-height:1.6">
-            Your account has been created on the <strong>Consignment App</strong>.
-            Use the secure link below to set your own password, then sign in with <strong>${safeEmail}</strong>.
-          </p>
-          <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
-            style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin-bottom:28px">
-            <tr><td style="padding:20px 24px">
-              <p style="margin:0 0 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#94a3b8">Account</p>
-              <p style="margin:0 0 8px;font-size:13px;color:#0f172a"><strong>Name:</strong> ${safeName}</p>
-              <p style="margin:0 0 8px;font-size:13px;color:#0f172a"><strong>Email:</strong> ${safeEmail}</p>
-              <p style="margin:0;font-size:13px;color:#0f172a"><strong>Role:</strong> ${escapeHtml(permLabel)}</p>
-            </td></tr>
-          </table>
-          <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin-bottom:28px">
-            <tr><td align="center">
-              <a href="${escapeHtml(setupHref)}"
-                style="display:inline-block;background:#0f172a;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:14px 36px;border-radius:10px">
-                Set your password
-              </a>
-            </td></tr>
-          </table>
-          <p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.6">
-            If you did not expect this email, contact your administrator at
-            <a href="mailto:${escapeHtml(FROM_EMAIL())}" style="color:#4f46e5">${escapeHtml(FROM_EMAIL())}</a>.
-          </p>
-        </td></tr>
-        <tr><td style="background:#f8fafc;border-top:1px solid #e2e8f0;border-radius:0 0 16px 16px;padding:20px 40px;text-align:center">
-          <p style="margin:0;font-size:11px;color:#94a3b8">
-            © ${new Date().getFullYear()} Youthnic Exports Pvt. Ltd. · Packing Station
-          </p>
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
+  const bodyHtml = `
+    <p style="margin:0 0 8px;font-size:22px;font-weight:700;color:#0f172a">Welcome, ${firstName}</p>
+    <p style="margin:0 0 24px;font-size:14px;color:#64748b;line-height:1.65">
+      Your account has been created on the <strong>${escapeHtml(BRAND || 'Consignment App')}</strong>.
+      Use the button below to choose your password and sign in with <span style="font-weight:600;color:#0f172a">${safeEmail}</span>.
+    </p>
 
-  const text = `Welcome to Consignment App, ${String(name || '').split(' ')[0] || 'there'}!
+    <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+      style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin:0 0 24px">
+      <tr><td style="padding:18px 20px">
+        <p style="margin:0 0 12px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#94a3b8">Account Details</p>
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+          <tr>
+            <td style="padding:6px 0;font-size:12.5px;color:#64748b;width:35%;border-bottom:1px solid #f1f5f9">Name</td>
+            <td style="padding:6px 0;font-size:13px;color:#0f172a;font-weight:600;border-bottom:1px solid #f1f5f9">${safeName}</td>
+          </tr>
+          <tr>
+            <td style="padding:6px 0;font-size:12.5px;color:#64748b;border-bottom:1px solid #f1f5f9">Email</td>
+            <td style="padding:6px 0;font-size:13px;color:#0f172a;font-weight:600;border-bottom:1px solid #f1f5f9">${safeEmail}</td>
+          </tr>
+          <tr>
+            <td style="padding:6px 0;font-size:12.5px;color:#64748b">Role</td>
+            <td style="padding:6px 0;font-size:13px;color:#0f172a;font-weight:600">${escapeHtml(permLabel)}</td>
+          </tr>
+        </table>
+      </td></tr>
+    </table>
 
-Your account (${email}) has been created with role: ${permLabel}.
+    ${ctaButton(setupHref, 'Set your password')}
 
-Set your password: ${setupHref}
-Then sign in: ${loginUrl}
+    <p style="margin:18px 0 8px;font-size:12px;color:#94a3b8;line-height:1.6">
+      If the button does not work, copy and paste this link into your browser:
+    </p>
+    <p style="margin:0 0 20px;font-size:11px;color:#E11D48;word-break:break-all;line-height:1.5">
+      ${escapeHtml(setupHref)}
+    </p>
 
-If you did not expect this email, contact ${FROM_EMAIL()}.`;
+    <p style="margin:16px 0 0;font-size:12px;color:#94a3b8;line-height:1.6">
+      If you did not expect this email, contact your administrator at
+      <a href="mailto:${escapeHtml(FROM_EMAIL())}" style="color:#E11D48;text-decoration:none">${escapeHtml(FROM_EMAIL())}</a>.
+    </p>
+  `;
+
+  const html = emailShell({
+    title: subject,
+    preheader: `Welcome to Consignment App · Set your password to get started`,
+    bodyHtml,
+    accent: '#6A040F',
+  });
+
+  const text = `Welcome to Consignment App, ${String(name || '').split(' ')[0] || 'there'}!\n\nYour account (${email}) has been created with role: ${permLabel}.\n\nSet your password: ${setupHref}\nThen sign in: ${loginUrl}\n\nIf you did not expect this email, contact ${FROM_EMAIL()}.`;
 
   return { html, text };
 }

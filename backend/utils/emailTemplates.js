@@ -11,21 +11,22 @@ const BRAND = 'Consignment App';
 const LOGO_CID = 'email-logo.png';
 const LOGO_FILE = path.join(__dirname, '..', 'assets', 'email-logo.png');
 
+const PUBLIC_LOGO_URL = 'https://raw.githubusercontent.com/pawanshukla500/consignment-youthnic/main/backend/assets/email-logo.png';
+
 function getAppUrl() {
   return (process.env.APP_URL || 'https://consignment.youthnic.shop').replace(/\/$/, '');
 }
 
 function getLogoHttpUrl() {
   if (process.env.EMAIL_LOGO_URL) return String(process.env.EMAIL_LOGO_URL).trim();
-  if (process.env.PUBLIC_API_URL) {
+  if (process.env.PUBLIC_API_URL && !process.env.PUBLIC_API_URL.includes('localhost') && !process.env.PUBLIC_API_URL.includes('127.0.0.1')) {
     return `${String(process.env.PUBLIC_API_URL).replace(/\/$/, '')}/brand-logo.png`;
   }
-  // Local API serves /brand-logo.png even when APP_URL points at Vite
-  if (process.env.NODE_ENV !== 'production') {
-    const port = process.env.PORT || 5000;
-    return `http://localhost:${port}/brand-logo.png`;
+  const appUrl = getAppUrl();
+  if (appUrl && !appUrl.includes('localhost') && !appUrl.includes('127.0.0.1')) {
+    return `${appUrl}/brand-logo.png`;
   }
-  return `${getAppUrl()}/brand-logo.png`;
+  return PUBLIC_LOGO_URL;
 }
 
 function getLogoFilePath() {
@@ -68,27 +69,31 @@ function fmtDate(value) {
 function detailRow(label, value) {
   return `
     <tr>
-      <td style="padding:8px 0;font-size:12px;color:#64748b;width:38%;vertical-align:top;border-bottom:1px solid #f1f5f9">${escapeHtml(label)}</td>
-      <td style="padding:8px 0;font-size:13px;color:#0f172a;font-weight:600;vertical-align:top;border-bottom:1px solid #f1f5f9">${value}</td>
+      <td style="padding:10px 0;font-size:12.5px;color:#64748b;width:38%;vertical-align:top;border-bottom:1px solid #f1f5f9">${escapeHtml(label)}</td>
+      <td style="padding:10px 0;font-size:13.5px;color:#0f172a;font-weight:600;vertical-align:top;border-bottom:1px solid #f1f5f9">${value}</td>
     </tr>`;
 }
 
 function logoBlock(httpUrl) {
-  // Match website Login brand mark:
-  // rounded-xl frosted box + white logo (pre-inverted PNG via CID; filter kept as progressive enhance)
+  // Branded frosted emblem matching Youthnic Packing Station web login:
+  // Inlines pre-inverted white logo via CID with public HTTPS CDN fallback
+  const targetUrl = escapeHtml(getAppUrl());
+  const safeHttpUrl = escapeHtml(httpUrl || PUBLIC_LOGO_URL);
   return `
-    <table cellpadding="0" cellspacing="0" role="presentation" align="center" style="margin:0 auto 14px">
+    <table cellpadding="0" cellspacing="0" role="presentation" align="center" style="margin:0 auto 16px">
       <tr>
-        <td align="center" valign="middle" width="40" height="40"
-          style="width:40px;height:40px;border-radius:12px;background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.15);box-shadow:inset 0 1px 2px rgba(0,0,0,0.18)">
-          <img src="cid:${LOGO_CID}" alt="Youthnic Packing Station"
-            width="24" height="24"
-            style="display:block;margin:0 auto;width:24px;height:24px;object-fit:contain;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic" />
+        <td align="center" valign="middle" width="48" height="48"
+          style="width:48px;height:48px;border-radius:14px;background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.18);box-shadow:inset 0 1px 2px rgba(0,0,0,0.18),0 2px 8px rgba(0,0,0,0.12)">
+          <a href="${targetUrl}" target="_blank" style="text-decoration:none;display:block;width:28px;height:28px;line-height:28px;margin:0 auto">
+            <img src="cid:${LOGO_CID}" alt="Youthnic"
+              width="28" height="28"
+              style="display:block;margin:0 auto;width:28px;height:28px;max-width:28px;max-height:28px;object-fit:contain;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;color:#ffffff;font-size:11px;font-weight:700" />
+          </a>
         </td>
       </tr>
     </table>
     <!--[if !mso]><!-->
-    <img src="${httpUrl}" alt="" width="1" height="1"
+    <img src="${safeHttpUrl}" alt="" width="1" height="1"
       style="display:none;width:0;height:0;max-height:0;overflow:hidden;border:0" />
     <!--<![endif]-->`;
 }
@@ -100,37 +105,60 @@ function emailShell({ title, preheader = '', bodyHtml, accent = '#6A040F' }) {
   const httpUrl = escapeHtml(getLogoHttpUrl());
   const headerBg = accent || '#6A040F';
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="color-scheme" content="light">
+  <meta name="supported-color-schemes" content="light">
   <title>${safeTitle}</title>
+  <!--[if mso]>
+  <noscript>
+    <xml>
+      <o:OfficeDocumentSettings>
+        <o:PixelsPerInch>96</o:PixelsPerInch>
+      </o:OfficeDocumentSettings>
+    </xml>
+  </noscript>
+  <![endif]-->
+  <style>
+    @media only screen and (max-width: 640px) {
+      .email-wrapper { padding: 12px 6px !important; }
+      .email-card { width: 100% !important; border-radius: 12px !important; }
+      .email-body { padding: 22px 16px !important; }
+      .email-header { padding: 24px 18px 20px !important; }
+      .email-footer { padding: 18px 16px !important; }
+    }
+  </style>
 </head>
-<body style="margin:0;padding:0;background:#F8FAFC;font-family:'Plus Jakarta Sans',Inter,'Segoe UI',Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%">
+<body style="margin:0;padding:0;background:#F8FAFC;font-family:'Plus Jakarta Sans',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%">
   <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent">${safePre}</div>
   <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:#F8FAFC;width:100%">
     <tr>
-      <td align="center" style="padding:28px 12px">
-        <table width="640" cellpadding="0" cellspacing="0" role="presentation" style="max-width:640px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #E2E8F0;box-shadow:0 1px 2px rgba(15,23,42,0.04)">
+      <td align="center" class="email-wrapper" style="padding:32px 14px">
+        <table width="640" cellpadding="0" cellspacing="0" role="presentation" class="email-card" style="max-width:640px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #E2E8F0;box-shadow:0 4px 20px rgba(15,23,42,0.05)">
           <tr>
-            <td style="background:${headerBg};background-image:linear-gradient(160deg,#370617 0%,#6A040F 55%,#900C3F 100%);padding:28px 28px 22px;text-align:center">
+            <td class="email-header" style="background:${headerBg};background-image:linear-gradient(160deg,#370617 0%,#6A040F 55%,#900C3F 100%);padding:30px 28px 24px;text-align:center">
               ${logoBlock(httpUrl)}
-              <p style="margin:0;font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.3px;font-family:'Plus Jakarta Sans',Inter,'Segoe UI',Arial,sans-serif">Consignment App</p>
-              <p style="margin:6px 0 0;font-size:11px;color:rgba(255,255,255,0.72);letter-spacing:1.4px;text-transform:uppercase">Youthnic Packing</p>
+              <p style="margin:0;font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.4px;font-family:'Plus Jakarta Sans',Inter,-apple-system,'Segoe UI',Arial,sans-serif">Consignment App</p>
+              <p style="margin:6px 0 0;font-size:11px;color:rgba(255,255,255,0.76);letter-spacing:1.6px;text-transform:uppercase;font-weight:700">Youthnic Packing</p>
             </td>
           </tr>
           <tr>
-            <td style="padding:32px 28px 28px;background:#ffffff">
+            <td class="email-body" style="padding:32px 30px 28px;background:#ffffff">
               ${bodyHtml}
             </td>
           </tr>
           <tr>
-            <td style="background:#F8FAFC;border-top:1px solid #E2E8F0;padding:18px 28px;text-align:center">
-              <p style="margin:0 0 6px;font-size:12px;color:#475569;font-weight:600">${escapeHtml(BRAND)}</p>
-              <p style="margin:0;font-size:11px;color:#94a3b8;line-height:1.6">
-                © ${year} Youthnic Exports Pvt. Ltd. · Automated notification — do not reply to this email.<br>
-                Open the app: <a href="${escapeHtml(getAppUrl())}" style="color:#E11D48;text-decoration:none">${escapeHtml(getAppUrl())}</a>
+            <td class="email-footer" style="background:#F8FAFC;border-top:1px solid #E2E8F0;padding:22px 28px;text-align:center">
+              <p style="margin:0 0 6px;font-size:12px;color:#334155;font-weight:700">${escapeHtml(BRAND)}</p>
+              <p style="margin:0 0 8px;font-size:11.5px;color:#64748B;line-height:1.6">
+                © ${year} Youthnic Exports Pvt. Ltd. · Automated notification from Packing Station.<br>
+                Open the app: <a href="${escapeHtml(getAppUrl())}" style="color:#E11D48;text-decoration:none;font-weight:600">${escapeHtml(getAppUrl())}</a>
+              </p>
+              <p style="margin:0;font-size:11px;color:#94A3B8">
+                Do not reply to this email. For operational queries, contact your supervisor.
               </p>
             </td>
           </tr>
@@ -535,15 +563,85 @@ function buildDisputeResolvedEmail(consignment, dispute, { allResolved = false }
   });
 }
 
+/** Sent when packed quantity is removed after invoice issuance. */
+function buildInvoiceCorrectionEmail({ adjustment = {}, invoiceWarning, actorName, consignmentId }) {
+  const cid = escapeHtml(adjustment.internalShipmentNo || adjustment.consignmentId || consignmentId || '—');
+  const subject = `[Invoice correction] Quantity removed — ${cid}`;
+  const warningText = escapeHtml(invoiceWarning || 'Quantity was removed from a packed box after invoice issuance.');
+  const actor = escapeHtml(actorName || adjustment.removedByName || 'Warehouse Operator');
+  const link = `${getAppUrl()}/consignments/${encodeURIComponent(adjustment.consignmentId || consignmentId || '')}`;
+
+  const bodyHtml = `
+    <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+      style="background:#FEF2F2;border:1px solid #FECACA;border-left:4px solid #DC2626;border-radius:12px;margin:0 0 20px">
+      <tr><td style="padding:16px 18px">
+        <p style="margin:0 0 4px;font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#B91C1C">Invoice Correction Alert</p>
+        <p style="margin:0;font-size:14px;color:#991B1B;line-height:1.55;font-weight:600">
+          ${warningText}
+        </p>
+      </td></tr>
+    </table>
+
+    <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+      style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin:0 0 20px">
+      <tr><td style="padding:18px 20px">
+        <p style="margin:0 0 12px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#94a3b8">Correction Summary</p>
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+          ${detailRow('Consignment', cid)}
+          ${detailRow('Box Number', escapeHtml(adjustment.boxNo ?? '—'))}
+          ${detailRow('SKU', escapeHtml(adjustment.internalSku || adjustment.skuId || '—'))}
+          ${detailRow('Quantity Removed', `<span style="color:#DC2626;font-weight:800">-${escapeHtml(String(adjustment.quantity ?? '—'))}</span>`)}
+          ${detailRow('Final Qty in Box', escapeHtml(String(adjustment.finalQty ?? '—')))}
+          ${detailRow('Adjusted By', actor)}
+        </table>
+      </td></tr>
+    </table>
+
+    <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+      style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:12px;margin:0 0 20px">
+      <tr><td style="padding:14px 18px">
+        <p style="margin:0;font-size:13px;color:#92400E;line-height:1.55">
+          <strong>Dispatch Hold:</strong> Dispatch is blocked until the forward invoice quantity matches final packed quantity (or an authorized exception is approved).
+        </p>
+      </td></tr>
+    </table>
+
+    ${ctaButton(link, 'Review Consignment')}
+  `;
+
+  return {
+    subject,
+    html: emailShell({
+      title: subject,
+      preheader: `Invoice correction · ${cid} · quantity removed`,
+      bodyHtml,
+      accent: '#991B1B',
+    }),
+    text: [
+      warningText,
+      `Consignment: ${cid}`,
+      `Box: ${adjustment.boxNo ?? '—'}`,
+      `SKU: ${adjustment.internalSku || adjustment.skuId || '—'}`,
+      `Removed: ${adjustment.quantity ?? '—'}`,
+      `Final SKU qty in box: ${adjustment.finalQty ?? '—'}`,
+      `By: ${actor}`,
+      'Dispatch is blocked until invoice quantity matches final packed quantity (or an authorized exception is approved).',
+      link,
+    ].join('\n'),
+  };
+}
+
 module.exports = {
   APP_NAME,
   BRAND,
   LOGO_CID,
+  PUBLIC_LOGO_URL,
   getAppUrl,
   getLogoHttpUrl,
   getLogoFilePath,
   escapeHtml,
   emailShell,
+  ctaButton,
   buildPasswordResetEmail,
   buildAppPasswordResetUrl,
   buildWorkflowEmail,
@@ -552,4 +650,5 @@ module.exports = {
   buildDisputeReminderEmail,
   buildConsolidatedDisputeReminderEmail,
   buildDisputeResolvedEmail,
+  buildInvoiceCorrectionEmail,
 };
