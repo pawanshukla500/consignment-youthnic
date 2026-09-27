@@ -262,7 +262,7 @@ export default function Settings() {
       ) : (
         <div className="max-w-5xl space-y-6">
           {activeTab === 'general' ? (
-            <>
+            <div id="panel-settings-general" role="tabpanel" aria-labelledby="tab-settings-general" className="space-y-6">
               <SystemHealthPanel />
 
           <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
@@ -887,10 +887,9 @@ export default function Settings() {
                 <strong className="text-slate-700"> {settings.auditLogRetentionDays || 400} days</strong> to keep the database fast.
               </p>
             </div>
-          </div>
-        </>
-      ) : (
-            <div className="space-y-6">
+            </div>
+          ) : (
+            <div id="panel-settings-monitoring" role="tabpanel" aria-labelledby="tab-settings-monitoring" className="space-y-6">
               {/* Live Server Logs Console */}
               <div className="bg-slate-900 rounded-xl shadow-lg border border-slate-800 overflow-hidden animate-fade-in">
                 <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4 flex-wrap">

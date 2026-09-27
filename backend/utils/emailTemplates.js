@@ -102,7 +102,7 @@ function emailShell({ title, preheader = '', bodyHtml, accent = '#6A040F' }) {
   const year = new Date().getFullYear();
   const safeTitle = escapeHtml(title);
   const safePre = escapeHtml(preheader);
-  const httpUrl = escapeHtml(getLogoHttpUrl());
+  const httpUrl = getLogoHttpUrl();
   const headerBg = accent || '#6A040F';
   return `<!DOCTYPE html>
 <html lang="en" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
