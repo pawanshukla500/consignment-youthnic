@@ -11,11 +11,9 @@ const { authenticateToken, requireRole } = require('../middleware/auth');
 const { requireAnyPermission } = require('../utils/permissions');
 const { addAuditLog, firestoreHelpers } = require('../utils/helpers');
 const { sendViaResend, isResendConfigured, USER_DOMAIN, FROM_EMAIL } = require('../utils/resend');
-const { buildWorkflowEmail, emailShell, ctaButton, BRAND } = require('../utils/emailTemplates');
+const { buildWorkflowEmail, emailShell, ctaButton, BRAND, getAppUrl } = require('../utils/emailTemplates');
 const { sendPasswordResetEmail } = require('../utils/passwordReset');
 const { normalizeEmail } = require('../utils/defaultAdmin');
-
-const APP_URL = () => process.env.APP_URL || 'http://localhost:5173';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -44,7 +42,7 @@ function escapeHtml(value) {
  * Welcome email — invite/setup link only (no password in the body).
  */
 function buildWelcomeEmail({ name, email, role, setupUrl }) {
-  const loginUrl = `${APP_URL()}/login`;
+  const loginUrl = `${getAppUrl()}/login`;
   const firstName = escapeHtml(String(name || '').split(' ')[0] || 'there');
   const safeEmail = escapeHtml(email);
   const safeName = escapeHtml(name || email);

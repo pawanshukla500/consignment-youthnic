@@ -1942,7 +1942,7 @@ const ConsignmentDetail = () => {
                         const requiredQty = Number(sku.requiredQty) || 0;
                         const packedQty = Number(sku.finalPackedQty ?? sku.packedQty) || 0;
                         const removedQty = Number(sku.postPackRemovedQty) || 0;
-                        const originalPacked = Number(sku.originallyPackedQty) || (packedQty + removedQty);
+                        const originalPacked = sku.originallyPackedQty != null ? Number(sku.originallyPackedQty) : (packedQty + removedQty);
                         const inwardQty = Number(sku.inwardQty) || 0;
                         const diff = Number(sku.quantityDifference ?? (inwardQty - packedQty));
                         const mismatch = sku.inwardMismatch;
