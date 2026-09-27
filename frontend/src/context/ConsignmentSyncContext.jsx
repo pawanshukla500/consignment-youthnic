@@ -233,7 +233,10 @@ export function ConsignmentSyncProvider({ children }) {
   }, [isAuthenticated, pollOnce])
 
   const clearChanges = useCallback((ids) => {
-    if (!ids?.length) return
+    if (!ids) {
+      setPendingChanges([])
+      return
+    }
     const idSet = new Set(Array.isArray(ids) ? ids : [ids])
     setPendingChanges((prev) => prev.filter((c) => !idSet.has(c.id)))
   }, [])

@@ -35,11 +35,15 @@ function buildInlineLogo() {
     return null;
   }
   try {
+    const content = fs.readFileSync(logoPath);
     return {
       filename: LOGO_CID,
-      content: fs.readFileSync(logoPath),
+      content,
+      contentId: LOGO_CID,
       content_id: LOGO_CID,
+      contentType: 'image/png',
       content_type: 'image/png',
+      disposition: 'inline',
     };
   } catch (error) {
     console.warn('[Resend] Could not read email logo:', error.message);
@@ -85,6 +89,7 @@ async function sendViaResend({ to, cc, subject, html, text, tags = [], attachmen
         attachments.push({
           filename: item.filename || 'attachment.bin',
           content: Buffer.isBuffer(item.data) ? item.data : Buffer.from(item.data),
+          contentType: item.contentType || 'application/octet-stream',
           content_type: item.contentType || 'application/octet-stream',
         });
       }
