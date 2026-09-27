@@ -887,8 +887,9 @@ export default function Settings() {
                 <strong className="text-slate-700"> {settings.auditLogRetentionDays || 400} days</strong> to keep the database fast.
               </p>
             </div>
-            </div>
-          ) : (
+          </div>
+        </div>
+      ) : (
             <div id="panel-settings-monitoring" role="tabpanel" aria-labelledby="tab-settings-monitoring" className="space-y-6">
               {/* Live Server Logs Console */}
               <div className="bg-slate-900 rounded-xl shadow-lg border border-slate-800 overflow-hidden animate-fade-in">
