@@ -14,7 +14,7 @@ import {
 import {
   CheckCircle2, Loader2, AlertTriangle, Clock, Ticket, ShieldCheck,
   PackageCheck, FileText, Truck, Warehouse, Archive, ChevronDown, ChevronUp,
-  RefreshCw, User, Check, ArrowRight, Info
+  RefreshCw, User, Check, ArrowRight, Info, Copy
 } from 'lucide-react'
 
 const AUTO_STAGES = new Set(['ready_for_invoice', 'ready_for_dispatch'])
@@ -29,7 +29,7 @@ const MILESTONES = [
 ]
 
 /** One dispute row inside the Inward Dispute card — qty breakdown, ticket entry, resolve action. */
-function DisputeRow({ dispute, canAct, ticketDraft, onTicketDraftChange, onSaveTicket, savingTicket, onOpenResolve }) {
+function DisputeRow({ dispute, canAct, ticketDraft, onTicketDraftChange, onSaveTicket, savingTicket, onOpenResolve, onCopyTicket }) {
   const d = dispute
   const isOpen = d.status === 'open'
   const varianceLabel = d.varianceType === 'excess' ? 'Excess' : 'Short'
@@ -61,14 +61,26 @@ function DisputeRow({ dispute, canAct, ticketDraft, onTicketDraftChange, onSaveT
             <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
               Marketplace Ticket / Case ID {d.ticketId ? '(update)' : '*'}
             </label>
-            <input
-              type="text"
-              value={ticketDraft ?? d.ticketId ?? ''}
-              onChange={(e) => onTicketDraftChange(e.target.value)}
-              placeholder="e.g. FK-DISPUTE-9842"
-              className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
-              disabled={!canAct}
-            />
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={ticketDraft ?? d.ticketId ?? ''}
+                onChange={(e) => onTicketDraftChange(e.target.value)}
+                placeholder="e.g. FK-DISPUTE-9842"
+                className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none"
+                disabled={!canAct}
+              />
+              {d.ticketId && (
+                <button
+                  type="button"
+                  onClick={() => onCopyTicket?.(d.ticketId)}
+                  title="Copy Ticket ID"
+                  className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-slate-200 rounded-lg bg-white shrink-0 transition-colors"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
           {canAct && (
             <button
@@ -93,8 +105,21 @@ function DisputeRow({ dispute, canAct, ticketDraft, onTicketDraftChange, onSaveT
           )}
         </div>
       ) : (
-        <div className="mt-3 pt-3 border-t border-emerald-100 space-y-1 bg-white/60 p-2.5 rounded-lg">
-          {d.ticketId && <div className="text-slate-600"><strong className="text-slate-700">Ticket ID:</strong> <span className="font-mono text-slate-800">{d.ticketId}</span></div>}
+        <div className="mt-3 pt-3 border-t border-emerald-100 space-y-1.5 bg-white/60 p-3 rounded-lg">
+          {d.ticketId && (
+            <div className="flex items-center gap-2 text-slate-600">
+              <strong className="text-slate-700">Ticket ID:</strong>
+              <span className="font-mono text-slate-800 bg-slate-100 px-2 py-0.5 rounded font-bold">{d.ticketId}</span>
+              <button
+                type="button"
+                onClick={() => onCopyTicket?.(d.ticketId)}
+                title="Copy Ticket ID"
+                className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded transition-colors"
+              >
+                <Copy className="w-3 h-3" />
+              </button>
+            </div>
+          )}
           <div className="text-emerald-800 font-medium">
             <strong>Resolution:</strong> {DISPUTE_RESOLUTION_TYPES[d.resolution?.type] || d.resolution?.type || '—'}
           </div>
@@ -230,6 +255,7 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
   const [panelOpen, setPanelOpen] = useState(true)
   const [showAssignDropdown, setShowAssignDropdown] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+  const [inspectedMilestone, setInspectedMilestone] = useState(null)
 
   const isElevated = user?.role === 'admin' || user?.role === 'organization_head'
   const canAssign = isElevated || user?.permissions?.consignments === true
@@ -237,6 +263,12 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
   const canActOnDispute = userCanConfirmStageClient(user, 'inward_completed', consignment)
   const inwardDisputes = consignment?.inwardDisputes || []
   const openDisputes = inwardDisputes.filter((d) => d.status === 'open')
+
+  const handleCopyTicket = (ticketId) => {
+    if (!ticketId) return
+    navigator.clipboard?.writeText(ticketId)
+    addToast('Ticket ID copied to clipboard', 'success')
+  }
 
   useEffect(() => {
     setSelectedUserId(consignment?.groundTeamUserId || '')
@@ -262,6 +294,9 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
   const plannedQty = Number(consignment?.totalRequiredQty) || 0
   const packedQty = Number(consignment?.totalPackedQty) || 0
   const shortQty = Math.max(0, plannedQty - packedQty)
+  const completedMilestoneCount = MILESTONES.filter(
+    (m) => Boolean(confirmations[m.key]?.confirmedAt) || (m.key === 'archived' && isArchived)
+  ).length
 
   const invoiceDocs = (consignment?.documents || []).filter((d) => {
     const purpose = String(d.purpose || d.description || '').toLowerCase()
@@ -487,25 +522,36 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
         {panelOpen && (
           <div className="p-5 lg:p-6 space-y-6">
             {/* Visual Stepper / Progress Timeline */}
+            {/* Visual Stepper / Progress Timeline */}
             <div className="relative">
-              <div className="hidden sm:block absolute top-5 left-8 right-8 h-0.5 bg-slate-100 -z-0" />
+              <div className="hidden sm:block absolute top-[30px] left-[10%] right-[10%] h-1 bg-slate-100 rounded-full -z-0 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 transition-all duration-500 ease-out shadow-xs"
+                  style={{
+                    width: `${completedMilestoneCount <= 1 ? 0 : Math.min(100, Math.max(0, ((completedMilestoneCount - 1) / (MILESTONES.length - 1)) * 100))}%`
+                  }}
+                />
+              </div>
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 relative z-10">
                 {MILESTONES.map((m, idx) => {
                   const isDone = Boolean(confirmations[m.key]?.confirmedAt) || (m.key === 'archived' && isArchived)
                   const isCurrent = (activeStage === m.key || (m.key === 'invoice_created' && activeStage === 'ready_for_invoice') || (m.key === 'dispatched' && activeStage === 'ready_for_dispatch')) && !isArchived
+                  const isInspected = inspectedMilestone === m.key
                   const Icon = m.icon
                   const conf = confirmations[m.key]
 
                   return (
-                    <div
+                    <button
                       key={m.key}
-                      className={`flex flex-col items-center text-center p-3 rounded-xl border transition-all ${
+                      type="button"
+                      onClick={() => setInspectedMilestone((prev) => (prev === m.key ? null : m.key))}
+                      className={`flex flex-col items-center text-center p-3 rounded-xl border transition-all cursor-pointer ${
                         isDone
-                          ? 'bg-emerald-50/40 border-emerald-200'
+                          ? 'bg-emerald-50/40 border-emerald-200 hover:bg-emerald-50/80 hover:shadow-xs'
                           : isCurrent
                             ? 'bg-primary-50/50 border-primary-300 ring-2 ring-primary-100 shadow-sm'
-                            : 'bg-white border-slate-100 opacity-60'
-                      }`}
+                            : 'bg-white border-slate-100 opacity-60 hover:opacity-90'
+                      } ${isInspected ? 'ring-2 ring-emerald-500 border-emerald-400' : ''}`}
                     >
                       <div
                         className={`w-9 h-9 rounded-full flex items-center justify-center mb-2 transition-all ${
@@ -528,10 +574,62 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
                             ? 'Active Stage'
                             : 'Pending'}
                       </span>
-                    </div>
+                    </button>
                   )
                 })}
               </div>
+
+              {/* Inspected Milestone Detail Card */}
+              {inspectedMilestone && (() => {
+                const m = MILESTONES.find((item) => item.key === inspectedMilestone)
+                const conf = confirmations[inspectedMilestone]
+                const isDone = Boolean(conf?.confirmedAt) || (inspectedMilestone === 'archived' && isArchived)
+                return (
+                  <div className="mt-4 p-4 rounded-xl border border-slate-200 bg-slate-50/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in shadow-2xs">
+                    <div className="flex items-start gap-3">
+                      <div className={`p-2 rounded-lg ${isDone ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>
+                        {m?.icon ? <m.icon className="w-4 h-4" /> : <Info className="w-4 h-4" />}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-xs font-bold text-slate-900">{m?.title} Stage Details</h4>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${isDone ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}`}>
+                            {isDone ? 'Verified' : 'Pending'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5">{m?.desc}</p>
+                        {conf?.confirmedAt && (
+                          <p className="text-[11px] text-slate-600 mt-1">
+                            Confirmed by <strong className="text-slate-800">{conf.confirmedByName || conf.confirmedByEmail || 'Staff'}</strong> on {new Date(conf.confirmedAt).toLocaleString()}
+                          </p>
+                        )}
+                        {conf?.note && (
+                          <p className="text-[11px] text-slate-600 mt-0.5 italic">
+                            &ldquo;{conf.note}&rdquo;
+                          </p>
+                        )}
+                        {inspectedMilestone === 'invoice_created' && (consignment.forwardInvoiceNo || consignment.invoice?.number) && (
+                          <p className="text-[11px] font-mono text-slate-700 mt-0.5">
+                            Invoice: <strong>{consignment.forwardInvoiceNo || consignment.invoice?.number}</strong>
+                          </p>
+                        )}
+                        {inspectedMilestone === 'dispatched' && consignment.docketNo && (
+                          <p className="text-[11px] text-slate-700 mt-0.5">
+                            Docket: <strong className="font-mono">{consignment.docketNo}</strong> via {consignment.docketCompany || 'Courier'}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setInspectedMilestone(null)}
+                      className="text-xs text-slate-500 hover:text-slate-800 self-end sm:self-center px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 transition-colors shadow-2xs"
+                    >
+                      Close
+                    </button>
+                  </div>
+                )
+              })()}
             </div>
 
             {/* Inward Disputes Alert Card (if any exist) */}
@@ -559,6 +657,7 @@ export default function ConsignmentWorkflowPanel({ consignment, onUpdated }) {
                       onSaveTicket={() => handleSaveTicket(d.id)}
                       savingTicket={savingTicketId === d.id}
                       onOpenResolve={() => openResolveModal(d.id)}
+                      onCopyTicket={handleCopyTicket}
                     />
                   ))}
                 </div>

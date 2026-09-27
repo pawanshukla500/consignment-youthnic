@@ -285,8 +285,18 @@ const Productivity = () => {
         <button
           type="button"
           role="tab"
+          id="tab-dashboard"
+          aria-controls="panel-dashboard"
           aria-selected={pageTab === 'dashboard'}
+          tabIndex={pageTab === 'dashboard' ? 0 : -1}
           onClick={() => setPageTab('dashboard')}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+              e.preventDefault();
+              setPageTab('reports');
+              document.getElementById('tab-reports')?.focus();
+            }
+          }}
           className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
             pageTab === 'dashboard' ? 'bg-white text-primary-700 shadow-2xs' : 'text-slate-600 hover:text-slate-900'
           }`}
@@ -296,8 +306,18 @@ const Productivity = () => {
         <button
           type="button"
           role="tab"
+          id="tab-reports"
+          aria-controls="panel-reports"
           aria-selected={pageTab === 'reports'}
+          tabIndex={pageTab === 'reports' ? 0 : -1}
           onClick={() => setPageTab('reports')}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+              e.preventDefault();
+              setPageTab('dashboard');
+              document.getElementById('tab-dashboard')?.focus();
+            }
+          }}
           className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
             pageTab === 'reports' ? 'bg-white text-primary-700 shadow-2xs' : 'text-slate-600 hover:text-slate-900'
           }`}
@@ -337,18 +357,21 @@ const Productivity = () => {
       </div>
 
       {pageTab === 'reports' && (
-        <ProductivityReportsTab
-          loading={loading}
-          dateRange={dateRange}
-          activePreset={activePreset}
-          stats={stats}
-          consignments={consignments}
-          planning={planning}
-          auditLogs={auditLogs}
-        />
+        <div id="panel-reports" role="tabpanel" aria-labelledby="tab-reports" tabIndex={0} className="outline-hidden">
+          <ProductivityReportsTab
+            loading={loading}
+            dateRange={dateRange}
+            activePreset={activePreset}
+            stats={stats}
+            consignments={consignments}
+            planning={planning}
+            auditLogs={auditLogs}
+          />
+        </div>
       )}
 
-      {pageTab === 'dashboard' && (<>
+      {pageTab === 'dashboard' && (
+        <div id="panel-dashboard" role="tabpanel" aria-labelledby="tab-dashboard" tabIndex={0} className="outline-hidden">
 
       {/* Shipment criticality KPIs */}
       {planning?.summary && (
@@ -420,8 +443,19 @@ const Productivity = () => {
               <button
                 type="button"
                 role="tab"
+                id="tab-plan-consignment"
+                aria-controls="panel-plan-consignment"
                 aria-selected={planTab === 'consignment'}
+                tabIndex={planTab === 'consignment' ? 0 : -1}
                 onClick={() => { setPlanTab('consignment'); setExpandedRow(null); }}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    setPlanTab('sku');
+                    setExpandedRow(null);
+                    document.getElementById('tab-plan-sku')?.focus();
+                  }
+                }}
                 className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${planTab==='consignment'?'bg-white text-primary-700 shadow-2xs':'text-slate-500 hover:text-slate-800'}`}
               >
                 <ClipboardList className="w-3.5 h-3.5" /> By Consignment
@@ -429,8 +463,19 @@ const Productivity = () => {
               <button
                 type="button"
                 role="tab"
+                id="tab-plan-sku"
+                aria-controls="panel-plan-sku"
                 aria-selected={planTab === 'sku'}
+                tabIndex={planTab === 'sku' ? 0 : -1}
                 onClick={() => { setPlanTab('sku'); setExpandedRow(null); }}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    setPlanTab('consignment');
+                    setExpandedRow(null);
+                    document.getElementById('tab-plan-consignment')?.focus();
+                  }
+                }}
                 className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${planTab==='sku'?'bg-white text-primary-700 shadow-2xs':'text-slate-500 hover:text-slate-800'}`}
               >
                 <Layers className="w-3.5 h-3.5" /> By SKU
@@ -461,7 +506,7 @@ const Productivity = () => {
 
         {/* ── By Consignment ── */}
         {planTab === 'consignment' && (
-          <div className="overflow-x-auto max-h-[420px]">
+          <div id="panel-plan-consignment" role="tabpanel" aria-labelledby="tab-plan-consignment" tabIndex={0} className="overflow-x-auto max-h-[420px] outline-hidden">
             <table className="w-full text-xs">
               <thead className="bg-slate-50 sticky top-0 z-[1]">
                 <tr>
@@ -556,7 +601,7 @@ const Productivity = () => {
 
         {/* ── By SKU ── */}
         {planTab === 'sku' && (
-          <div className="overflow-x-auto max-h-[420px]">
+          <div id="panel-plan-sku" role="tabpanel" aria-labelledby="tab-plan-sku" tabIndex={0} className="overflow-x-auto max-h-[420px] outline-hidden">
             <table className="w-full text-xs">
               <thead className="bg-slate-50 sticky top-0 z-[1]">
                 <tr>
@@ -844,7 +889,7 @@ const Productivity = () => {
         </div>
       </div>
 
-      </>)}
+      </div>)}
     </div>
   );
 };

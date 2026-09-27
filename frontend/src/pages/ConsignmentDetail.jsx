@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router';
 import {
   ArrowLeft, Package, Box, Video, FileText, Upload, AlertCircle,
   Trash2, Download, Loader2, FileSpreadsheet, CheckCircle2,
   Copy, ExternalLink, Tag, ChevronDown, ChevronUp, Database, Scale, AlertTriangle, History, Pencil, UploadCloud,
-  PackageCheck, Search, X, Eye, LayoutList, LayoutGrid
+  PackageCheck, Search, X, Eye, LayoutList, LayoutGrid, RefreshCw
 } from 'lucide-react';
 import ConfirmModal from '../components/ConfirmModal';
 import {
@@ -547,6 +547,142 @@ const ConsignmentDetail = () => {
       );
     });
   }, [consignmentBoxes, boxSearch]);
+
+  const timelineEvents = useMemo(() => {
+    if (!consignment) return [];
+    const events = [];
+
+    // 1. Consignment Creation
+    if (consignment.createdAt) {
+      events.push({
+        id: 'evt-created',
+        timestamp: new Date(consignment.createdAt).getTime(),
+        type: 'creation',
+        title: 'Consignment Inward Registered',
+        description: `Shipment inward registered for ${consignment.marketplace || 'Marketplace'} (${consignment.marketplaceConsignmentId || consignment.internalShipmentNo || 'ID'})`,
+        user: consignment.createdByName || consignment.createdBy || 'System',
+        badge: 'Inward Created',
+        badgeColor: 'bg-blue-50 text-blue-700 border-blue-200/80',
+      });
+    }
+
+    // 2. Stage Confirmations
+    if (consignment.stageConfirmations && typeof consignment.stageConfirmations === 'object') {
+      const stageMeta = {
+        material_inwarded: { title: 'Material Inward Confirmed', badge: 'Stage: Inward', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+        packing_completed: { title: 'Packing Station Completed', badge: 'Stage: Packed', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+        invoice_created: { title: 'Invoice Generated & Confirmed', badge: 'Stage: Invoiced', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+        ready_to_dispatch: { title: 'Ready to Dispatch Sign-off', badge: 'Stage: Ready', color: 'bg-teal-50 text-teal-700 border-teal-200' },
+        dispatched: { title: 'Consignment Dispatched', badge: 'Stage: Dispatched', color: 'bg-purple-50 text-purple-700 border-purple-200' },
+      };
+
+      Object.entries(consignment.stageConfirmations).forEach(([stageKey, data]) => {
+        if (data?.confirmedAt) {
+          const meta = stageMeta[stageKey] || { title: `Stage Milestone: ${stageKey}`, badge: 'Milestone', color: 'bg-slate-50 text-slate-700 border-slate-200' };
+          events.push({
+            id: `evt-stage-${stageKey}`,
+            timestamp: new Date(data.confirmedAt).getTime(),
+            type: 'stage',
+            title: meta.title,
+            description: data.notes ? `Note: "${data.notes}"` : 'Stage milestone successfully approved and signed off.',
+            user: data.confirmedByName || data.confirmedBy || 'Warehouse Team',
+            badge: meta.badge,
+            badgeColor: meta.color,
+          });
+        }
+      });
+    }
+
+    // 3. Boxes Packed
+    if (Array.isArray(consignment.boxes)) {
+      consignment.boxes.forEach((box) => {
+        const time = box.createdAt || box.updatedAt || box.scannedAt;
+        if (time) {
+          const itemCount = Array.isArray(box.items) ? box.items.reduce((sum, it) => sum + (Number(it.quantity) || 1), 0) : 0;
+          events.push({
+            id: `evt-box-${box.boxNo}`,
+            timestamp: new Date(time).getTime(),
+            type: 'box',
+            title: `Box #${box.boxNo} Finalized`,
+            description: `Box sealed with ${itemCount} units${box.weight ? ` · Weight: ${box.weight} kg` : ''}`,
+            user: box.packedByName || box.packedBy || 'Packing Station',
+            badge: `Box #${box.boxNo}`,
+            badgeColor: 'bg-amber-50 text-amber-700 border-amber-200',
+          });
+        }
+
+        // Box quantity audit events
+        if (Array.isArray(box.auditLog)) {
+          box.auditLog.forEach((audit, idx) => {
+            if (audit.completedAt) {
+              events.push({
+                id: `evt-audit-${box.boxNo}-${idx}`,
+                timestamp: new Date(audit.completedAt).getTime(),
+                type: 'audit',
+                title: `Quantity Adjustment in Box #${box.boxNo}`,
+                description: `${audit.internalSku || audit.skuId || 'SKU'}: ${audit.actionType === 'edit' ? `${audit.previousQuantity} → ${audit.updatedQuantity}` : `-${audit.quantity}`} (${audit.reasonLabel || audit.reason || 'Variance adjustment'})`,
+                user: audit.removedByName || audit.userName || 'Supervisor',
+                badge: 'Adjustment',
+                badgeColor: 'bg-rose-50 text-rose-700 border-rose-200',
+              });
+            }
+          });
+        }
+      });
+    }
+
+    // 4. Video Proof Uploads
+    if (Array.isArray(consignment.videos)) {
+      consignment.videos.forEach((vid) => {
+        if (vid.uploadedAt) {
+          events.push({
+            id: `evt-vid-${vid.id}`,
+            timestamp: new Date(vid.uploadedAt).getTime(),
+            type: 'video',
+            title: 'Surveillance Video Attached',
+            description: `Box #${vid.boxNo || '—'}: "${vid.originalName}" (${vid.size ? `${(vid.size / 1024 / 1024).toFixed(1)} MB` : 'Stream recorded'})`,
+            user: vid.uploadedByName || 'CCTV Station',
+            badge: 'Video Proof',
+            badgeColor: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+          });
+        }
+      });
+    }
+
+    // 5. Document Uploads
+    if (Array.isArray(consignment.documents)) {
+      consignment.documents.forEach((doc) => {
+        if (doc.uploadedAt) {
+          events.push({
+            id: `evt-doc-${doc.id}`,
+            timestamp: new Date(doc.uploadedAt).getTime(),
+            type: 'document',
+            title: `Document Uploaded: ${doc.originalName}`,
+            description: `Type: ${doc.purpose || 'Shipment Document'} (${doc.size ? `${(doc.size / 1024).toFixed(1)} KB` : 'Cloud Vault'})`,
+            user: doc.uploadedByName || 'Operations Team',
+            badge: doc.purpose === 'invoice' ? 'Invoice Doc' : doc.purpose === 'docket' ? 'Docket Doc' : 'Document',
+            badgeColor: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+          });
+        }
+      });
+    }
+
+    // 6. Marketplace Dispute Ticket
+    if (consignment.marketplaceTicketId) {
+      events.push({
+        id: 'evt-dispute-ticket',
+        timestamp: consignment.updatedAt ? new Date(consignment.updatedAt).getTime() : Date.now(),
+        type: 'dispute',
+        title: 'Marketplace Claim / Dispute Logged',
+        description: `Ticket Reference: ${consignment.marketplaceTicketId}`,
+        user: 'Marketplace Operations',
+        badge: 'Claim Filed',
+        badgeColor: 'bg-red-50 text-red-700 border-red-200',
+      });
+    }
+
+    return events.sort((a, b) => b.timestamp - a.timestamp);
+  }, [consignment]);
 
   useEffect(() => {
     fetchConsignment();
@@ -1690,7 +1826,8 @@ const ConsignmentDetail = () => {
             { id: 'report', label: 'Packing Report', subtitle: 'Matrix & Sheets', icon: FileSpreadsheet, count: pivotData?.rows?.length ? `${pivotData.rows.length}` : 'Report' },
             { id: 'videos', label: 'Videos', subtitle: 'CCTV Proof', icon: Video, count: consignment.videos?.length || 0 },
             { id: 'documents', label: 'Documents', subtitle: 'Invoices & PODs', icon: FileText, count: consignment.documents?.length || 0 },
-          ].map((tab) => {
+            { id: 'activity', label: 'Timeline & History', subtitle: 'Audit Log & Events', icon: History, count: timelineEvents.length },
+          ].map((tab, idx, arr) => {
             const isActive = activeTab === tab.id;
             return (
               <button
@@ -1699,8 +1836,22 @@ const ConsignmentDetail = () => {
                 aria-selected={isActive}
                 id={`tab-${tab.id}`}
                 aria-controls={`panel-${tab.id}`}
+                tabIndex={isActive ? 0 : -1}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowRight') {
+                    e.preventDefault();
+                    const next = arr[(idx + 1) % arr.length].id;
+                    setActiveTab(next);
+                    document.getElementById(`tab-${next}`)?.focus();
+                  } else if (e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    const prev = arr[(idx - 1 + arr.length) % arr.length].id;
+                    setActiveTab(prev);
+                    document.getElementById(`tab-${prev}`)?.focus();
+                  }
+                }}
                 className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs transition-all whitespace-nowrap cursor-pointer ${
                   isActive
                     ? 'bg-primary-50 text-primary-800 border border-primary-200 shadow-xs font-bold ring-2 ring-primary-100/50'
@@ -1724,7 +1875,7 @@ const ConsignmentDetail = () => {
 
         <div className="p-4 lg:p-6">
           {activeTab === 'skus' && (
-            <div className="space-y-5">
+            <div id="panel-skus" role="tabpanel" aria-labelledby="tab-skus" tabIndex={0} className="space-y-5 outline-hidden">
               {/* Contextual Info & Quick Actions Banner */}
               <div className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
@@ -2090,7 +2241,7 @@ const ConsignmentDetail = () => {
           )}
 
           {activeTab === 'boxes' && (
-            <div className="space-y-5">
+            <div id="panel-boxes" role="tabpanel" aria-labelledby="tab-boxes" tabIndex={0} className="space-y-5 outline-hidden">
               {/* Box Summary KPI Banner */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs">
@@ -2400,25 +2551,71 @@ const ConsignmentDetail = () => {
                   </div>
                 ))
               ) : (
-                <div className="text-center py-12 text-slate-400 bg-slate-50/50 rounded-2xl border border-slate-200/60">
-                  {boxSearch ? 'No boxes match your search' : 'No boxes recorded for this consignment yet'}
-                </div>
+                boxSearch ? (
+                  <div className="text-center py-12 px-4 bg-slate-50/60 rounded-2xl border border-dashed border-slate-200">
+                    <Search className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                    <p className="text-sm font-semibold text-slate-700">No boxes match "{boxSearch}"</p>
+                    <p className="text-xs text-slate-400 mt-1">Try clearing the search filter to see all consignment containers.</p>
+                    <button
+                      type="button"
+                      onClick={() => setBoxSearch('')}
+                      className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-xs font-semibold shadow-2xs cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" /> Clear search filter
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-center py-12 px-4 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto mb-3 border border-amber-100/80">
+                      <Box className="w-6 h-6" />
+                    </div>
+                    <h4 className="text-sm font-bold text-slate-800">No Boxes Packed Yet</h4>
+                    <p className="text-xs text-slate-500 max-w-sm mx-auto mt-1 mb-4">
+                      This consignment is ready for packing. Launch the Packing Station to scan barcodes, seal boxes, and print shipping labels.
+                    </p>
+                    <Link
+                      to={`/packing?consignmentId=${consignment.id}`}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs"
+                    >
+                      <PackageCheck className="w-4 h-4" />
+                      <span>Open in Packing Station</span>
+                    </Link>
+                  </div>
+                )
               )}
             </div>
           )}
 
-          {activeTab === 'report' && reportLoading && (
-            <div className="flex items-center justify-center py-16 text-slate-500">
-              <Loader2 className="w-5 h-5 animate-spin mr-2" />
-              Loading saved-box report...
-            </div>
-          )}
+          {activeTab === 'report' && (
+            <div id="panel-report" role="tabpanel" aria-labelledby="tab-report" tabIndex={0} className="space-y-5 outline-hidden">
+              {reportLoading && (
+                <div className="flex items-center justify-center py-16 text-slate-500">
+                  <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                  Loading saved-box report...
+                </div>
+              )}
 
-          {activeTab === 'report' && !reportLoading && !pivotData && (
-            <div className="text-center py-16 text-slate-400">No packing report available</div>
-          )}
+              {!reportLoading && !pivotData && (
+                <div className="text-center py-14 px-4 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+                  <div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
+                    <FileSpreadsheet className="w-6 h-6" />
+                  </div>
+                  <h4 className="text-sm font-bold text-slate-800">No Packing Breakdown Available</h4>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-4">
+                    The SKU matrix breakdown is computed once items are packed into boxes. Start packing or import box breakdown data to view matrix reports.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={fetchPackingReport}
+                    className="inline-flex items-center gap-2 px-3.5 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-semibold transition-all shadow-2xs cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Refresh Report Data</span>
+                  </button>
+                </div>
+              )}
 
-          {activeTab === 'report' && !reportLoading && pivotData && (
+              {!reportLoading && pivotData && (
             <div>
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-3">
                 <h3 className="text-lg font-semibold text-slate-900">Box-wise Packing Breakdown</h3>
@@ -2717,9 +2914,11 @@ const ConsignmentDetail = () => {
               )}
             </div>
           )}
+        </div>
+      )}
 
           {activeTab === 'videos' && (
-            <div>
+            <div id="panel-videos" role="tabpanel" aria-labelledby="tab-videos" tabIndex={0} className="space-y-6 outline-hidden">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
                 <h3 className="text-lg font-semibold text-slate-900">Box-wise Videos</h3>
                 <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -2861,7 +3060,7 @@ const ConsignmentDetail = () => {
           )}
 
           {activeTab === 'documents' && (
-            <div className="space-y-6">
+            <div id="panel-documents" role="tabpanel" aria-labelledby="tab-documents" tabIndex={0} className="space-y-6 outline-hidden">
               {/* Documents KPI & Summary Strip */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="bg-slate-50/80 rounded-xl p-3 border border-slate-200/80">
@@ -3065,6 +3264,72 @@ const ConsignmentDetail = () => {
                   )}
                 </div>
               </div>
+            </div>
+          )}
+
+          {activeTab === 'activity' && (
+            <div id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" tabIndex={0} className="space-y-6 outline-hidden">
+              {/* Header banner */}
+              <div className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-primary-100/80 text-primary-700 shrink-0">
+                    <History className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Consignment Lifecycle &amp; Audit Trail</h4>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Chronological record of inward, stage milestones, container packaging, and audit modifications
+                    </p>
+                  </div>
+                </div>
+                <div className="text-xs font-semibold text-slate-600 bg-white border border-slate-200 px-3 py-1.5 rounded-xl shadow-2xs tabular-nums">
+                  {timelineEvents.length} Recorded {timelineEvents.length === 1 ? 'Event' : 'Events'}
+                </div>
+              </div>
+
+              {/* Timeline Stream */}
+              {timelineEvents.length > 0 ? (
+                <div className="relative pl-6 sm:pl-8 before:absolute before:left-3 before:top-3 before:bottom-3 before:w-0.5 before:bg-slate-200">
+                  <div className="space-y-6">
+                    {timelineEvents.map((evt) => (
+                      <div key={evt.id} className="relative group">
+                        {/* Dot */}
+                        <div className="absolute -left-[27px] sm:-left-[35px] top-1.5 w-6 h-6 rounded-full bg-white border-2 border-primary-500 flex items-center justify-center shadow-xs">
+                          <span className="w-2 h-2 rounded-full bg-primary-600" />
+                        </div>
+
+                        {/* Event card */}
+                        <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs hover:border-slate-300 hover:shadow-xs transition-all">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-sm text-slate-900">{evt.title}</span>
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${evt.badgeColor}`}>
+                                {evt.badge}
+                              </span>
+                            </div>
+                            <span className="text-[11px] font-mono text-slate-400">
+                              {new Date(evt.timestamp).toLocaleString('en-GB', {
+                                day: '2-digit', month: 'short', year: 'numeric',
+                                hour: '2-digit', minute: '2-digit'
+                              })}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-600 mt-1.5">{evt.description}</p>
+                          <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
+                            <span className="font-medium text-slate-500">Recorded by: <span className="font-semibold text-slate-700">{evt.user}</span></span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-12 px-4 rounded-xl border border-dashed border-slate-200 bg-slate-50/50">
+                  <History className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                  <h4 className="text-sm font-bold text-slate-800">No events logged yet</h4>
+                  <p className="text-xs text-slate-500 mt-1">Lifecycle events will populate as milestones and packing progress occur.</p>
+                </div>
+              )}
             </div>
           )}
         </div>

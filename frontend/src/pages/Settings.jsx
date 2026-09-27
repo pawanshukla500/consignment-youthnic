@@ -227,8 +227,16 @@ export default function Settings() {
           id="tab-settings-general"
           aria-selected={activeTab === 'general'}
           aria-controls="panel-settings-general"
+          tabIndex={activeTab === 'general' ? 0 : -1}
           onClick={() => setActiveTab('general')}
-          className={`flex-1 py-2.5 px-4 font-semibold text-xs sm:text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 ${
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+              e.preventDefault();
+              setActiveTab('monitoring');
+              document.getElementById('tab-settings-monitoring')?.focus();
+            }
+          }}
+          className={`flex-1 py-2.5 px-4 font-semibold text-xs sm:text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer ${
             activeTab === 'general'
               ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-900/5 font-bold'
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
@@ -242,8 +250,16 @@ export default function Settings() {
           id="tab-settings-monitoring"
           aria-selected={activeTab === 'monitoring'}
           aria-controls="panel-settings-monitoring"
+          tabIndex={activeTab === 'monitoring' ? 0 : -1}
           onClick={() => setActiveTab('monitoring')}
-          className={`flex-1 py-2.5 px-4 font-semibold text-xs sm:text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 ${
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+              e.preventDefault();
+              setActiveTab('general');
+              document.getElementById('tab-settings-general')?.focus();
+            }
+          }}
+          className={`flex-1 py-2.5 px-4 font-semibold text-xs sm:text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer ${
             activeTab === 'monitoring'
               ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-900/5 font-bold'
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'

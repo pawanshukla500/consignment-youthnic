@@ -647,9 +647,19 @@ export default function Consignments() {
             <button
               type="button"
               role="tab"
+              id="tab-all"
+              aria-controls="panel-all"
               aria-selected={listTab === 'all'}
+              tabIndex={listTab === 'all' ? 0 : -1}
               onClick={() => setListTab('all')}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                  e.preventDefault();
+                  setListTab('live');
+                  document.getElementById('tab-live')?.focus();
+                }
+              }}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
                 listTab === 'all'
                   ? 'bg-white shadow-xs text-primary-700 font-bold'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
@@ -661,14 +671,24 @@ export default function Consignments() {
             <button
               type="button"
               role="tab"
+              id="tab-live"
+              aria-controls="panel-live"
               aria-selected={listTab === 'live'}
+              tabIndex={listTab === 'live' ? 0 : -1}
               onClick={() => {
                 setListTab('live');
                 if (pendingChanges.length > 0) {
                   setSeenChangeIds(new Set(pendingChanges.map((c) => c.id)));
                 }
               }}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                  e.preventDefault();
+                  setListTab('all');
+                  document.getElementById('tab-all')?.focus();
+                }
+              }}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
                 listTab === 'live'
                   ? 'bg-white shadow-xs text-primary-700 font-bold'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
@@ -706,7 +726,7 @@ export default function Consignments() {
       </div>
 
       {listTab === 'live' && (
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <div id="panel-live" role="tabpanel" aria-labelledby="tab-live" tabIndex={0} className="bg-white rounded-lg border border-slate-200 overflow-hidden outline-hidden">
           <div className="px-3 py-2 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
             <h3 className="text-xs font-semibold text-slate-800">Live Consignment Feed</h3>
             {pendingChanges.length > 0 && (
@@ -738,7 +758,7 @@ export default function Consignments() {
           </div>
         </div>
       )}
-      <div className="bg-white rounded-lg border border-slate-200 p-2.5 sm:p-3">
+      <div id="panel-all" role="tabpanel" aria-labelledby="tab-all" tabIndex={0} className="bg-white rounded-lg border border-slate-200 p-2.5 sm:p-3 outline-hidden">
         <div className="flex flex-col gap-2">
           <div className="relative w-full">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
