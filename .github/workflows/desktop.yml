@@ -97,20 +97,16 @@ jobs:
           TAG_NAME: ${{ steps.prepare_release.outputs.tag }}
         run: |
           RELEASE_TITLE="Youthnic Packing Station Desktop ${TAG_NAME}"
-          CLEAN_VER="${TAG_NAME#v}"
-          NOTES="### Youthnic Packing Station Desktop ${TAG_NAME}
+          cat << 'EOF' > dist-assets/RELEASE_NOTES.md
+          ### Youthnic Packing Station Desktop
 
-Official desktop release for high-durability warehouse packing stations.
+          Official desktop release for high-durability warehouse packing stations.
 
-- **Offline-resilient packing sessions**: Local SQLite cache, evidence retention, and offline scan queuing.
-- **Robust video and evidence upload**: Cloudflare R2 direct stream integration with automatic retry.
-- **Full hardware integration**: Barcode scanner, scale, and thermal label printer support.
-- **Windows (x64) and Linux supported**.
-
-#### Assets
-- Windows: \`Youthnic-Packing-Station-Setup.exe\`
-- Linux: \`Youthnic-Packing-Station-${CLEAN_VER}.AppImage\`, \`Youthnic-Packing-Station-${CLEAN_VER}.deb\`
-"
+          - **Offline-resilient packing sessions**: Local SQLite cache, evidence retention, and offline scan queuing.
+          - **Robust video and evidence upload**: Cloudflare R2 direct stream integration with automatic retry.
+          - **Full hardware integration**: Barcode scanner, scale, and thermal label printer support.
+          - **Windows (x64) and Linux supported**.
+          EOF
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             echo "Release $TAG_NAME already exists, uploading new assets with clobber..."
             gh release upload "$TAG_NAME" dist-assets/* --clobber
@@ -118,6 +114,6 @@ Official desktop release for high-durability warehouse packing stations.
             echo "Creating new GitHub Release $TAG_NAME..."
             gh release create "$TAG_NAME" dist-assets/* \
               --title "$RELEASE_TITLE" \
-              --notes "$NOTES" \
+              --notes-file dist-assets/RELEASE_NOTES.md \
               --latest
           fi
