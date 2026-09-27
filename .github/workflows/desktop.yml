@@ -12,15 +12,15 @@ on:
     workflows: ["Deploy to Cloud Run"]
     types:
       - completed
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   package:
-    # A desktop package is useful only after the exact server revision it needs
-    # has passed the deployed protocol/schema verification.
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -35,8 +35,6 @@ jobs:
         working-directory: desktop
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -79,8 +77,6 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Download all built desktop artifacts
         uses: actions/download-artifact@v4
         with:
