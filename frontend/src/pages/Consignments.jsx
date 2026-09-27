@@ -96,7 +96,7 @@ export default function Consignments() {
   const navigate = useNavigate();
   const { addToast } = useToast();
   const { user } = useAuth();
-  const { pendingChanges, connected, lastSyncAt } = useConsignmentSync();
+  const { pendingChanges, connected, lastSyncAt, clearChanges } = useConsignmentSync();
   const initialBucketFilter = (() => {
     try {
       const value = new URLSearchParams(window.location.search).get('bucket');
@@ -193,6 +193,19 @@ export default function Consignments() {
     if (!pendingChanges.length) return;
     setConsignments((prev) => mergeConsignmentChanges(prev, pendingChanges));
   }, [pendingChanges]);
+
+  const [seenChangeIds, setSeenChangeIds] = useState(() => new Set());
+
+  useEffect(() => {
+    if (listTab === 'live' && pendingChanges.length > 0) {
+      setSeenChangeIds(new Set(pendingChanges.map((c) => c.id)));
+    }
+  }, [listTab, pendingChanges]);
+
+  const unreadPendingChangesCount = useMemo(() => {
+    if (listTab === 'live') return 0;
+    return pendingChanges.filter((c) => !seenChangeIds.has(c.id)).length;
+  }, [listTab, pendingChanges, seenChangeIds]);
 
   const openCreateModal = () => {
     setEditingRow(null);
@@ -649,7 +662,12 @@ export default function Consignments() {
               type="button"
               role="tab"
               aria-selected={listTab === 'live'}
-              onClick={() => setListTab('live')}
+              onClick={() => {
+                setListTab('live');
+                if (pendingChanges.length > 0) {
+                  setSeenChangeIds(new Set(pendingChanges.map((c) => c.id)));
+                }
+              }}
               className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
                 listTab === 'live'
                   ? 'bg-white shadow-xs text-primary-700 font-bold'
@@ -658,9 +676,9 @@ export default function Consignments() {
             >
               <Activity className="w-3.5 h-3.5 text-violet-500" />
               <span>Live Feed</span>
-              {pendingChanges.length > 0 && (
+              {unreadPendingChangesCount > 0 && (
                 <span className="bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.2 rounded-full min-w-[16px] text-center font-mono">
-                  {pendingChanges.length}
+                  {unreadPendingChangesCount}
                 </span>
               )}
             </button>
@@ -689,8 +707,17 @@ export default function Consignments() {
 
       {listTab === 'live' && (
         <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-          <div className="px-3 py-2 border-b border-slate-100 bg-slate-50">
+          <div className="px-3 py-2 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
             <h3 className="text-xs font-semibold text-slate-800">Live Consignment Feed</h3>
+            {pendingChanges.length > 0 && (
+              <button
+                type="button"
+                onClick={() => clearChanges?.()}
+                className="text-[10px] text-slate-500 hover:text-slate-700 font-medium hover:underline"
+              >
+                Clear live items
+              </button>
+            )}
           </div>
           <div className="divide-y divide-slate-100 max-h-64 overflow-y-auto">
             {liveFeed.length === 0 ? (
