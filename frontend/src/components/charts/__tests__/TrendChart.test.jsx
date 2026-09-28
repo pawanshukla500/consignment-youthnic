@@ -63,4 +63,16 @@ describe('TrendChart component', () => {
     expect(html).toContain('Day 1')
     expect(html).toContain('Day 2')
   })
+
+  it('renders Units toggle even when all recorded items are 0', () => {
+    const dataWithZeroItems = [
+      { date: '2026-09-28', label: '28 Sep', boxes: 10, items: 0 },
+      { date: '2026-09-29', label: '29 Sep', boxes: 5, items: 0 },
+    ]
+    const html = renderToString(
+      <TrendChart data={dataWithZeroItems} title="Test Trend" />
+    )
+    expect(html).toContain('tab-metric-units')
+    expect(html).toContain('Units')
+  })
 })

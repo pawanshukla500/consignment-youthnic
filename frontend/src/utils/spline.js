@@ -103,6 +103,7 @@ export function calculateChartKpis(data = [], metricKey = 'value') {
       peak: 0,
       peakItem: null,
       activeDays: 0,
+      totalDays: 0,
       dailyAvg: 0,
       activeAvg: 0,
       hasData: false,

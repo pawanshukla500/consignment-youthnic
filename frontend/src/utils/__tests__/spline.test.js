@@ -58,6 +58,7 @@ describe('spline utility', () => {
     const emptyKpis = calculateChartKpis([])
     expect(emptyKpis.hasData).toBe(false)
     expect(emptyKpis.total).toBe(0)
+    expect(emptyKpis.totalDays).toBe(0)
 
     const zeroKpis = calculateChartKpis([{ value: 0 }, { value: 0 }])
     expect(zeroKpis.hasData).toBe(false)

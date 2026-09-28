@@ -47,7 +47,7 @@ export default function TrendChart({
 
   // Detect whether data contains items / units metrics
   const hasItemsMetric = useMemo(() => {
-    return data.some((d) => d.items !== undefined && d.items !== null && Number(d.items) > 0)
+    return data.some((d) => d.items !== undefined && d.items !== null)
   }, [data])
 
   const effectiveMetric = hasItemsMetric ? activeMetric : 'value'
