@@ -164,7 +164,7 @@ export default function ProductivityReportsTab({
         </div>
 
         <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-          <h3 className="text-sm font-bold text-slate-900 mb-4">Workbook Sheets (6)</h3>
+          <h3 className="text-sm font-bold text-slate-900 mb-4">Workbook Sheets ({SHEETS.length})</h3>
           <div className="space-y-2">
             {SHEETS.map(({ icon: Icon, name, desc }) => (
               <div key={name} className="flex items-start gap-3 p-2.5 rounded-lg hover:bg-slate-50">
