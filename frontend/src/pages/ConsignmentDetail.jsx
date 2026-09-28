@@ -406,7 +406,25 @@ const ConsignmentDetail = () => {
   const [fetchingWeightImg, setFetchingWeightImg] = useState(false);
   // Tab is synced to the URL (?tab=) so it's deep-linkable, shareable & survives refresh
   const activeTab = searchParams.get('tab') || 'skus';
-  const setActiveTab = (tab) => setSearchParams(prev => { const p = new URLSearchParams(prev); p.set('tab', tab); return p; }, { replace: true });
+  const setActiveTab = (tab) => {
+    setSearchParams(prev => {
+      const p = new URLSearchParams(prev);
+      p.set('tab', tab);
+      return p;
+    }, { replace: true });
+    requestAnimationFrame(() => {
+      const navEl = document.getElementById('consignment-tabs-nav');
+      if (navEl) {
+        const rect = navEl.getBoundingClientRect();
+        if (rect.top < 65) {
+          window.scrollTo({
+            top: Math.max(0, window.scrollY + rect.top - 65),
+            behavior: 'smooth'
+          });
+        }
+      }
+    });
+  };
   const [trackingOpen,  setTrackingOpen]  = useState(false);
   const [editingTracking, setEditingTracking] = useState(false);
   const [deleteFile, setDeleteFile] = useState(null); // { id, type, name }
@@ -1816,6 +1834,7 @@ const ConsignmentDetail = () => {
       <div className="bg-white rounded-2xl shadow-xs border border-slate-200/80 overflow-hidden">
         {/* Modern Segmented Navigation Bar */}
         <div
+          id="consignment-tabs-nav"
           role="tablist"
           aria-label="Consignment Details Navigation"
           className="sticky top-[60px] z-20 bg-white/95 backdrop-blur-xs border-b border-slate-200/80 px-3 sm:px-5 py-2.5 flex items-center gap-2 overflow-x-auto no-scrollbar"
@@ -2616,142 +2635,209 @@ const ConsignmentDetail = () => {
               )}
 
               {!reportLoading && pivotData && (
-            <div>
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-3">
-                <h3 className="text-lg font-semibold text-slate-900">Box-wise Packing Breakdown</h3>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <div className="flex items-center rounded-lg border border-slate-200 overflow-hidden text-xs font-medium">
-                    <button
-                      type="button"
-                      onClick={() => setReportView('compact')}
-                      title="One row per SKU, box quantities shown as a compact list"
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 transition-colors font-semibold ${reportView === 'compact' ? 'bg-primary-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
-                    >
-                      <LayoutList className="w-3.5 h-3.5" /> Compact
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setReportView('grid')}
-                      title={`Full matrix — one column per box (${pivotData.boxes.length})`}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 transition-colors border-l border-slate-200 font-semibold ${reportView === 'grid' ? 'bg-primary-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
-                    >
-                      <LayoutGrid className="w-3.5 h-3.5" /> Grid
-                    </button>
-                  </div>
-                  <button onClick={() => exportCsv('packed')} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-700 transition-colors">
-                    <FileSpreadsheet className="w-3.5 h-3.5" />Export Packed
-                  </button>
-                  <button onClick={() => exportCsv('pending')} className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 text-white rounded-lg text-xs font-medium hover:bg-amber-600 transition-colors">
-                    <FileSpreadsheet className="w-3.5 h-3.5" />Export Pending
-                  </button>
-                  <button
-                    onClick={handleSheetPush}
-                    disabled={sheetPushing}
-                    title="Write box-wise quantities and box numbers into the Consignment Master sheet"
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-medium hover:bg-slate-900 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {sheetPushing
-                      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      : <UploadCloud className="w-3.5 h-3.5" />}
-                    {sheetPushing ? 'Pushing…' : 'Push to Google Sheet'}
-                  </button>
-                  <div className="flex items-center gap-1.5 ml-2 flex-wrap">
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                      {pivotData.summary.completeSkuCount || 0} complete
-                    </span>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary-100 text-primary-800 border border-primary-200">
-                      {pivotData.summary.packedSkuCount || 0} packed
-                    </span>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                      {pivotData.summary.pendingSkuCount || 0} pending
-                    </span>
-                  </div>
-                </div>
-              </div>
+                <div className="space-y-4">
+                  {/* Google Sheets Live Sync Banner & Action Card */}
+                  <div className="rounded-2xl border border-emerald-200/90 bg-linear-to-r from-emerald-50/70 via-white to-teal-50/40 p-4 sm:p-5 shadow-xs">
+                    <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                      <div className="flex items-start gap-3.5">
+                        <div className="p-2.5 rounded-xl bg-emerald-100 text-emerald-800 border border-emerald-200 shadow-2xs shrink-0 mt-0.5">
+                          <FileSpreadsheet className="w-5 h-5" />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-bold text-slate-900">Google Sheets Live Sync</span>
+                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100/90 text-emerald-800 border border-emerald-200">
+                              <span className="relative flex h-1.5 w-1.5">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-600"></span>
+                              </span>
+                              Master Sheet
+                            </span>
+                            {consignment?.internalShipmentNo && (
+                              <span className="font-mono text-[10px] font-semibold text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md" title="Internal Shipment No. for sheet row lookup">
+                                Shipment #{consignment.internalShipmentNo}
+                              </span>
+                            )}
+                          </div>
 
-              {(sheetPushResult || consignment?.sheetPush?.at) && (
-                <div className={`mb-4 rounded-xl border px-4 py-3 text-xs ${
-                  sheetPushResult && sheetPushResult.ok === false
-                    ? 'border-red-200 bg-red-50 text-red-800'
-                    : 'border-slate-200 bg-slate-50 text-slate-700'
-                }`}>
-                  {sheetPushResult && sheetPushResult.ok === false ? (
-                    <p className="font-medium">{sheetPushResult.error || 'Push to Google Sheet failed.'}</p>
-                  ) : (
-                    <p>
-                      {sheetPushResult ? (
-                        <>
-                          <span className="font-semibold text-slate-900">Pushed to Google Sheet</span>
-                          {' — '}{sheetPushResult.updated || 0} row(s) updated
-                          {sheetPushResult.cleared ? `, ${sheetPushResult.cleared} cleared` : ''}
-                          {sheetPushResult.skippedMovedRows ? `, ${sheetPushResult.skippedMovedRows} skipped (row moved)` : ''}
-                        </>
-                      ) : (
-                        <>
-                          <span className="font-semibold text-slate-900">Last pushed to Google Sheet</span>
-                          {' — '}{new Date(consignment.sheetPush.at).toLocaleString()}
-                          {consignment.sheetPush.trigger === 'scheduled' ? ' (daily sync)' : ''}
-                        </>
-                      )}
-                    </p>
-                  )}
-                  {sheetPushResult?.unmatchedSkus?.length > 0 && (
-                    <p className="mt-1 text-amber-700">
-                      {sheetPushResult.unmatchedSkus.length} SKU(s) had no matching sheet row:{' '}
-                      {sheetPushResult.unmatchedSkus.slice(0, 5).map((s) => s.marketplaceBarcode).join(', ')}
-                      {sheetPushResult.unmatchedSkus.length > 5 ? ' …' : ''}
-                    </p>
-                  )}
-                </div>
-              )}
+                          {sheetPushResult && sheetPushResult.ok === false ? (
+                            <div className="flex items-center gap-1.5 text-xs text-red-700 font-medium">
+                              <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+                              <span>{sheetPushResult.error || 'Push to Google Sheet failed. Please try again.'}</span>
+                            </div>
+                          ) : sheetPushResult ? (
+                            <div className="text-xs text-emerald-800 font-medium">
+                              <span className="font-bold text-slate-900">Pushed to Google Sheet just now</span>
+                              {' — '}{sheetPushResult.updated || 0} row(s) updated
+                              {sheetPushResult.cleared ? `, ${sheetPushResult.cleared} cleared` : ''}
+                              {sheetPushResult.skippedMovedRows ? `, ${sheetPushResult.skippedMovedRows} skipped (row moved)` : ''}
+                            </div>
+                          ) : consignment?.sheetPush?.at ? (
+                            <div className="text-xs text-slate-600 flex items-center gap-1.5 flex-wrap">
+                              <span className="font-semibold text-slate-800">Last pushed to Google Sheet:</span>
+                              <span>{new Date(consignment.sheetPush.at).toLocaleString()}</span>
+                              {consignment.sheetPush.trigger === 'scheduled' ? (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-200/70 text-slate-700">Daily Sync</span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800">Manual Push</span>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-slate-500">
+                              Write box-wise quantities and box numbers (columns I &amp; J) directly into the Consignment Master Google Sheet.
+                            </p>
+                          )}
 
-              {pivotData.integrityIssues?.length > 0 && (
-                <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-                  <div className="flex items-start gap-2">
-                    <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5" />
-                    <div>
-                      <p className="text-sm font-semibold text-amber-900">
-                        Report uses saved boxes only. {pivotData.integrityIssues.length} integrity issue(s) found.
-                      </p>
-                      <div className="mt-2 space-y-1">
-                        {pivotData.integrityIssues.slice(0, 3).map((issue, idx) => (
-                          <p key={`${issue.type}-${idx}`} className="text-xs text-amber-800">
-                            {issue.message || issue.type}
-                          </p>
-                        ))}
-                        {pivotData.integrityIssues.length > 3 && (
-                          <p className="text-xs font-medium text-amber-900">
-                            +{pivotData.integrityIssues.length - 3} more issue(s)
-                          </p>
-                        )}
+                          {sheetPushResult?.unmatchedSkus?.length > 0 && (
+                            <p className="text-[11px] text-amber-700 font-medium">
+                              {sheetPushResult.unmatchedSkus.length} SKU(s) had no matching sheet row:{' '}
+                              {sheetPushResult.unmatchedSkus.slice(0, 5).map((s) => s.marketplaceBarcode).join(', ')}
+                              {sheetPushResult.unmatchedSkus.length > 5 ? ' …' : ''}
+                            </p>
+                          )}
+
+                          {!consignment?.internalShipmentNo && (
+                            <p className="text-[11px] text-amber-600 font-medium">
+                              Notice: Consignment has no Internal Shipment No. Set one in shipment overview to match sheet rows.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 w-full md:w-auto shrink-0 justify-end">
+                        <button
+                          type="button"
+                          id="btn-push-google-sheet"
+                          onClick={handleSheetPush}
+                          disabled={sheetPushing || !consignment?.internalShipmentNo}
+                          title={!consignment?.internalShipmentNo ? 'Internal Shipment No. is required' : 'Write box-wise quantities and box numbers into the Consignment Master sheet'}
+                          className="w-full md:w-auto flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+                        >
+                          {sheetPushing ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>Pushing to Sheet…</span>
+                            </>
+                          ) : (
+                            <>
+                              <UploadCloud className="w-4 h-4 text-emerald-100" />
+                              <span>{consignment?.sheetPush?.at ? 'Re-push to Google Sheet' : 'Push to Google Sheet'}</span>
+                            </>
+                          )}
+                        </button>
                       </div>
                     </div>
                   </div>
-                </div>
-              )}
 
-              {/* Report summary strip */}
-              {(() => {
-                const summary = pivotData.summary || {};
-                const cards = [
-                  { label: 'Total SKUs', value: summary.skuCount || 0, color: 'text-slate-900' },
-                  { label: 'Required', value: summary.totalRequired || 0, color: 'text-slate-700' },
-                  { label: 'Packed', value: summary.totalPacked || 0, color: 'text-emerald-600' },
-                  { label: 'Pending', value: summary.totalPending || 0, color: 'text-amber-600' },
-                  { label: 'Boxes', value: summary.boxCount || 0, color: 'text-primary-600' },
-                  { label: 'Complete', value: `${summary.percentComplete || 0}%`, color: 'text-primary-600' },
-                ];
-                return (
-                  <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-4">
-                    {cards.map(c => (
-                      <div key={c.label} className="bg-slate-50 rounded-lg px-3 py-2 text-center">
-                        <p className={`text-lg font-bold ${c.color}`}>{c.value}</p>
-                        <p className="text-[10px] uppercase tracking-wider text-slate-400">{c.label}</p>
+                  {pivotData.integrityIssues?.length > 0 && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5" />
+                        <div>
+                          <p className="text-sm font-semibold text-amber-900">
+                            Report uses saved boxes only. {pivotData.integrityIssues.length} integrity issue(s) found.
+                          </p>
+                          <div className="mt-2 space-y-1">
+                            {pivotData.integrityIssues.slice(0, 3).map((issue, idx) => (
+                              <p key={`${issue.type}-${idx}`} className="text-xs text-amber-800">
+                                {issue.message || issue.type}
+                              </p>
+                            ))}
+                            {pivotData.integrityIssues.length > 3 && (
+                              <p className="text-xs font-medium text-amber-900">
+                                +{pivotData.integrityIssues.length - 3} more issue(s)
+                              </p>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                    ))}
+                    </div>
+                  )}
+
+                  {/* Report summary strip */}
+                  {(() => {
+                    const summary = pivotData.summary || {};
+                    const cards = [
+                      { label: 'Total SKUs', value: summary.skuCount || 0, color: 'text-slate-900' },
+                      { label: 'Required', value: summary.totalRequired || 0, color: 'text-slate-700' },
+                      { label: 'Packed', value: summary.totalPacked || 0, color: 'text-emerald-600' },
+                      { label: 'Pending', value: summary.totalPending || 0, color: 'text-amber-600' },
+                      { label: 'Boxes', value: summary.boxCount || 0, color: 'text-primary-600' },
+                      { label: 'Complete', value: `${summary.percentComplete || 0}%`, color: 'text-primary-600' },
+                    ];
+                    return (
+                      <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+                        {cards.map(c => (
+                          <div key={c.label} className="bg-slate-50 rounded-xl border border-slate-200/80 px-3 py-2.5 text-center shadow-2xs">
+                            <p className={`text-lg font-bold ${c.color}`}>{c.value}</p>
+                            <p className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">{c.label}</p>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Box-wise Packing Breakdown Toolbar */}
+                  <div className="bg-slate-50/80 p-3.5 rounded-2xl border border-slate-200/80 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900">Box-wise Packing Breakdown</h3>
+                        <p className="text-[11px] text-slate-500 font-medium">Cross-tabulated box contents and fulfillment status</p>
+                      </div>
+                      <div className="hidden sm:flex items-center gap-1.5 ml-2 flex-wrap">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                          {pivotData.summary.completeSkuCount || 0} complete
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary-100 text-primary-800 border border-primary-200">
+                          {pivotData.summary.packedSkuCount || 0} packed
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                          {pivotData.summary.pendingSkuCount || 0} pending
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap justify-end">
+                      <div className="flex items-center rounded-lg border border-slate-200 bg-white overflow-hidden text-xs font-semibold shadow-2xs">
+                        <button
+                          type="button"
+                          onClick={() => setReportView('compact')}
+                          title="One row per SKU, box quantities shown as a compact list"
+                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 transition-colors ${reportView === 'compact' ? 'bg-primary-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                        >
+                          <LayoutList className="w-3.5 h-3.5" /> Compact
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setReportView('grid')}
+                          title={`Full matrix — one column per box (${pivotData.boxes.length})`}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 transition-colors border-l border-slate-200 ${reportView === 'grid' ? 'bg-primary-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                        >
+                          <LayoutGrid className="w-3.5 h-3.5" /> Grid
+                        </button>
+                      </div>
+                      <button onClick={() => exportCsv('packed')} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-700 transition-colors shadow-2xs cursor-pointer">
+                        <FileSpreadsheet className="w-3.5 h-3.5" />Export Packed
+                      </button>
+                      <button onClick={() => exportCsv('pending')} className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 text-white rounded-lg text-xs font-medium hover:bg-amber-600 transition-colors shadow-2xs cursor-pointer">
+                        <FileSpreadsheet className="w-3.5 h-3.5" />Export Pending
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSheetPush}
+                        disabled={sheetPushing || !consignment?.internalShipmentNo}
+                        title="Write box-wise quantities and box numbers into the Consignment Master sheet"
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-medium hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-2xs cursor-pointer"
+                      >
+                        {sheetPushing ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <UploadCloud className="w-3.5 h-3.5 text-slate-300" />
+                        )}
+                        <span>{sheetPushing ? 'Pushing…' : 'Push to Sheet'}</span>
+                      </button>
+                    </div>
                   </div>
-                );
-              })()}
 
               {reportView === 'compact' && (
                 <div className="overflow-x-auto max-h-[600px] overflow-y-auto rounded-xl border border-slate-200">
