@@ -177,6 +177,7 @@ function computePackedSkusAndBoxes(boxRecords, boxMap = new Map(), consignmentMa
 
     const totalQty = toInt(r.itemsCount || b?.totalQty || parsedItems.reduce((s, it) => s + it.qty, 0));
 
+    const timeVal = r.timestamp || r.createdAt || '';
     packedBoxes.push({
       id: r.id,
       consignmentId: r.consignmentId || '',
@@ -184,9 +185,11 @@ function computePackedSkusAndBoxes(boxRecords, boxMap = new Map(), consignmentMa
       boxNo: r.boxNo ? String(r.boxNo) : '',
       itemsCount: totalQty,
       duration: toInt(r.duration || 0),
-      timestamp: r.timestamp || r.createdAt || '',
+      timestamp: timeVal,
+      packedAt: timeVal,
       packerId: r.userId || '',
       packerName,
+      userName: packerName,
       items: parsedItems,
     });
 
@@ -200,13 +203,26 @@ function computePackedSkusAndBoxes(boxRecords, boxMap = new Map(), consignmentMa
           barcode: it.barcode || '',
           name: it.name || it.internalSku || '',
           packedQty: 0,
+          totalPackedQty: 0,
           boxCount: 0,
+          boxes: [],
           boxesSeen: new Set(),
           consignmentsMap: new Map(),
         });
       }
       const entry = packedSkusMap.get(skuKey);
       entry.packedQty += it.qty;
+      entry.totalPackedQty += it.qty;
+      entry.boxes.push({
+        consignmentId: r.consignmentId || '',
+        internalShipmentNo,
+        boxNo: r.boxNo ? String(r.boxNo) : '',
+        qty: it.qty,
+        packerName,
+        packedAt: timeVal,
+        timestamp: timeVal,
+      });
+
       const boxRef = `${r.consignmentId}_#${r.boxNo}`;
       if (!entry.boxesSeen.has(boxRef)) {
         entry.boxesSeen.add(boxRef);
@@ -225,6 +241,7 @@ function computePackedSkusAndBoxes(boxRecords, boxMap = new Map(), consignmentMa
 
   const packedSkus = [...packedSkusMap.values()].map(({ boxesSeen, consignmentsMap, ...rest }) => ({
     ...rest,
+    totalPackedQty: rest.packedQty,
     consignments: [...consignmentsMap.values()],
   })).sort((a, b) => b.packedQty - a.packedQty);
 

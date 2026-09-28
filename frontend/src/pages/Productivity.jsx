@@ -298,22 +298,27 @@ const Productivity = () => {
         s.internalSku || '',
         s.marketplaceSku || '',
         s.barcode || '',
-        s.totalPackedQty || 0,
+        s.totalPackedQty ?? s.packedQty ?? 0,
         s.boxCount || s.boxes?.length || 0,
-        (s.boxes || []).map(b => `${b.internalShipmentNo || b.consignmentId}(Box #${b.boxNo}): ${b.qty}`).join(' | '),
+        (s.boxes || s.consignments || []).map(b => `${b.internalShipmentNo || b.consignmentId}(Box #${b.boxNo}): ${b.qty ?? b.packedQty ?? 0}`).join(' | '),
       ]);
       fname = `packed_skus_${dateRange.start}_to_${dateRange.end || dateRange.start}`;
     } else {
       headers = ['Box No', 'Internal Shipment No', 'Consignment ID', 'Packed At', 'Packer', 'Items Count', 'SKU Details'];
-      rows = filteredPackedBoxes.map(b => [
-        b.boxNo || '',
-        b.internalShipmentNo || '',
-        b.consignmentId || '',
-        b.packedAt ? format(new Date(b.packedAt), 'yyyy-MM-dd HH:mm:ss') : '',
-        b.packerName || '',
-        b.itemsCount || 0,
-        (b.items || []).map(i => `${i.internalSku || i.barcode || 'Item'} x${i.qty}`).join(' | '),
-      ]);
+      rows = filteredPackedBoxes.map(b => {
+        const timeStr = (b.packedAt || b.timestamp || b.createdAt)
+          ? format(new Date(b.packedAt || b.timestamp || b.createdAt), 'yyyy-MM-dd HH:mm:ss')
+          : '';
+        return [
+          b.boxNo || '',
+          b.internalShipmentNo || '',
+          b.consignmentId || '',
+          timeStr,
+          b.packerName || b.userName || '',
+          b.itemsCount ?? b.itemCount ?? 0,
+          (b.items || []).map(i => `${i.internalSku || i.barcode || 'Item'} x${i.qty ?? i.quantity ?? 0}`).join(' | '),
+        ];
+      });
       fname = `packed_boxes_${dateRange.start}_to_${dateRange.end || dateRange.start}`;
     }
     const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -626,7 +631,7 @@ const Productivity = () => {
                           <td className="px-3 py-2.5 font-mono text-slate-400">{s.barcode || '—'}</td>
                           <td className="px-3 py-2.5 text-right font-bold text-emerald-600">
                             <span className="inline-block px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px]">
-                              {s.totalPackedQty}
+                              {s.totalPackedQty ?? s.packedQty ?? 0}
                             </span>
                           </td>
                           <td className="px-3 py-2.5 text-right font-medium text-slate-700">
@@ -640,7 +645,7 @@ const Productivity = () => {
                                   className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-[10px] text-slate-700 font-mono"
                                   title={`${b.internalShipmentNo || b.consignmentId} · Box #${b.boxNo}`}
                                 >
-                                  {b.internalShipmentNo || 'Shipment'} #{b.boxNo}: <strong>{b.qty}</strong>
+                                  {b.internalShipmentNo || 'Shipment'} #{b.boxNo}: <strong>{b.qty ?? b.packedQty ?? 0}</strong>
                                 </span>
                               ))}
                               {(s.boxes || []).length > 3 && (
@@ -678,10 +683,10 @@ const Productivity = () => {
                                         <td className="px-3 py-1.5 font-medium text-slate-800">{b.internalShipmentNo || b.consignmentId}</td>
                                         <td className="px-3 py-1.5 font-mono text-slate-600">Box #{b.boxNo}</td>
                                         <td className="px-3 py-1.5 text-slate-500 whitespace-nowrap">
-                                          {b.packedAt ? format(new Date(b.packedAt), 'dd/MM/yyyy HH:mm:ss') : '—'}
+                                          {(b.packedAt || b.timestamp || b.createdAt) ? format(new Date(b.packedAt || b.timestamp || b.createdAt), 'dd/MM/yyyy HH:mm:ss') : '—'}
                                         </td>
-                                        <td className="px-3 py-1.5 text-slate-600">{b.packerName || '—'}</td>
-                                        <td className="px-3 py-1.5 text-right font-bold text-emerald-600">{b.qty}</td>
+                                        <td className="px-3 py-1.5 text-slate-600">{b.packerName || b.userName || '—'}</td>
+                                        <td className="px-3 py-1.5 text-right font-bold text-emerald-600">{b.qty ?? b.packedQty ?? 0}</td>
                                         <td className="px-3 py-1.5 text-right">
                                           <Link to={`/consignments/${b.consignmentId}`} className="text-primary-600 hover:underline">
                                             Open →
@@ -746,12 +751,12 @@ const Productivity = () => {
                           <td className="px-4 py-2.5 font-bold text-slate-900">Box #{b.boxNo}</td>
                           <td className="px-3 py-2.5 font-medium text-slate-800">{b.internalShipmentNo || b.consignmentId}</td>
                           <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">
-                            {b.packedAt ? format(new Date(b.packedAt), 'dd/MM/yyyy HH:mm:ss') : '—'}
+                            {(b.packedAt || b.timestamp || b.createdAt) ? format(new Date(b.packedAt || b.timestamp || b.createdAt), 'dd/MM/yyyy HH:mm:ss') : '—'}
                           </td>
-                          <td className="px-3 py-2.5 text-slate-600">{b.packerName || '—'}</td>
+                          <td className="px-3 py-2.5 text-slate-600">{b.packerName || b.userName || '—'}</td>
                           <td className="px-3 py-2.5 text-right font-bold text-emerald-600">
                             <span className="inline-block px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px]">
-                              {b.itemsCount} units
+                              {b.itemsCount ?? b.itemCount ?? 0} units
                             </span>
                           </td>
                           <td className="px-3 py-2.5 text-slate-600">

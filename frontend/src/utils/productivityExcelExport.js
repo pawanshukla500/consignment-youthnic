@@ -312,13 +312,22 @@ export async function exportProductivityExcel({
     pSkuSheet.addRow(pSkuHeaders)
     styleHeaderRow(pSkuSheet, 1, pSkuHeaders.length)
     stats.packedSkus.forEach((s) => {
+      const qty = s.totalPackedQty ?? s.packedQty ?? 0
+      const boxList = s.boxes || s.consignments || []
+      const boxDetails = boxList.map((b) => {
+        const ship = b.internalShipmentNo || b.consignmentId || 'Shipment'
+        const bNo = b.boxNo != null ? `(Box #${b.boxNo})` : ''
+        const bQty = b.qty ?? b.packedQty ?? b.quantity ?? 0
+        return `${ship}${bNo}: ${bQty}`
+      }).join(' | ')
+
       pSkuSheet.addRow([
         s.internalSku || '',
         s.marketplaceSku || '',
         s.barcode || '',
-        s.totalPackedQty || 0,
-        s.boxCount || s.boxes?.length || 0,
-        (s.boxes || []).map((b) => `${b.internalShipmentNo || b.consignmentId}(Box #${b.boxNo}): ${b.qty}`).join(' | '),
+        qty,
+        s.boxCount || boxList.length || 0,
+        boxDetails,
       ])
     })
     autoWidth(pSkuSheet)
@@ -337,14 +346,15 @@ export async function exportProductivityExcel({
     pBoxSheet.addRow(pBoxHeaders)
     styleHeaderRow(pBoxSheet, 1, pBoxHeaders.length)
     stats.packedBoxes.forEach((b) => {
+      const packedTime = b.packedAt || b.timestamp || b.createdAt
       pBoxSheet.addRow([
-        fmtDateTime(b.packedAt),
+        fmtDateTime(packedTime),
         b.consignmentId || '',
         b.internalShipmentNo || '',
         b.boxNo || '',
-        b.packerName || '',
-        b.itemsCount || 0,
-        (b.items || []).map((i) => `${i.internalSku || i.barcode || 'Item'} x${i.qty}`).join(' | '),
+        b.packerName || b.userName || b.userId || '',
+        b.itemsCount ?? b.itemCount ?? 0,
+        (b.items || []).map((i) => `${i.internalSku || i.barcode || 'Item'} x${i.qty ?? i.quantity ?? 0}`).join(' | '),
       ])
     })
     autoWidth(pBoxSheet)

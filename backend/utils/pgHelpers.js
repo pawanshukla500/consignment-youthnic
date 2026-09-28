@@ -540,6 +540,7 @@ const pgHelpers = {
 
       const totalQty = Number(row.items_count) || parsedItems.reduce((s, it) => s + it.qty, 0);
 
+      const timeVal = row.timestamp || '';
       packedBoxes.push({
         id: row.id,
         consignmentId: row.consignment_id || '',
@@ -547,9 +548,11 @@ const pgHelpers = {
         boxNo: row.box_no ? String(row.box_no) : '',
         itemsCount: totalQty,
         duration: Number(row.duration) || 0,
-        timestamp: row.timestamp || '',
+        timestamp: timeVal,
+        packedAt: timeVal,
         packerId: row.packer_id || '',
         packerName: row.packer_name || 'Unknown',
+        userName: row.packer_name || 'Unknown',
         items: parsedItems,
       });
 
@@ -563,13 +566,26 @@ const pgHelpers = {
             barcode: item.barcode || '',
             name: item.name || item.internalSku || '',
             packedQty: 0,
+            totalPackedQty: 0,
             boxCount: 0,
+            boxes: [],
             boxesSeen: new Set(),
             consignmentsMap: new Map(),
           });
         }
         const entry = packedSkusMap.get(skuKey);
         entry.packedQty += item.qty;
+        entry.totalPackedQty += item.qty;
+        entry.boxes.push({
+          consignmentId: row.consignment_id || '',
+          internalShipmentNo: row.internal_shipment_no || row.consignment_id || '',
+          boxNo: row.box_no ? String(row.box_no) : '',
+          qty: item.qty,
+          packerName: row.packer_name || 'Unknown',
+          packedAt: timeVal,
+          timestamp: timeVal,
+        });
+
         const boxRef = `${row.consignment_id}_#${row.box_no}`;
         if (!entry.boxesSeen.has(boxRef)) {
           entry.boxesSeen.add(boxRef);
@@ -588,6 +604,7 @@ const pgHelpers = {
 
     const packedSkus = [...packedSkusMap.values()].map(({ boxesSeen, consignmentsMap, ...rest }) => ({
       ...rest,
+      totalPackedQty: rest.packedQty,
       consignments: [...consignmentsMap.values()],
     })).sort((a, b) => b.packedQty - a.packedQty);
 
