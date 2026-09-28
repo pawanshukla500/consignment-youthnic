@@ -191,6 +191,9 @@ const Productivity = () => {
   const dailyTrendData = useMemo(() => (stats?.dailyTrend || []).map((d) => ({
     label: d.label,
     value: d.boxes,
+    boxes: d.boxes,
+    items: d.items ?? 0,
+    date: d.date,
   })), [stats]);
 
   const statusSnapshot = useMemo(() => {
@@ -495,12 +498,16 @@ const Productivity = () => {
 
       {/* Daily Trend */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6 mb-6">
-        <div className="flex items-center gap-2 mb-1">
-          <TrendingUp className="w-5 h-5 text-primary-600" />
-          <h2 className="text-base font-semibold text-slate-900">Boxes Packed Trend — {activePreset}</h2>
-        </div>
-        <p className="text-xs text-slate-400 mb-1">Daily box-save volume across the selected date range</p>
-        <TrendChart data={dailyTrendData} color="#E11D48" valueLabel="boxes" height={200} />
+        <TrendChart
+          data={dailyTrendData}
+          title="Packing Volume Trend"
+          subtitle="Daily box-save and unit volume across the selected date range"
+          activePreset={activePreset}
+          color="#E11D48"
+          secondaryColor="#10B981"
+          valueLabel="boxes"
+          height={220}
+        />
       </div>
 
       {/* ═══ PACKED SKUS & BOXES BREAKDOWN (DATE FILTERED) ═══ */}
