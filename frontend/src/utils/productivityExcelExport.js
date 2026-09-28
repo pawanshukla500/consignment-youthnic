@@ -299,7 +299,58 @@ export async function exportProductivityExcel({
   })
   autoWidth(skuSheet)
 
-  // ── Sheet 5: Packing Activity ────────────────────────────────────────────
+  // ── Sheet 5: Date Packed SKUs ────────────────────────────────────────────
+  if (stats?.packedSkus?.length) {
+    const pSkuHeaders = [
+      'Internal SKU', 'Marketplace SKU', 'Barcode', 'Total Packed Qty',
+      'Boxes Count', 'Packed Boxes Details (Shipment: Box # : Qty)',
+    ]
+    const pSkuSheet = wb.addWorksheet('Date Packed SKUs', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+      autoFilter: { from: 'A1', to: { row: 1, column: pSkuHeaders.length } },
+    })
+    pSkuSheet.addRow(pSkuHeaders)
+    styleHeaderRow(pSkuSheet, 1, pSkuHeaders.length)
+    stats.packedSkus.forEach((s) => {
+      pSkuSheet.addRow([
+        s.internalSku || '',
+        s.marketplaceSku || '',
+        s.barcode || '',
+        s.totalPackedQty || 0,
+        s.boxCount || s.boxes?.length || 0,
+        (s.boxes || []).map((b) => `${b.internalShipmentNo || b.consignmentId}(Box #${b.boxNo}): ${b.qty}`).join(' | '),
+      ])
+    })
+    autoWidth(pSkuSheet)
+  }
+
+  // ── Sheet 6: Date Packed Boxes ───────────────────────────────────────────
+  if (stats?.packedBoxes?.length) {
+    const pBoxHeaders = [
+      'Packed At', 'Consignment ID', 'Internal Shipment No', 'Box No',
+      'Packer', 'Items Count', 'SKU Details (SKU x Qty)',
+    ]
+    const pBoxSheet = wb.addWorksheet('Date Packed Boxes', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+      autoFilter: { from: 'A1', to: { row: 1, column: pBoxHeaders.length } },
+    })
+    pBoxSheet.addRow(pBoxHeaders)
+    styleHeaderRow(pBoxSheet, 1, pBoxHeaders.length)
+    stats.packedBoxes.forEach((b) => {
+      pBoxSheet.addRow([
+        fmtDateTime(b.packedAt),
+        b.consignmentId || '',
+        b.internalShipmentNo || '',
+        b.boxNo || '',
+        b.packerName || '',
+        b.itemsCount || 0,
+        (b.items || []).map((i) => `${i.internalSku || i.barcode || 'Item'} x${i.qty}`).join(' | '),
+      ])
+    })
+    autoWidth(pBoxSheet)
+  }
+
+  // ── Sheet 7: Packing Activity ────────────────────────────────────────────
   const actHeaders = ['Timestamp', 'Event', 'Consignment ID', 'Box No', 'Items', 'Duration (sec)', 'User']
   const actSheet = wb.addWorksheet('Packing Activity', {
     views: [{ state: 'frozen', ySplit: 1 }],

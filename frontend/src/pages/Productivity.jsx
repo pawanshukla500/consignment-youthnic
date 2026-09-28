@@ -3,7 +3,8 @@ import { Link } from 'react-router';
 import {
   BarChart3, Boxes, Package, Clock, TrendingUp, Activity,
   User, Calendar, Download, RefreshCw, CheckCircle2, AlertCircle,
-  FileSpreadsheet, ChevronRight, Layers, ClipboardList, Factory, Award
+  FileSpreadsheet, ChevronRight, Layers, ClipboardList, Factory, Award,
+  PackageCheck, Search
 } from 'lucide-react';
 import { productivityAPI, consignmentsAPI } from '../services/api';
 import { useConsignmentSync, mergeConsignmentChanges } from '../context/ConsignmentSyncContext';
@@ -71,6 +72,10 @@ const Productivity = () => {
   const [planTab,     setPlanTab]     = useState('consignment'); // 'consignment' | 'sku'
   const [expandedRow, setExpandedRow] = useState(null);
   const [pageTab,     setPageTab]     = useState('dashboard'); // 'dashboard' | 'reports'
+  // Date-filtered packed SKUs & boxes detail
+  const [packedDetailTab, setPackedDetailTab] = useState('sku'); // 'sku' | 'box'
+  const [packedSearchTerm, setPackedSearchTerm] = useState('');
+  const [expandedPackedRow, setExpandedPackedRow] = useState(null);
   const { pendingChanges } = useConsignmentSync();
 
   const loading = initialLoading || secondaryLoading;
@@ -250,6 +255,74 @@ const Productivity = () => {
     a.click();
   };
 
+  // ── Date-Filtered Packed SKUs & Boxes ─────────────────────────────────────
+  const filteredPackedSkus = useMemo(() => {
+    const list = stats?.packedSkus || [];
+    if (!packedSearchTerm.trim()) return list;
+    const term = packedSearchTerm.toLowerCase().trim();
+    return list.filter((s) =>
+      (s.internalSku && s.internalSku.toLowerCase().includes(term)) ||
+      (s.marketplaceSku && s.marketplaceSku.toLowerCase().includes(term)) ||
+      (s.barcode && s.barcode.toLowerCase().includes(term)) ||
+      (s.boxes || []).some(b =>
+        (b.internalShipmentNo && b.internalShipmentNo.toLowerCase().includes(term)) ||
+        (b.consignmentId && b.consignmentId.toLowerCase().includes(term)) ||
+        String(b.boxNo).includes(term) ||
+        (b.packerName && b.packerName.toLowerCase().includes(term))
+      )
+    );
+  }, [stats?.packedSkus, packedSearchTerm]);
+
+  const filteredPackedBoxes = useMemo(() => {
+    const list = stats?.packedBoxes || [];
+    if (!packedSearchTerm.trim()) return list;
+    const term = packedSearchTerm.toLowerCase().trim();
+    return list.filter((b) =>
+      (b.internalShipmentNo && b.internalShipmentNo.toLowerCase().includes(term)) ||
+      (b.consignmentId && b.consignmentId.toLowerCase().includes(term)) ||
+      String(b.boxNo).includes(term) ||
+      (b.packerName && b.packerName.toLowerCase().includes(term)) ||
+      (b.items || []).some(i =>
+        (i.internalSku && i.internalSku.toLowerCase().includes(term)) ||
+        (i.marketplaceSku && i.marketplaceSku.toLowerCase().includes(term)) ||
+        (i.barcode && i.barcode.toLowerCase().includes(term))
+      )
+    );
+  }, [stats?.packedBoxes, packedSearchTerm]);
+
+  const exportPackedCsv = () => {
+    let headers, rows, fname;
+    if (packedDetailTab === 'sku') {
+      headers = ['Internal SKU', 'Marketplace SKU', 'Barcode', 'Total Packed Qty', 'Boxes Count', 'Packed In (Shipment : Box # : Qty)'];
+      rows = filteredPackedSkus.map(s => [
+        s.internalSku || '',
+        s.marketplaceSku || '',
+        s.barcode || '',
+        s.totalPackedQty || 0,
+        s.boxCount || s.boxes?.length || 0,
+        (s.boxes || []).map(b => `${b.internalShipmentNo || b.consignmentId}(Box #${b.boxNo}): ${b.qty}`).join(' | '),
+      ]);
+      fname = `packed_skus_${dateRange.start}_to_${dateRange.end || dateRange.start}`;
+    } else {
+      headers = ['Box No', 'Internal Shipment No', 'Consignment ID', 'Packed At', 'Packer', 'Items Count', 'SKU Details'];
+      rows = filteredPackedBoxes.map(b => [
+        b.boxNo || '',
+        b.internalShipmentNo || '',
+        b.consignmentId || '',
+        b.packedAt ? format(new Date(b.packedAt), 'yyyy-MM-dd HH:mm:ss') : '',
+        b.packerName || '',
+        b.itemsCount || 0,
+        (b.items || []).map(i => `${i.internalSku || i.barcode || 'Item'} x${i.qty}`).join(' | '),
+      ]);
+      fname = `packed_boxes_${dateRange.start}_to_${dateRange.end || dateRange.start}`;
+    }
+    const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `${fname}.csv`;
+    a.click();
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
   if (initialLoading && !stats && !planning) {
     return <ProductivitySkeleton />;
@@ -348,8 +421,8 @@ const Productivity = () => {
             <input type="date" value={dateRange.end} min={dateRange.start || undefined}
               onChange={e => setDateRange(r => ({ ...r, end: e.target.value }))}
               className="px-3 py-1.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-primary-500 text-sm" />
-            <button onClick={() => { setActivePreset('Custom'); fetchData(); }}
-              className="px-3 py-1.5 bg-primary-600 text-white rounded-lg text-sm hover:bg-primary-700">
+            <button onClick={() => { setActivePreset('Custom'); fetchData(dateRange); }}
+              className="px-3 py-1.5 bg-primary-600 text-white rounded-lg text-sm hover:bg-primary-700 cursor-pointer">
               Apply
             </button>
           </div>
@@ -392,15 +465,16 @@ const Productivity = () => {
       )}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-4 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-3 mb-6">
         {[
-          { icon: Boxes,        color: 'primary', label: 'Boxes Today',      value: stats?.today?.boxes ?? '—' },
-          { icon: Package,      color: 'blue',    label: 'Items Today',       value: stats?.today?.items ?? '—' },
-          { icon: TrendingUp,   color: 'amber',  label: 'Avg Items/Box',     value: stats?.summary?.avgItemsPerBox ?? '—' },
-          { icon: Clock,        color: 'amber',   label: 'Avg Time/Box',      value: stats?.summary?.avgTimePerBoxSeconds ? `${stats.summary.avgTimePerBoxSeconds}s` : '—' },
-          { icon: CheckCircle2, color: 'emerald', label: 'Completed Today',   value: completedToday },
-          { icon: Activity,     color: 'orange',  label: 'In Progress',       value: inProgress },
-          { icon: AlertCircle,  color: 'red',     label: 'Pending',           value: pending },
+          { icon: Boxes,        color: 'primary', label: `Boxes Packed (${activePreset})`,  value: stats?.summary?.totalBoxes ?? stats?.today?.boxes ?? 0 },
+          { icon: Package,      color: 'blue',    label: `Units Packed (${activePreset})`,   value: stats?.summary?.totalItems ?? stats?.today?.items ?? 0 },
+          { icon: PackageCheck, color: 'emerald', label: `Unique SKUs (${activePreset})`,  value: stats?.summary?.uniqueSkus ?? stats?.packedSkus?.length ?? 0 },
+          { icon: TrendingUp,   color: 'amber',   label: 'Avg Items/Box',                   value: stats?.summary?.avgItemsPerBox ?? '—' },
+          { icon: Clock,        color: 'amber',   label: 'Avg Time/Box',                    value: stats?.summary?.avgTimePerBoxSeconds ? `${stats.summary.avgTimePerBoxSeconds}s` : '—' },
+          { icon: CheckCircle2, color: 'emerald', label: 'Completed Today',                 value: completedToday },
+          { icon: Activity,     color: 'orange',  label: 'In Progress Shipments',           value: inProgress },
+          { icon: AlertCircle,  color: 'red',     label: 'Pending Shipments',               value: pending },
         ].map(({ icon: Icon, color, label, value }) => {
           const styles = KPI_STYLES[color] || KPI_STYLES.primary
           return (
@@ -422,6 +496,340 @@ const Productivity = () => {
         </div>
         <p className="text-xs text-slate-400 mb-1">Daily box-save volume across the selected date range</p>
         <TrendChart data={dailyTrendData} color="#E11D48" valueLabel="boxes" height={200} />
+      </div>
+
+      {/* ═══ PACKED SKUS & BOXES BREAKDOWN (DATE FILTERED) ═══ */}
+      <div className="bg-white rounded-xl shadow-sm border border-slate-100 mb-6 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gradient-to-r from-emerald-50/60 to-transparent">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 bg-emerald-100 rounded-xl flex items-center justify-center">
+              <PackageCheck className="w-5 h-5 text-emerald-600" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-bold text-slate-900">Packed SKUs &amp; Boxes Breakdown</h2>
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  {activePreset}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Detailed audit of packed boxes and SKU quantities for {dateRange.start}{dateRange.end && dateRange.end !== dateRange.start ? ` to ${dateRange.end}` : ''}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Search */}
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={packedSearchTerm}
+                onChange={(e) => setPackedSearchTerm(e.target.value)}
+                placeholder="Search SKU, barcode, box, shipment..."
+                className="pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:ring-2 focus:ring-emerald-500 outline-none w-48 sm:w-60"
+              />
+            </div>
+
+            {/* View toggle */}
+            <div role="tablist" aria-label="Packed Details View" className="flex bg-slate-100 rounded-lg p-0.5">
+              <button
+                type="button"
+                role="tab"
+                id="tab-packed-sku"
+                aria-controls="panel-packed-sku"
+                aria-selected={packedDetailTab === 'sku'}
+                tabIndex={packedDetailTab === 'sku' ? 0 : -1}
+                onClick={() => { setPackedDetailTab('sku'); setExpandedPackedRow(null); }}
+                className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  packedDetailTab === 'sku' ? 'bg-white text-emerald-700 shadow-2xs' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" /> By SKU ({filteredPackedSkus.length})
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-packed-box"
+                aria-controls="panel-packed-box"
+                aria-selected={packedDetailTab === 'box'}
+                tabIndex={packedDetailTab === 'box' ? 0 : -1}
+                onClick={() => { setPackedDetailTab('box'); setExpandedPackedRow(null); }}
+                className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  packedDetailTab === 'box' ? 'bg-white text-emerald-700 shadow-2xs' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <Boxes className="w-3.5 h-3.5" /> By Box ({filteredPackedBoxes.length})
+              </button>
+            </div>
+
+            <button
+              onClick={exportPackedCsv}
+              disabled={filteredPackedSkus.length === 0 && filteredPackedBoxes.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" /> Export
+            </button>
+          </div>
+        </div>
+
+        {/* Packed summary counters */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-slate-100 border-b border-slate-100">
+          <div className="bg-white px-4 py-3">
+            <p className="text-xl font-bold text-emerald-600">{stats?.summary?.totalBoxes ?? 0}</p>
+            <p className="text-[10px] uppercase tracking-wider text-slate-400 mt-0.5">Boxes Packed</p>
+          </div>
+          <div className="bg-white px-4 py-3">
+            <p className="text-xl font-bold text-primary-600">{stats?.summary?.totalItems ?? 0}</p>
+            <p className="text-[10px] uppercase tracking-wider text-slate-400 mt-0.5">Units Packed</p>
+          </div>
+          <div className="bg-white px-4 py-3">
+            <p className="text-xl font-bold text-amber-600">{stats?.summary?.uniqueSkus ?? stats?.packedSkus?.length ?? 0}</p>
+            <p className="text-[10px] uppercase tracking-wider text-slate-400 mt-0.5">Unique SKUs Packed</p>
+          </div>
+          <div className="bg-white px-4 py-3">
+            <p className="text-xl font-bold text-blue-600">{stats?.summary?.uniqueShipments ?? 0}</p>
+            <p className="text-[10px] uppercase tracking-wider text-slate-400 mt-0.5">Shipments Packed</p>
+          </div>
+        </div>
+
+        {/* Tab 1: By SKU */}
+        {packedDetailTab === 'sku' && (
+          <div id="panel-packed-sku" role="tabpanel" aria-labelledby="tab-packed-sku" tabIndex={0} className="overflow-x-auto max-h-[460px] outline-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 sticky top-0 z-[1]">
+                <tr>
+                  <th className="text-left px-4 py-2.5 text-slate-500 font-semibold uppercase">Internal SKU (OMS)</th>
+                  <th className="text-left px-3 py-2.5 text-slate-500 font-semibold uppercase">Marketplace SKU</th>
+                  <th className="text-left px-3 py-2.5 text-slate-500 font-semibold uppercase">Barcode</th>
+                  <th className="text-right px-3 py-2.5 text-slate-500 font-semibold uppercase">Total Packed Qty</th>
+                  <th className="text-right px-3 py-2.5 text-slate-500 font-semibold uppercase">Boxes Count</th>
+                  <th className="text-left px-3 py-2.5 text-slate-500 font-semibold uppercase">Box &amp; Shipment Details</th>
+                  <th className="px-3 py-2.5"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {loading ? (
+                  <tr><td colSpan="7" className="py-8 text-center text-slate-400">Loading packed SKUs…</td></tr>
+                ) : filteredPackedSkus.length > 0 ? (
+                  filteredPackedSkus.map((s, i) => {
+                    const rowKey = `packed-sku-${s.skuId || s.internalSku || s.barcode || i}`;
+                    const open = expandedPackedRow === rowKey;
+                    return (
+                      <React.Fragment key={rowKey}>
+                        <tr
+                          className="hover:bg-emerald-50/40 cursor-pointer transition-colors"
+                          onClick={() => setExpandedPackedRow(open ? null : rowKey)}
+                        >
+                          <td className="px-4 py-2.5 font-semibold text-slate-800">{s.internalSku || '—'}</td>
+                          <td className="px-3 py-2.5 font-mono text-slate-600">{s.marketplaceSku || '—'}</td>
+                          <td className="px-3 py-2.5 font-mono text-slate-400">{s.barcode || '—'}</td>
+                          <td className="px-3 py-2.5 text-right font-bold text-emerald-600">
+                            <span className="inline-block px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px]">
+                              {s.totalPackedQty}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-medium text-slate-700">
+                            {s.boxCount || s.boxes?.length || 0}
+                          </td>
+                          <td className="px-3 py-2.5 text-slate-600">
+                            <div className="flex flex-wrap gap-1 max-w-md">
+                              {(s.boxes || []).slice(0, 3).map((b, bi) => (
+                                <span
+                                  key={bi}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-[10px] text-slate-700 font-mono"
+                                  title={`${b.internalShipmentNo || b.consignmentId} · Box #${b.boxNo}`}
+                                >
+                                  {b.internalShipmentNo || 'Shipment'} #{b.boxNo}: <strong>{b.qty}</strong>
+                                </span>
+                              ))}
+                              {(s.boxes || []).length > 3 && (
+                                <span className="text-[10px] text-slate-400 self-center">
+                                  +{s.boxes.length - 3} more
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2.5 text-right">
+                            <ChevronRight className={`w-4 h-4 text-slate-400 inline transition-transform ${open ? 'rotate-90' : ''}`} />
+                          </td>
+                        </tr>
+                        {open && (
+                          <tr className="bg-slate-50/80">
+                            <td colSpan="7" className="px-4 py-3">
+                              <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide mb-2">
+                                All boxes containing SKU "{s.internalSku || s.marketplaceSku}" in this date filter:
+                              </p>
+                              <div className="rounded-lg border border-slate-200 overflow-hidden bg-white">
+                                <table className="w-full text-[11px]">
+                                  <thead className="bg-slate-50">
+                                    <tr>
+                                      <th className="text-left px-3 py-1.5 text-slate-500 font-semibold">Shipment No</th>
+                                      <th className="text-left px-3 py-1.5 text-slate-500 font-semibold">Box No</th>
+                                      <th className="text-left px-3 py-1.5 text-slate-500 font-semibold">Packed At</th>
+                                      <th className="text-left px-3 py-1.5 text-slate-500 font-semibold">Packer</th>
+                                      <th className="text-right px-3 py-1.5 text-slate-500 font-semibold">Qty in Box</th>
+                                      <th className="px-3 py-1.5"></th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100">
+                                    {(s.boxes || []).map((b, bi) => (
+                                      <tr key={bi} className="hover:bg-slate-50">
+                                        <td className="px-3 py-1.5 font-medium text-slate-800">{b.internalShipmentNo || b.consignmentId}</td>
+                                        <td className="px-3 py-1.5 font-mono text-slate-600">Box #{b.boxNo}</td>
+                                        <td className="px-3 py-1.5 text-slate-500 whitespace-nowrap">
+                                          {b.packedAt ? format(new Date(b.packedAt), 'dd/MM/yyyy HH:mm:ss') : '—'}
+                                        </td>
+                                        <td className="px-3 py-1.5 text-slate-600">{b.packerName || '—'}</td>
+                                        <td className="px-3 py-1.5 text-right font-bold text-emerald-600">{b.qty}</td>
+                                        <td className="px-3 py-1.5 text-right">
+                                          <Link to={`/consignments/${b.consignmentId}`} className="text-primary-600 hover:underline">
+                                            Open →
+                                          </Link>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan="7" className="py-10 text-center">
+                      <p className="text-slate-500 font-medium">
+                        {packedSearchTerm
+                          ? `No packed SKUs match "${packedSearchTerm}"`
+                          : `No SKUs were packed in this date filter (${dateRange.start}${dateRange.end && dateRange.end !== dateRange.start ? ` to ${dateRange.end}` : ''})`}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-1">Try selecting a different date range or preset.</p>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Tab 2: By Box */}
+        {packedDetailTab === 'box' && (
+          <div id="panel-packed-box" role="tabpanel" aria-labelledby="tab-packed-box" tabIndex={0} className="overflow-x-auto max-h-[460px] outline-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 sticky top-0 z-[1]">
+                <tr>
+                  <th className="text-left px-4 py-2.5 text-slate-500 font-semibold uppercase">Box No</th>
+                  <th className="text-left px-3 py-2.5 text-slate-500 font-semibold uppercase">Internal Shipment No</th>
+                  <th className="text-left px-3 py-2.5 text-slate-500 font-semibold uppercase">Packed At</th>
+                  <th className="text-left px-3 py-2.5 text-slate-500 font-semibold uppercase">Packer</th>
+                  <th className="text-right px-3 py-2.5 text-slate-500 font-semibold uppercase">Items Count</th>
+                  <th className="text-left px-3 py-2.5 text-slate-500 font-semibold uppercase">SKU Contents Summary</th>
+                  <th className="px-3 py-2.5"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {loading ? (
+                  <tr><td colSpan="7" className="py-8 text-center text-slate-400">Loading packed boxes…</td></tr>
+                ) : filteredPackedBoxes.length > 0 ? (
+                  filteredPackedBoxes.map((b, i) => {
+                    const rowKey = `packed-box-${b.id || b.consignmentId + '-' + b.boxNo || i}`;
+                    const open = expandedPackedRow === rowKey;
+                    return (
+                      <React.Fragment key={rowKey}>
+                        <tr
+                          className="hover:bg-emerald-50/40 cursor-pointer transition-colors"
+                          onClick={() => setExpandedPackedRow(open ? null : rowKey)}
+                        >
+                          <td className="px-4 py-2.5 font-bold text-slate-900">Box #{b.boxNo}</td>
+                          <td className="px-3 py-2.5 font-medium text-slate-800">{b.internalShipmentNo || b.consignmentId}</td>
+                          <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">
+                            {b.packedAt ? format(new Date(b.packedAt), 'dd/MM/yyyy HH:mm:ss') : '—'}
+                          </td>
+                          <td className="px-3 py-2.5 text-slate-600">{b.packerName || '—'}</td>
+                          <td className="px-3 py-2.5 text-right font-bold text-emerald-600">
+                            <span className="inline-block px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px]">
+                              {b.itemsCount} units
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 text-slate-600">
+                            <div className="flex flex-wrap gap-1 max-w-md">
+                              {(b.items || []).slice(0, 3).map((item, ii) => (
+                                <span
+                                  key={ii}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-[10px] text-slate-700 font-mono"
+                                >
+                                  {item.internalSku || item.barcode || 'Item'}: <strong>x{item.qty}</strong>
+                                </span>
+                              ))}
+                              {(b.items || []).length > 3 && (
+                                <span className="text-[10px] text-slate-400 self-center">
+                                  +{b.items.length - 3} more
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2.5 text-right">
+                            <ChevronRight className={`w-4 h-4 text-slate-400 inline transition-transform ${open ? 'rotate-90' : ''}`} />
+                          </td>
+                        </tr>
+                        {open && (
+                          <tr className="bg-slate-50/80">
+                            <td colSpan="7" className="px-4 py-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+                                  Items in Box #{b.boxNo} ({b.internalShipmentNo})
+                                </p>
+                                <Link to={`/consignments/${b.consignmentId}`} className="text-[11px] text-primary-600 hover:underline font-medium">
+                                  View Consignment →
+                                </Link>
+                              </div>
+                              <div className="rounded-lg border border-slate-200 overflow-hidden bg-white">
+                                <table className="w-full text-[11px]">
+                                  <thead className="bg-slate-50">
+                                    <tr>
+                                      <th className="text-left px-3 py-1.5 text-slate-500 font-semibold">Internal SKU</th>
+                                      <th className="text-left px-3 py-1.5 text-slate-500 font-semibold">Marketplace SKU</th>
+                                      <th className="text-left px-3 py-1.5 text-slate-500 font-semibold">Barcode</th>
+                                      <th className="text-right px-3 py-1.5 text-slate-500 font-semibold">Quantity</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100">
+                                    {(b.items || []).map((item, ii) => (
+                                      <tr key={ii} className="hover:bg-slate-50">
+                                        <td className="px-3 py-1.5 font-medium text-slate-800">{item.internalSku || '—'}</td>
+                                        <td className="px-3 py-1.5 font-mono text-slate-600">{item.marketplaceSku || '—'}</td>
+                                        <td className="px-3 py-1.5 font-mono text-slate-400">{item.barcode || '—'}</td>
+                                        <td className="px-3 py-1.5 text-right font-bold text-emerald-600">{item.qty}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan="7" className="py-10 text-center">
+                      <p className="text-slate-500 font-medium">
+                        {packedSearchTerm
+                          ? `No packed boxes match "${packedSearchTerm}"`
+                          : `No boxes were packed in this date filter (${dateRange.start}${dateRange.end && dateRange.end !== dateRange.start ? ` to ${dateRange.end}` : ''})`}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-1">Try selecting a different date range or preset.</p>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* ═══ PRODUCTION PLANNING ═══ */}

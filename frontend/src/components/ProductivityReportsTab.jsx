@@ -2,7 +2,8 @@ import React, { useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import {
   FileSpreadsheet, Download, AlertTriangle, TrendingUp,
-  Layers, Activity, ClipboardList, BarChart3, Loader2
+  Layers, Activity, ClipboardList, BarChart3, Loader2,
+  PackageCheck, Boxes
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { getShipmentPriority, getPackingPercent } from '../utils/priority'
@@ -19,6 +20,8 @@ const SHEETS = [
   { icon: ClipboardList, name: 'Shipments Detail', desc: 'Every consignment field with color-coded priority' },
   { icon: TrendingUp, name: 'Production Planning', desc: 'Open shipments with dispatch dates and pending units' },
   { icon: Layers, name: 'SKU Pending', desc: 'SKU-level pending breakdown across consignments' },
+  { icon: PackageCheck, name: 'Date Packed SKUs', desc: 'Detailed SKU quantities packed in the selected date range' },
+  { icon: Boxes, name: 'Date Packed Boxes', desc: 'Individual boxes packed with SKU contents in date range' },
   { icon: Activity, name: 'Packing Activity', desc: 'Box saves and events in the selected date range' },
   { icon: FileSpreadsheet, name: 'Audit Log', desc: 'System audit trail with timestamps and ownership' },
 ]
