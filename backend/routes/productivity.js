@@ -94,6 +94,7 @@ function resolveProductivityDateRanges({ date, startDate: rawStartDate, endDate:
 
   let rangeStart = startDate;
   let rangeEnd = endDate;
+  const nowIso = new Date().toISOString();
   if (date) {
     const target = new Date(date);
     rangeStart = target.toISOString();
@@ -105,14 +106,14 @@ function resolveProductivityDateRanges({ date, startDate: rawStartDate, endDate:
     endOfDay.setUTCHours(23, 59, 59, 999);
     rangeEnd = endOfDay.toISOString();
   } else if (startDate && !endDate) {
-    rangeEnd = new Date().toISOString();
+    rangeEnd = nowIso;
   } else if (!startDate && endDate) {
     rangeStart = '1970-01-01T00:00:00.000Z';
   }
 
-  const explicitTrendEnd = date ? rangeEnd : (endDate || null);
+  const explicitTrendEnd = date ? rangeEnd : (endDate || (startDate ? rangeEnd : null));
   const explicitTrendStart = date ? rangeStart : (startDate || null);
-  const trendEndIso = explicitTrendEnd || new Date().toISOString();
+  const trendEndIso = explicitTrendEnd || nowIso;
   let trendStartIso = explicitTrendStart || new Date(new Date(trendEndIso).getTime() - (TREND_WINDOW_DAYS - 1) * 24 * 60 * 60 * 1000).toISOString();
 
   // -1: this is an inclusive day-span (e.g. TREND_WINDOW_DAYS uses the same
