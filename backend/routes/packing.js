@@ -1777,8 +1777,10 @@ router.post('/save-box', authenticateToken, async (req, res) => {
       boxNo: String(box_no),
       eventType: 'box_saved',
       itemsCount: totalQty,
+      items: boxItems,
       timestamp,
       userId: req.user.id,
+      userName: req.user.name || req.user.email,
     };
 
     let transactionResult = null;

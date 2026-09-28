@@ -1855,8 +1855,10 @@ router.post('/:id/boxes', authenticateToken, requirePermission('packing', 'save 
       boxNo: String(boxNo),
       eventType: 'box_saved',
       itemsCount: boxData.totalQty,
+      items: normalizedItems,
       timestamp,
       userId: req.user.id,
+      userName: req.user.name || req.user.email,
     };
 
     let saveResult = null;

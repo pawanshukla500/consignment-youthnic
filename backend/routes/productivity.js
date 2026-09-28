@@ -92,19 +92,32 @@ function resolveProductivityDateRanges({ date, startDate: rawStartDate, endDate:
     [startDate, endDate] = [endDate, startDate];
   }
 
+  const isDateOnly = (val) => typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val.trim());
+  if (isDateOnly(startDate)) {
+    startDate = `${startDate.trim()}T00:00:00.000Z`;
+  }
+  if (isDateOnly(endDate)) {
+    endDate = `${endDate.trim()}T23:59:59.999Z`;
+  }
+
   let rangeStart = startDate;
   let rangeEnd = endDate;
   const nowIso = new Date().toISOString();
   if (date) {
-    const target = new Date(date);
-    rangeStart = target.toISOString();
-    const endOfDay = new Date(target);
-    // setUTCHours, not setHours — the local-time variant renders an
-    // incomplete window in any non-UTC server timezone (e.g. only
-    // 00:00-07:00 UTC of the requested day in America/Los_Angeles),
-    // silently dropping most of that day's activity from the report.
-    endOfDay.setUTCHours(23, 59, 59, 999);
-    rangeEnd = endOfDay.toISOString();
+    if (isDateOnly(date)) {
+      rangeStart = `${date.trim()}T00:00:00.000Z`;
+      rangeEnd = `${date.trim()}T23:59:59.999Z`;
+    } else {
+      const target = new Date(date);
+      rangeStart = target.toISOString();
+      const endOfDay = new Date(target);
+      // setUTCHours, not setHours — the local-time variant renders an
+      // incomplete window in any non-UTC server timezone (e.g. only
+      // 00:00-07:00 UTC of the requested day in America/Los_Angeles),
+      // silently dropping most of that day's activity from the report.
+      endOfDay.setUTCHours(23, 59, 59, 999);
+      rangeEnd = endOfDay.toISOString();
+    }
   } else if (startDate && !endDate) {
     rangeEnd = nowIso;
   } else if (!startDate && endDate) {
@@ -126,6 +139,113 @@ function resolveProductivityDateRanges({ date, startDate: rawStartDate, endDate:
   }
 
   return { rangeStart, rangeEnd, trendStartIso, trendEndIso };
+}
+
+/**
+ * Aggregates packed boxes and SKU items across box_saved records.
+ * Resolves consignment shipment numbers and packer names.
+ */
+function computePackedSkusAndBoxes(boxRecords, boxMap = new Map(), consignmentMap = {}, userMap = {}) {
+  const packedBoxes = [];
+  const packedSkusMap = new Map();
+
+  for (const r of boxRecords) {
+    const boxKey1 = `${r.consignmentId}_box_${r.boxNo}`;
+    const boxKey2 = `${r.consignmentId}_${r.boxNo}`;
+    const b = (boxMap instanceof Map)
+      ? (boxMap.get(r.boxId) || boxMap.get(boxKey1) || boxMap.get(boxKey2) || boxMap.get(r.id))
+      : (boxMap[r.boxId] || boxMap[boxKey1] || boxMap[boxKey2] || boxMap[r.id]);
+    const c = consignmentMap[r.consignmentId] || {};
+    const internalShipmentNo = c.internalShipmentNo || r.consignmentId || '';
+    const u = userMap[r.userId];
+    const packerName = u?.name || r.userName || u?.email || 'Unknown';
+
+    let items = Array.isArray(r.items) && r.items.length ? r.items : (b?.items || []);
+    if (typeof items === 'string') {
+      try { items = JSON.parse(items); } catch (_) { items = []; }
+    }
+    if (!Array.isArray(items)) items = [];
+
+    const parsedItems = items.map((it) => ({
+      skuId: it.skuId || '',
+      internalSku: it.internalSku || '',
+      marketplaceSku: it.marketplaceSku || '',
+      barcode: it.barcode || it.marketplaceBarcode || '',
+      name: it.name || it.internalSku || '',
+      qty: toInt(it.qty ?? it.quantity),
+    })).filter((it) => it.qty > 0);
+
+    const totalQty = toInt(r.itemsCount || b?.totalQty || parsedItems.reduce((s, it) => s + it.qty, 0));
+
+    const timeVal = r.timestamp || r.createdAt || '';
+    packedBoxes.push({
+      id: r.id,
+      consignmentId: r.consignmentId || '',
+      internalShipmentNo,
+      boxNo: r.boxNo ? String(r.boxNo) : '',
+      itemsCount: totalQty,
+      duration: toInt(r.duration || 0),
+      timestamp: timeVal,
+      packedAt: timeVal,
+      packerId: r.userId || '',
+      packerName,
+      userName: packerName,
+      items: parsedItems,
+    });
+
+    for (const it of parsedItems) {
+      const skuKey = it.internalSku || it.marketplaceSku || it.barcode || it.skuId || 'unknown';
+      if (!packedSkusMap.has(skuKey)) {
+        packedSkusMap.set(skuKey, {
+          skuKey,
+          internalSku: it.internalSku || '',
+          marketplaceSku: it.marketplaceSku || '',
+          barcode: it.barcode || '',
+          name: it.name || it.internalSku || '',
+          packedQty: 0,
+          totalPackedQty: 0,
+          boxCount: 0,
+          boxes: [],
+          boxesSeen: new Set(),
+          consignmentsMap: new Map(),
+        });
+      }
+      const entry = packedSkusMap.get(skuKey);
+      entry.packedQty += it.qty;
+      entry.totalPackedQty += it.qty;
+      entry.boxes.push({
+        consignmentId: r.consignmentId || '',
+        internalShipmentNo,
+        boxNo: r.boxNo ? String(r.boxNo) : '',
+        qty: it.qty,
+        packerName,
+        packedAt: timeVal,
+        timestamp: timeVal,
+      });
+
+      const boxRef = `${r.consignmentId}_#${r.boxNo}`;
+      if (!entry.boxesSeen.has(boxRef)) {
+        entry.boxesSeen.add(boxRef);
+        entry.boxCount += 1;
+      }
+      if (!entry.consignmentsMap.has(r.consignmentId)) {
+        entry.consignmentsMap.set(r.consignmentId, {
+          id: r.consignmentId,
+          internalShipmentNo,
+          packedQty: 0,
+        });
+      }
+      entry.consignmentsMap.get(r.consignmentId).packedQty += it.qty;
+    }
+  }
+
+  const packedSkus = [...packedSkusMap.values()].map(({ boxesSeen, consignmentsMap, ...rest }) => ({
+    ...rest,
+    totalPackedQty: rest.packedQty,
+    consignments: [...consignmentsMap.values()],
+  })).sort((a, b) => b.packedQty - a.packedQty);
+
+  return { packedBoxes, packedSkus };
 }
 
 /**
@@ -539,7 +659,7 @@ router.get('/dashboard-summary', authenticateToken, requireAnyPermission(['consi
 // Log productivity event
 router.post('/', authenticateToken, requireAnyPermission(['packing', 'productivity'], 'log productivity events'), async (req, res) => {
   try {
-    const { consignmentId, boxNo, eventType, itemsCount, duration } = req.body;
+    const { consignmentId, boxNo, eventType, itemsCount, duration, items } = req.body;
 
     const record = {
       id: generateId(),
@@ -548,6 +668,7 @@ router.post('/', authenticateToken, requireAnyPermission(['packing', 'productivi
       eventType: eventType || 'box_saved', // box_saved, consignment_finished, scan
       itemsCount: parseInt(itemsCount) || 0,
       duration: parseInt(duration) || 0,
+      items: Array.isArray(items) ? items : [],
       timestamp: now(),
       userId: req.user.id,
       userName: req.user.name || req.user.email
@@ -578,7 +699,7 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
     if (pgEnabled()) {
       try {
         const {
-          statsRow, totalActivity, recentActivity, dailyTrend, topPackers,
+          statsRow, totalActivity, recentActivity, dailyTrend, topPackers, packedBoxes = [], packedSkus = [],
         } = await pgHelpers.queryProductivityStats({
           startDate: rangeStart,
           endDate: rangeEnd,
@@ -604,7 +725,11 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
             totalItems: toInt(statsRow.range_items),
             avgItemsPerBox: Math.round(avgItemsPerBox * 100) / 100,
             avgTimePerBoxSeconds: Math.round(avgTimePerBox * 100) / 100,
+            uniqueSkus: packedSkus.length,
+            uniqueConsignments: new Set(packedBoxes.map((b) => b.consignmentId).filter(Boolean)).size,
           },
+          packedBoxes,
+          packedSkus,
           recentActivity,
           dailyTrend,
           topPackers,
@@ -621,30 +746,31 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
       }
     }
 
-    let records = await firestoreHelpers.getCollection('productivity');
+    let allRecords = await firestoreHelpers.getCollection('productivity');
+    let records = allRecords;
 
     // Filter by date range
     if (date) {
       const targetDate = new Date(date).toDateString();
-      records = records.filter(r => new Date(r.timestamp).toDateString() === targetDate);
-    } else if (startDate && endDate) {
-      // rangeStart/rangeEnd, not the raw startDate/endDate — those are the
-      // normalized (swapped-if-reversed) values from resolveProductivityDateRanges.
-      // Filtering on the raw pair here would silently return zero records
-      // whenever the caller submitted startDate after endDate, even though
-      // the Postgres path above (and the daily-trend/leaderboard queries)
-      // already correctly use the normalized range.
+      records = records.filter(r => new Date(r.timestamp || r.createdAt).toDateString() === targetDate);
+    } else if (rangeStart && rangeEnd) {
       const start = new Date(rangeStart);
       const end = new Date(rangeEnd);
       records = records.filter(r => {
-        const d = new Date(r.timestamp);
+        const d = new Date(r.timestamp || r.createdAt);
         return d >= start && d <= end;
       });
+    } else if (rangeStart) {
+      const start = new Date(rangeStart);
+      records = records.filter(r => new Date(r.timestamp || r.createdAt) >= start);
+    } else if (rangeEnd) {
+      const end = new Date(rangeEnd);
+      records = records.filter(r => new Date(r.timestamp || r.createdAt) <= end);
     }
 
-    // Today's stats
+    // Today's stats calculated across all records
     const today = new Date().toDateString();
-    const todayRecords = records.filter(r => new Date(r.timestamp).toDateString() === today);
+    const todayRecords = allRecords.filter(r => new Date(r.timestamp || r.createdAt).toDateString() === today);
 
     const todayBoxes = todayRecords.filter(r => r.eventType === 'box_saved').length;
     const todayItems = todayRecords.filter(r => r.eventType === 'box_saved').reduce((sum, r) => sum + (r.itemsCount || 0), 0);
@@ -659,18 +785,31 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
       : 0;
 
     // Recent activity
-    records.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    records.sort((a, b) => new Date(b.timestamp || b.createdAt || 0) - new Date(a.timestamp || a.createdAt || 0));
     const totalActivity = records.length;
     const recentActivity = records.slice(offset, offset + pageSize);
 
-    // Daily trend + top-packers leaderboard — computeDailyTrend/computeTopPackers
-    // apply their own [trendStartMs, trendEndMs] bound, so this reuses
-    // allBoxRecords whether or not the top-level date filter above already
-    // narrowed it (their bound is always >= as tight as that filter).
+    // Daily trend + top-packers leaderboard
     const trendStartMs = new Date(trendStartIso).getTime();
     const trendEndMs = new Date(trendEndIso).getTime();
-    const users = await firestoreHelpers.getCollection('users');
+    const [users, boxes, consignments] = await Promise.all([
+      firestoreHelpers.getCollection('users').catch(() => []),
+      firestoreHelpers.getCollection('boxes').catch(() => []),
+      firestoreHelpers.getCollection('consignments').catch(() => []),
+    ]);
+
     const userMap = Object.fromEntries(users.map((u) => [u.id, u]));
+    const consignmentMap = Object.fromEntries(consignments.map((c) => [c.id, c]));
+    const boxMap = new Map();
+    for (const b of boxes) {
+      if (b.id) boxMap.set(b.id, b);
+      if (b.consignmentId && b.boxNo != null) {
+        boxMap.set(`${b.consignmentId}_box_${b.boxNo}`, b);
+        boxMap.set(`${b.consignmentId}_${b.boxNo}`, b);
+      }
+    }
+
+    const { packedBoxes, packedSkus } = computePackedSkusAndBoxes(allBoxRecords, boxMap, consignmentMap, userMap);
     const dailyTrend = computeDailyTrend(allBoxRecords, trendStartMs, trendEndMs);
     const topPackers = computeTopPackers(allBoxRecords, userMap, trendStartMs, trendEndMs, TOP_PACKERS_LIMIT);
 
@@ -685,8 +824,12 @@ router.get('/', authenticateToken, requirePermission('productivity', 'view produ
         totalBoxes: allBoxRecords.length,
         totalItems: allBoxRecords.reduce((sum, r) => sum + (r.itemsCount || 0), 0),
         avgItemsPerBox: Math.round(avgItemsPerBox * 100) / 100,
-        avgTimePerBoxSeconds: Math.round(avgTimePerBox * 100) / 100
+        avgTimePerBoxSeconds: Math.round(avgTimePerBox * 100) / 100,
+        uniqueSkus: packedSkus.length,
+        uniqueConsignments: new Set(packedBoxes.map((b) => b.consignmentId).filter(Boolean)).size,
       },
+      packedBoxes,
+      packedSkus,
       recentActivity,
       dailyTrend,
       topPackers,
@@ -781,5 +924,5 @@ module.exports = router;
 // how server.js mounts it (app.use('/api/productivity', require(...))).
 router.__testables = {
   buildDashboardAnalytics, getRecentDaysTrend, computeDailyTrend, computeTopPackers,
-  resolveProductivityDateRanges,
+  resolveProductivityDateRanges, computePackedSkusAndBoxes,
 };

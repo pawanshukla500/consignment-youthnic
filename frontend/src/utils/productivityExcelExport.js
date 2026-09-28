@@ -299,7 +299,68 @@ export async function exportProductivityExcel({
   })
   autoWidth(skuSheet)
 
-  // ── Sheet 5: Packing Activity ────────────────────────────────────────────
+  // ── Sheet 5: Date Packed SKUs ────────────────────────────────────────────
+  if (stats?.packedSkus?.length) {
+    const pSkuHeaders = [
+      'Internal SKU', 'Marketplace SKU', 'Barcode', 'Total Packed Qty',
+      'Boxes Count', 'Packed Boxes Details (Shipment: Box # : Qty)',
+    ]
+    const pSkuSheet = wb.addWorksheet('Date Packed SKUs', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+      autoFilter: { from: 'A1', to: { row: 1, column: pSkuHeaders.length } },
+    })
+    pSkuSheet.addRow(pSkuHeaders)
+    styleHeaderRow(pSkuSheet, 1, pSkuHeaders.length)
+    stats.packedSkus.forEach((s) => {
+      const qty = s.totalPackedQty ?? s.packedQty ?? 0
+      const boxList = s.boxes || s.consignments || []
+      const boxDetails = boxList.map((b) => {
+        const ship = b.internalShipmentNo || b.consignmentId || 'Shipment'
+        const bNo = b.boxNo != null ? `(Box #${b.boxNo})` : ''
+        const bQty = b.qty ?? b.packedQty ?? b.quantity ?? 0
+        return `${ship}${bNo}: ${bQty}`
+      }).join(' | ')
+
+      pSkuSheet.addRow([
+        s.internalSku || '',
+        s.marketplaceSku || '',
+        s.barcode || '',
+        qty,
+        s.boxCount || boxList.length || 0,
+        boxDetails,
+      ])
+    })
+    autoWidth(pSkuSheet)
+  }
+
+  // ── Sheet 6: Date Packed Boxes ───────────────────────────────────────────
+  if (stats?.packedBoxes?.length) {
+    const pBoxHeaders = [
+      'Packed At', 'Consignment ID', 'Internal Shipment No', 'Box No',
+      'Packer', 'Items Count', 'SKU Details (SKU x Qty)',
+    ]
+    const pBoxSheet = wb.addWorksheet('Date Packed Boxes', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+      autoFilter: { from: 'A1', to: { row: 1, column: pBoxHeaders.length } },
+    })
+    pBoxSheet.addRow(pBoxHeaders)
+    styleHeaderRow(pBoxSheet, 1, pBoxHeaders.length)
+    stats.packedBoxes.forEach((b) => {
+      const packedTime = b.packedAt || b.timestamp || b.createdAt
+      pBoxSheet.addRow([
+        fmtDateTime(packedTime),
+        b.consignmentId || '',
+        b.internalShipmentNo || '',
+        b.boxNo || '',
+        b.packerName || b.userName || b.userId || '',
+        b.itemsCount ?? b.itemCount ?? 0,
+        (b.items || []).map((i) => `${i.internalSku || i.barcode || 'Item'} x${i.qty ?? i.quantity ?? 0}`).join(' | '),
+      ])
+    })
+    autoWidth(pBoxSheet)
+  }
+
+  // ── Sheet 7: Packing Activity ────────────────────────────────────────────
   const actHeaders = ['Timestamp', 'Event', 'Consignment ID', 'Box No', 'Items', 'Duration (sec)', 'User']
   const actSheet = wb.addWorksheet('Packing Activity', {
     views: [{ state: 'frozen', ySplit: 1 }],

@@ -477,6 +477,31 @@ const pgHelpers = {
       LIMIT $3::int
     `;
 
+    const packedBoxesSql = `
+      SELECT
+        p.id,
+        p.data->>'consignmentId' AS consignment_id,
+        COALESCE(c.data->>'internalShipmentNo', p.data->>'consignmentId', '') AS internal_shipment_no,
+        p.data->>'boxNo' AS box_no,
+        COALESCE((p.data->>'itemsCount')::int, (b.data->>'totalQty')::int, 0) AS items_count,
+        COALESCE((p.data->>'duration')::int, 0) AS duration,
+        COALESCE(p.data->>'timestamp', p.data->>'createdAt', p.created_at::text) AS timestamp,
+        p.data->>'userId' AS packer_id,
+        COALESCE(u.data->>'name', NULLIF(p.data->>'userName', ''), u.data->>'email', 'Unknown') AS packer_name,
+        COALESCE(p.data->'items', b.data->'items', '[]'::jsonb) AS items
+      FROM documents p
+      LEFT JOIN documents b ON b.collection = 'boxes'
+        AND (b.id = (p.data->>'consignmentId') || '_box_' || (p.data->>'boxNo')
+             OR (b.data->>'consignmentId' = p.data->>'consignmentId' AND b.data->>'boxNo' = p.data->>'boxNo'))
+      LEFT JOIN documents c ON c.collection = 'consignments' AND c.id = p.data->>'consignmentId'
+      LEFT JOIN documents u ON u.collection = 'users' AND u.id = p.data->>'userId'
+      WHERE p.collection = 'productivity'
+        AND p.data->>'eventType' = 'box_saved'
+        ${rangeClause ? rangeClause.replace(/data->>/g, 'p.data->>') : ''}
+      ORDER BY ${ts.replace(/data->>/g, 'p.data->>')} DESC NULLS LAST
+      LIMIT 500
+    `;
+
     const trendParams = [boundedStart, boundedEnd];
     const topPackersParams = [
       boundedStart,
@@ -485,13 +510,103 @@ const pgHelpers = {
     ];
 
     const pool = getPool();
-    const [statsResult, countResult, activityResult, trendResult, topPackersResult] = await Promise.all([
+    const [statsResult, countResult, activityResult, trendResult, topPackersResult, packedBoxesResult] = await Promise.all([
       pool.query(statsSql, params),
       pool.query(countSql, params),
       pool.query(activitySql, activityParams),
       pool.query(trendSql, trendParams),
       pool.query(topPackersSql, topPackersParams),
+      pool.query(packedBoxesSql, params),
     ]);
+
+    const packedBoxes = [];
+    const packedSkusMap = new Map();
+
+    for (const row of (packedBoxesResult?.rows || [])) {
+      let rawItems = row.items;
+      if (typeof rawItems === 'string') {
+        try { rawItems = JSON.parse(rawItems); } catch (_) { rawItems = []; }
+      }
+      if (!Array.isArray(rawItems)) rawItems = [];
+
+      const parsedItems = rawItems.map((it) => ({
+        skuId: it.skuId || '',
+        internalSku: it.internalSku || '',
+        marketplaceSku: it.marketplaceSku || '',
+        barcode: it.barcode || it.marketplaceBarcode || '',
+        name: it.name || it.internalSku || '',
+        qty: Number(it.qty ?? it.quantity) || 0,
+      })).filter((it) => it.qty > 0);
+
+      const totalQty = Number(row.items_count) || parsedItems.reduce((s, it) => s + it.qty, 0);
+
+      const timeVal = row.timestamp || '';
+      packedBoxes.push({
+        id: row.id,
+        consignmentId: row.consignment_id || '',
+        internalShipmentNo: row.internal_shipment_no || row.consignment_id || '',
+        boxNo: row.box_no ? String(row.box_no) : '',
+        itemsCount: totalQty,
+        duration: Number(row.duration) || 0,
+        timestamp: timeVal,
+        packedAt: timeVal,
+        packerId: row.packer_id || '',
+        packerName: row.packer_name || 'Unknown',
+        userName: row.packer_name || 'Unknown',
+        items: parsedItems,
+      });
+
+      for (const item of parsedItems) {
+        const skuKey = item.internalSku || item.marketplaceSku || item.barcode || item.skuId || 'unknown';
+        if (!packedSkusMap.has(skuKey)) {
+          packedSkusMap.set(skuKey, {
+            skuKey,
+            internalSku: item.internalSku || '',
+            marketplaceSku: item.marketplaceSku || '',
+            barcode: item.barcode || '',
+            name: item.name || item.internalSku || '',
+            packedQty: 0,
+            totalPackedQty: 0,
+            boxCount: 0,
+            boxes: [],
+            boxesSeen: new Set(),
+            consignmentsMap: new Map(),
+          });
+        }
+        const entry = packedSkusMap.get(skuKey);
+        entry.packedQty += item.qty;
+        entry.totalPackedQty += item.qty;
+        entry.boxes.push({
+          consignmentId: row.consignment_id || '',
+          internalShipmentNo: row.internal_shipment_no || row.consignment_id || '',
+          boxNo: row.box_no ? String(row.box_no) : '',
+          qty: item.qty,
+          packerName: row.packer_name || 'Unknown',
+          packedAt: timeVal,
+          timestamp: timeVal,
+        });
+
+        const boxRef = `${row.consignment_id}_#${row.box_no}`;
+        if (!entry.boxesSeen.has(boxRef)) {
+          entry.boxesSeen.add(boxRef);
+          entry.boxCount += 1;
+        }
+        if (!entry.consignmentsMap.has(row.consignment_id)) {
+          entry.consignmentsMap.set(row.consignment_id, {
+            id: row.consignment_id,
+            internalShipmentNo: row.internal_shipment_no || row.consignment_id || '',
+            packedQty: 0,
+          });
+        }
+        entry.consignmentsMap.get(row.consignment_id).packedQty += item.qty;
+      }
+    }
+
+    const packedSkus = [...packedSkusMap.values()].map(({ boxesSeen, consignmentsMap, ...rest }) => ({
+      ...rest,
+      totalPackedQty: rest.packedQty,
+      consignments: [...consignmentsMap.values()],
+    })).sort((a, b) => b.packedQty - a.packedQty);
 
     return {
       statsRow: statsResult.rows[0] || {},
@@ -509,6 +624,8 @@ const pgHelpers = {
         boxes: row.boxes,
         items: row.items,
       })),
+      packedBoxes,
+      packedSkus,
     };
   },
 
