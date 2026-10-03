@@ -1,4 +1,5 @@
 const { firestoreHelpers, now } = require('./helpers');
+const { pgEnabled, getPool } = require('../config/database');
 const {
   findConsignmentIdentityConflict,
   formatIdentityConflictError,
@@ -15,7 +16,7 @@ const RELATED_COLLECTIONS = [
   'shipment_documents',
 ];
 
-async function reassignConsignmentId(oldId, newId, userId) {
+async function reassignConsignmentId(oldId, newId, userId, extra = {}) {
   const trimmedNew = String(newId || '').trim();
   if (!trimmedNew || trimmedNew === oldId) {
     return { ok: false, error: 'New consignment ID is required and must differ from the current ID.' };
@@ -34,8 +35,11 @@ async function reassignConsignmentId(oldId, newId, userId) {
 
   const updatedConsignment = {
     ...existing,
+    ...(extra.fields || {}),
     id: trimmedNew,
-    pendingExternalId: false,
+    pendingExternalId: extra.fields && Object.prototype.hasOwnProperty.call(extra.fields, 'pendingExternalId')
+      ? extra.fields.pendingExternalId
+      : false,
     updatedAt: now(),
     updatedBy: userId,
   };
@@ -63,6 +67,14 @@ async function reassignConsignmentId(oldId, newId, userId) {
       updatedAt: now(),
     });
     await firestoreHelpers.deleteDocument('packing_drafts', oldId);
+  }
+
+  if (pgEnabled()) {
+    try {
+      await getPool().query('DELETE FROM consignments WHERE id = $1', [oldId]);
+    } catch (error) {
+      console.warn('[Consignments] old consignment index row cleanup failed:', error.message);
+    }
   }
 
   return { ok: true, consignment: updatedConsignment, oldId, newId: trimmedNew };

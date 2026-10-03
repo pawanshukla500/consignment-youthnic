@@ -18,17 +18,100 @@ async function resolveConsignmentByKey(key) {
   const conflict = await findConsignmentIdentityConflict({
     keys: [trimmed],
   });
-  return conflict?.consignment || null;
+  if (conflict?.consignment) return conflict.consignment;
+
+  // Consignment No. may be shared. Use it only when exactly one shipment has it.
+  return findSoleConsignmentByNumber(trimmed);
+}
+
+async function findSoleConsignmentByNumber(key) {
+  const lowered = normalizeIdentityKey(key);
+  if (!lowered) return null;
+
+  if (pgEnabled()) {
+    try {
+      const { rows } = await getPool().query(
+        `SELECT id, data
+         FROM documents
+         WHERE collection = 'consignments'
+           AND lower(coalesce(data->>'consignmentNo','')) = $1
+         LIMIT 2`,
+        [lowered]
+      );
+      if (rows.length !== 1) return null;
+      return rows[0].data || { id: rows[0].id };
+    } catch (e) {
+      console.warn('[Consignments] consignment number lookup failed:', e.message);
+    }
+  }
+
+  try {
+    const matches = await firestoreHelpers.queryCollection('consignments', 'consignmentNo', '==', key);
+    const exact = matches.filter((row) => normalizeIdentityKey(row?.consignmentNo) === lowered);
+    if (exact.length === 1) return exact[0];
+  } catch (e) {
+    console.warn('[Consignments] consignment number fallback failed:', e.message);
+  }
+  return null;
 }
 
 function buildConsignmentId(requestedId, internalShipmentNo) {
-  const trimmedId = String(requestedId || '').trim();
-  if (trimmedId) return trimmedId;
-
+  // The document id follows the internal shipment. Marketplace consignment
+  // numbers are repeatable, so they must not become the primary key.
   const fromInternal = String(internalShipmentNo || '').trim().replace(/[^\w.-]/g, '_');
   if (fromInternal) return fromInternal;
 
+  const trimmedId = String(requestedId || '').trim();
+  if (trimmedId) return trimmedId;
+
   return null;
+}
+
+/**
+ * Decide how an edit changes identity without treating Consignment No. as unique.
+ * The document id moves only when it was itself the internal shipment number,
+ * so packed boxes, SKUs, and videos stay attached to the same shipment.
+ */
+function planIdentityUpdate(existing = {}, input = {}) {
+  const hasInternal = Object.prototype.hasOwnProperty.call(input, 'internalShipmentNo');
+  const hasConsignmentNo = Object.prototype.hasOwnProperty.call(input, 'consignmentNo');
+  const nextInternal = hasInternal
+    ? String(input.internalShipmentNo || '').trim()
+    : String(existing.internalShipmentNo || '').trim();
+
+  if (hasInternal && !nextInternal) {
+    return { ok: false, error: 'Internal Shipment No. is required' };
+  }
+
+  const nextConsignmentNo = hasConsignmentNo
+    ? String(input.consignmentNo || '').trim()
+    : String(existing.consignmentNo || '').trim();
+
+  const previousInternal = String(existing.internalShipmentNo || '').trim();
+  const internalChanged = hasInternal && nextInternal !== previousInternal;
+  const idFollowsInternal = normalizeIdentityKey(existing.id) === normalizeIdentityKey(previousInternal);
+  const nextId = internalChanged && idFollowsInternal
+    ? buildConsignmentId('', nextInternal)
+    : String(existing.id || '').trim();
+  const moveId = Boolean(nextId && normalizeIdentityKey(nextId) !== normalizeIdentityKey(existing.id));
+
+  const keys = [];
+  if (internalChanged || moveId) {
+    if (nextInternal) keys.push(nextInternal);
+    if (nextId) keys.push(nextId);
+  }
+
+  return {
+    ok: true,
+    nextInternal,
+    nextConsignmentNo,
+    pendingExternalId: hasConsignmentNo ? !nextConsignmentNo : Boolean(existing.pendingExternalId),
+    consignmentNoChanged: hasConsignmentNo,
+    nextId: nextId || existing.id,
+    moveId,
+    internalChanged,
+    keys,
+  };
 }
 
 function normalizeIdentityKey(value) {
@@ -38,7 +121,8 @@ function normalizeIdentityKey(value) {
 /**
  * Find an existing consignment that already owns any of the given identity keys.
  * Matches document id, data.id, internalShipmentNo, and shipmentNo (case-insensitive).
- * Archived consignments still count — the same number cannot be reused.
+ * Consignment No. is intentionally excluded — the same marketplace number can
+ * belong to more than one internal shipment. Archived rows still count.
  *
  * @param {{ keys?: string[], excludeId?: string }} opts
  * @returns {Promise<null | { field: string, value: string, consignment: object }>}
@@ -145,17 +229,18 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
 }
 
 function formatIdentityConflictError(conflict) {
-  if (!conflict) return 'Consignment already exists';
+  if (!conflict) return 'That internal shipment is already used';
   const label =
     conflict.field === 'internalShipmentNo' ? 'Internal Shipment No.'
       : conflict.field === 'shipmentNo' ? 'Shipment No.'
-        : 'Consignment ID';
-  return `${label} "${conflict.value}" already exists. You cannot create the same consignment again.`;
+        : 'Internal record id';
+  return `${label} "${conflict.value}" is already used by another consignment. Internal shipments must stay unique. The same Consignment No. can be used again when the internal shipment is different.`;
 }
 
 module.exports = {
   resolveConsignmentByKey,
   buildConsignmentId,
+  planIdentityUpdate,
   findConsignmentIdentityConflict,
   formatIdentityConflictError,
   normalizeIdentityKey,

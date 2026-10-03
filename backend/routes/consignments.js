@@ -29,8 +29,10 @@ const { resolveStoragePath, resolvePublicUrl, deleteFile } = require('../utils/s
 const { requirePermission, requireAnyPermission, DELETE_CONSIGNMENTS } = require('../utils/permissions');
 const {
   buildConsignmentId,
+  planIdentityUpdate,
   findConsignmentIdentityConflict,
   formatIdentityConflictError,
+  normalizeIdentityKey,
 } = require('../utils/resolveConsignment');
 const { reassignConsignmentId } = require('../utils/consignmentIdMigration');
 const {
@@ -417,7 +419,7 @@ function normalizeConfirmationValue(value) {
 }
 
 function getDeletionConfirmationTargets(consignment) {
-  return [consignment.id, consignment.name, consignment.internalShipmentNo]
+  return [consignment.id, consignment.name, consignment.internalShipmentNo, consignment.consignmentNo]
     .map(normalizeConfirmationValue)
     .filter(Boolean);
 }
@@ -740,6 +742,7 @@ router.get('/', authenticateToken, requirePermission('consignments', 'view consi
         const s = search.toLowerCase();
         consignments = consignments.filter(c =>
           c.id?.toLowerCase().includes(s) ||
+          c.consignmentNo?.toLowerCase().includes(s) ||
           c.shipmentNo?.toLowerCase().includes(s) ||
           c.internalShipmentNo?.toLowerCase().includes(s) ||
           c.name?.toLowerCase().includes(s) ||
@@ -1468,10 +1471,74 @@ router.get('/:id', authenticateToken, requireAnyPermission(['consignments', 'pac
   }
 });
 
+function skuIsPacked(sku) {
+  return (Number(sku?.packedQty) || 0) > 0;
+}
+
+async function syncEditedSkus(consignmentId, existingSkuIds, incoming, marketplaceId) {
+  const current = existingSkuIds?.length
+    ? (await firestoreHelpers.batchGetDocuments('skus', existingSkuIds)).filter(Boolean)
+    : [];
+  const byId = new Map(current.map((sku) => [sku.id, sku]));
+  const seen = new Set();
+  const writes = [];
+  let totalRequiredQty = 0;
+
+  for (const raw of incoming || []) {
+    const normalized = normalizeSkuInput(raw, { marketplaceId });
+    if (!normalized.marketplaceBarcode && !normalized.internalSku) continue;
+    const requestedId = String(raw?.id || '').trim();
+    const prev = requestedId && byId.has(requestedId) ? byId.get(requestedId) : null;
+    const skuId = prev ? prev.id : generateId();
+    seen.add(skuId);
+    const requiredQty = Math.max(0, parseInt(raw.requiredQty, 10) || 0);
+    const packedQty = Number(prev?.packedQty) || 0;
+    if (requiredQty < packedQty) {
+      const error = new Error(`Required qty for ${normalized.internalSku || normalized.marketplaceBarcode || skuId} cannot be below the packed qty (${packedQty}).`);
+      error.statusCode = 400;
+      error.code = 'SKU_QTY_BELOW_PACKED';
+      throw error;
+    }
+    writes.push(['skus', skuId, {
+      ...(prev || {}),
+      ...normalized,
+      id: skuId,
+      consignmentId,
+      marketplaceId: normalized.marketplaceId || marketplaceId || prev?.marketplaceId || '',
+      requiredQty,
+      packedQty,
+      omsGuruRemovedQty: prev?.omsGuruRemovedQty || 0,
+      omsGuruRemarks: prev?.omsGuruRemarks || '',
+      boxQuantities: prev?.boxQuantities || {},
+      status: prev?.status || (packedQty > 0 ? 'in_progress' : 'pending'),
+      createdAt: prev?.createdAt || now(),
+      updatedAt: now(),
+    }]);
+    totalRequiredQty += requiredQty;
+  }
+
+  const removed = current.filter((sku) => !seen.has(sku.id));
+  const blocked = removed.filter(skuIsPacked);
+  if (blocked.length) {
+    const names = blocked.map((sku) => sku.internalSku || sku.marketplaceBarcode || sku.id).join(', ');
+    const error = new Error(`Cannot remove SKUs that are already packed: ${names}`);
+    error.statusCode = 409;
+    error.code = 'SKU_ALREADY_PACKED';
+    throw error;
+  }
+
+  return {
+    skuIds: writes.map((entry) => entry[1]),
+    totalRequiredQty,
+    writes,
+    deleteIds: removed.map((sku) => sku.id),
+  };
+}
+
 // Create consignment
 router.post('/', authenticateToken, requirePermission('consignments', 'create consignment'), async (req, res) => {
   try {
-    const { id, shipmentNo, internalShipmentNo, name, description, expectedDate, marketplaceId, warehouse,
+    const { id, consignmentNo, shipmentNo, internalShipmentNo, name, description, expectedDate, marketplaceId, warehouse,
       poExpiryDate, appointmentDate, scheduledDispatchDate, actualDispatchDate, dateOfInward,
       forwardInvoiceNo, docketCompany, docketNo, marketplaceTicketId, shipmentStatus, isDisputed,
       unitsShipped, unitsReceived, unitsInwarded, qaFailExcessQty, skus = [] } = req.body;
@@ -1479,13 +1546,14 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
     if (!internalShipmentNo) return res.status(400).json({ error: 'Internal Shipment No. is required' });
 
     const trimmedInternal = String(internalShipmentNo || '').trim();
-    const trimmedRequestedId = String(id || '').trim();
-    const resolvedId = buildConsignmentId(trimmedRequestedId, trimmedInternal);
+    const trimmedConsignmentNo = String(consignmentNo || id || '').trim();
+    const resolvedId = buildConsignmentId('', trimmedInternal);
     if (!resolvedId) return res.status(400).json({ error: 'Internal Shipment No. is required to create a consignment.' });
 
-    // Block reuse of the same Consignment ID / Internal Shipment No (including archived).
+    // Internal shipment (and the record id derived from it) stays unique, including archived rows.
+    // Consignment No. is not part of that check — the same marketplace number can be reused.
     const conflict = await findConsignmentIdentityConflict({
-      keys: [resolvedId, trimmedRequestedId, trimmedInternal, shipmentNo],
+      keys: [resolvedId, trimmedInternal],
     });
     if (conflict) {
       return res.status(409).json({
@@ -1497,10 +1565,11 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
       });
     }
 
-    const pendingExternalId = !trimmedRequestedId;
+    const pendingExternalId = !trimmedConsignmentNo;
 
     const consignmentData = {
       id: resolvedId,
+      consignmentNo: trimmedConsignmentNo,
       internalShipmentNo: trimmedInternal,
       pendingExternalId,
       name: name || trimmedInternal,
@@ -1627,7 +1696,7 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
   } catch (error) {
     if (error?.code === 'DOCUMENT_ALREADY_EXISTS' || error?.statusCode === 409) {
       return res.status(409).json({
-        error: 'Consignment ID already exists. You cannot create the same consignment again.',
+        error: 'Internal Shipment No. already exists. The same Consignment No. can be used again only when the internal shipment is different.',
         code: 'CONSIGNMENT_ALREADY_EXISTS',
       });
     }
@@ -1673,7 +1742,7 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
     const existing = await firestoreHelpers.getDocument('consignments', id);
     if (!existing) return res.status(404).json({ error: 'Not found' });
 
-    const allowed = ['name', 'shipmentNo', 'internalShipmentNo', 'description', 'expectedDate', 'marketplaceId', 'warehouse',
+    const allowed = ['name', 'shipmentNo', 'internalShipmentNo', 'consignmentNo', 'description', 'expectedDate', 'marketplaceId', 'warehouse',
       'poExpiryDate', 'appointmentDate', 'scheduledDispatchDate', 'actualDispatchDate', 'dateOfInward',
       'forwardInvoiceNo', 'docketCompany', 'docketNo', 'marketplaceTicketId', 'isDisputed', 'shipmentStatus', 'status',
       'unitsShipped', 'unitsReceived', 'unitsInwarded', 'qaFailExcessQty',
@@ -1682,6 +1751,51 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
     const updateData = { updatedAt: now() };
     allowed.forEach(f => { if (updates[f] !== undefined) updateData[f] = updates[f]; });
 
+    const identity = planIdentityUpdate(existing, {
+      ...(updates.internalShipmentNo !== undefined ? { internalShipmentNo: updates.internalShipmentNo } : {}),
+      ...(updates.consignmentNo !== undefined ? { consignmentNo: updates.consignmentNo } : {}),
+    });
+    if (!identity.ok) return res.status(400).json({ error: identity.error });
+
+    if (identity.keys.length) {
+      const conflict = await findConsignmentIdentityConflict({
+        keys: identity.keys,
+        excludeId: id,
+      });
+      if (conflict) {
+        return res.status(409).json({
+          error: formatIdentityConflictError(conflict),
+          code: 'CONSIGNMENT_ALREADY_EXISTS',
+          field: conflict.field,
+          value: conflict.value,
+          existingId: conflict.consignment?.id || null,
+        });
+      }
+    }
+
+    if (identity.internalChanged) {
+      updateData.internalShipmentNo = identity.nextInternal;
+      const previousInternal = String(existing.internalShipmentNo || '').trim();
+      const previousShipment = String(existing.shipmentNo || '').trim();
+      const shipmentMirroredInternal = !previousShipment
+        || normalizeIdentityKey(previousShipment) === normalizeIdentityKey(previousInternal)
+        || normalizeIdentityKey(previousShipment) === normalizeIdentityKey(existing.id);
+      if (shipmentMirroredInternal && updates.shipmentNo === undefined) {
+        updateData.shipmentNo = identity.nextInternal;
+      }
+      const previousName = String(existing.name || '').trim();
+      const nameMirroredInternal = !previousName
+        || normalizeIdentityKey(previousName) === normalizeIdentityKey(previousInternal)
+        || normalizeIdentityKey(previousName) === normalizeIdentityKey(existing.id);
+      if (nameMirroredInternal && updates.name === undefined) {
+        updateData.name = identity.nextInternal;
+      }
+    }
+    if (identity.consignmentNoChanged) {
+      updateData.consignmentNo = identity.nextConsignmentNo;
+      updateData.pendingExternalId = identity.pendingExternalId;
+    }
+
     if (updateData.shipmentStatus && updateData.shipmentStatus !== existing.shipmentStatus) {
       const gate = canAdvanceLogistics(existing, updateData.shipmentStatus);
       if (!gate.ok) {
@@ -1689,22 +1803,69 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
       }
     }
 
-    const merged = { ...existing, ...updateData };
+    let recordId = id;
+    let baseRecord = existing;
+    if (identity.moveId) {
+      const moved = await reassignConsignmentId(id, identity.nextId, req.user.id, {
+        fields: { ...updateData, pendingExternalId: updateData.pendingExternalId ?? existing.pendingExternalId },
+      });
+      if (!moved.ok) return res.status(400).json({ error: moved.error });
+      recordId = moved.newId;
+      baseRecord = moved.consignment;
+      try {
+        const packingRouter = require('./packing');
+        if (typeof packingRouter.clearPackingSession === 'function') {
+          packingRouter.clearPackingSession(id);
+        }
+      } catch (invalidateErr) {
+        console.warn('[Consignments] packing session invalidate failed:', invalidateErr.message);
+      }
+    }
+
+    if (Array.isArray(updates.skus)) {
+      const skuPlan = await syncEditedSkus(
+        recordId,
+        existing.skuIds || [],
+        updates.skus,
+        updateData.marketplaceId !== undefined ? updateData.marketplaceId : existing.marketplaceId
+      );
+      if (skuPlan.writes.length) await firestoreHelpers.batchSetMulti(skuPlan.writes);
+      if (skuPlan.deleteIds.length) {
+        await firestoreHelpers.batchDelete('skus', skuPlan.deleteIds);
+        if (pgEnabled()) {
+          await getPool().query('DELETE FROM skus WHERE id = ANY($1::text[])', [skuPlan.deleteIds]).catch((error) => {
+            console.warn('[Consignments] normalized SKU delete failed:', error.message);
+          });
+        }
+      }
+      updateData.skuIds = skuPlan.skuIds;
+      updateData.totalRequiredQty = skuPlan.totalRequiredQty;
+    }
+
+    const merged = { ...baseRecord, ...updateData, id: recordId };
     const marketplaceMap = await buildMarketplaceMap(firestoreHelpers);
     const updated = await applyDispatchPlanning(merged, marketplaceMap);
-    await firestoreHelpers.setDocument('consignments', id, updated);
-    await addAuditLog('update', 'consignment', id, req.user.id, updateData);
+    await firestoreHelpers.setDocument('consignments', recordId, updated);
+    await addAuditLog('update', 'consignment', recordId, req.user.id, {
+      ...updateData,
+      ...(identity.moveId ? { oldId: id, newId: recordId } : {}),
+    });
     const enriched = enrichConsignment(updated, marketplaceMap);
     emitConsignmentChange({
-      id,
+      id: recordId,
+      ...(identity.moveId ? { oldId: id } : {}),
       status: enriched.status,
       shipmentStatus: enriched.shipmentStatus,
       totalPackedQty: enriched.totalPackedQty,
       totalRequiredQty: enriched.totalRequiredQty,
       internalShipmentNo: enriched.internalShipmentNo,
+      consignmentNo: enriched.consignmentNo || '',
       updatedAt: enriched.updatedAt,
     });
-    res.json({ consignment: enriched });
+    if (identity.moveId) {
+      syncConsignmentIdChange(id, enriched).catch(() => {});
+    }
+    res.json({ consignment: enriched, oldId: identity.moveId ? id : undefined, newId: recordId });
     const planningFields = ['appointmentDate', 'scheduledDispatchDate', 'marketplaceId', 'warehouse', 'status', 'shipmentStatus'];
     const touchedPlanning = planningFields.some((f) => updates[f] !== undefined && updates[f] !== existing[f]);
     if (touchedPlanning) {

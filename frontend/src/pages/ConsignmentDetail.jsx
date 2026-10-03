@@ -26,6 +26,7 @@ import ConsignmentWorkflowPanel from '../components/ConsignmentWorkflowPanel';
 import { useAuth } from '../context/AuthContext';
 import { summarizeOmsGuruSkus } from '../utils/omsGuruSku';
 import { inwardStatusClass, inwardStatusLabel } from '../utils/inwardSku';
+import { displayConsignmentNo } from '../utils/consignmentIdentity';
 
 const PACKING_LIVE_TYPES = new Set([
   'packing_scan',
@@ -1381,22 +1382,21 @@ const ConsignmentDetail = () => {
     e?.preventDefault?.();
     const trimmed = newConsignmentId.trim();
     if (!trimmed) {
-      addToast('Enter the official consignment ID', 'error');
-      return;
-    }
-    if (trimmed === consignment.id) {
-      addToast('New ID must differ from the current ID', 'error');
+      addToast('Enter the consignment number', 'error');
       return;
     }
     setReassigningId(true);
     try {
-      const { data } = await consignmentsAPI.reassignId(consignment.id, trimmed);
-      addToast(`Consignment ID updated to ${data.newId}`, 'success');
+      const { data } = await consignmentsAPI.update(consignment.id, {
+        consignmentNo: trimmed,
+      });
+      const saved = data.consignment || { consignmentNo: trimmed, pendingExternalId: false };
+      setConsignment((prev) => ({ ...prev, ...saved }));
+      addToast(`Consignment No. saved as ${trimmed}`, 'success');
       setShowReassignId(false);
       setNewConsignmentId('');
-      navigate(`/consignments/${data.newId}`, { replace: true });
     } catch (error) {
-      addToast(error.response?.data?.error || 'Could not update consignment ID', 'error');
+      addToast(error.response?.data?.error || 'Could not update consignment number', 'error');
     } finally {
       setReassigningId(false);
     }
@@ -1489,23 +1489,28 @@ const ConsignmentDetail = () => {
             </div>
 
             <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
-              {consignment.shipmentNo && (
+              {displayConsignmentNo(consignment) && (
+                <span className="bg-slate-50 border border-slate-200 px-2 py-0.5 rounded text-[11px] font-semibold text-slate-700">
+                  Consignment No: {displayConsignmentNo(consignment)}
+                </span>
+              )}
+              {consignment.shipmentNo && consignment.shipmentNo !== consignment.internalShipmentNo && (
                 <span className="bg-slate-50 border border-slate-200 px-2 py-0.5 rounded text-[11px] font-semibold text-slate-700">
                   Shipment Ref: {consignment.shipmentNo}
                 </span>
               )}
-              {consignment.pendingExternalId && (
+              {consignment.pendingExternalId && !displayConsignmentNo(consignment) && (
                 <span className="text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded text-[11px] font-semibold">
-                  Pending official ID
+                  Pending consignment no.
                 </span>
               )}
               {(consignment.pendingExternalId || user?.role === 'admin' || user?.role === 'organization_head') && (
                 <button
                   type="button"
-                  onClick={() => { setShowReassignId(true); setNewConsignmentId(''); }}
+                  onClick={() => { setShowReassignId(true); setNewConsignmentId(displayConsignmentNo(consignment)); }}
                   className="font-bold text-primary-600 hover:text-primary-700 underline cursor-pointer"
                 >
-                  Assign Official ID
+                  {displayConsignmentNo(consignment) ? 'Edit Consignment No.' : 'Assign Consignment No.'}
                 </button>
               )}
               {consignment.pgEnabled === false && (
@@ -3597,23 +3602,20 @@ const ConsignmentDetail = () => {
             onSubmit={handleReassignId}
             className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-md p-5 space-y-4"
           >
-            <h3 className="text-lg font-bold text-slate-900">Assign official consignment ID</h3>
+            <h3 className="text-lg font-bold text-slate-900">Consignment No.</h3>
             <p className="text-sm text-slate-600">
-              Current ID: <span className="font-mono font-semibold">{consignment.id}</span>
-              {consignment.internalShipmentNo && (
-                <> · Internal: <span className="font-semibold">{consignment.internalShipmentNo}</span></>
-              )}
+              Internal shipment <span className="font-semibold">{consignment.internalShipmentNo || consignment.id}</span> stays the unique key. This number can match another shipment.
             </p>
             <div>
               <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">
-                Official consignment ID
+                Consignment No.
               </label>
               <input
                 type="text"
                 value={newConsignmentId}
                 onChange={(e) => setNewConsignmentId(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary-500 outline-none"
-                placeholder="CON-2024-001"
+                placeholder="MYNJ-VBXOEO310826-11"
                 autoFocus
                 required
               />
@@ -3632,7 +3634,7 @@ const ConsignmentDetail = () => {
                 className="px-4 py-2 text-sm bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-60"
                 disabled={reassigningId}
               >
-                {reassigningId ? 'Updating…' : 'Update ID'}
+                {reassigningId ? 'Saving…' : 'Save number'}
               </button>
             </div>
           </form>

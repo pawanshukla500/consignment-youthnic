@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { Package, Plus, Search, Filter, Trash2, Eye, Download, Loader2, Store, Upload, Pencil, CheckCircle2, X, FileSpreadsheet, ChevronDown, ChevronUp, LayoutList, LayoutGrid, RefreshCw, Radio, Activity, AlertTriangle } from 'lucide-react';
+import { Package, Plus, Search, Filter, Trash2, Eye, Download, Loader2, Store, Upload, Pencil, CheckCircle2, FileSpreadsheet, ChevronDown, ChevronUp, LayoutList, LayoutGrid, RefreshCw, Radio, Activity, AlertTriangle } from 'lucide-react';
 import { consignmentsAPI, templatesAPI, marketplacesAPI, docketCompaniesAPI } from '../services/api';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
@@ -27,6 +27,7 @@ import TagButton, { TagButtonGroup } from '../components/TagButton';
 import { TableSkeleton } from '../components/Skeleton';
 import OmsGuruChecklist from '../components/OmsGuruChecklist';
 import { normalizeWarehouses, computeRequiredDispatchDate, getTransitDays } from '../utils/dispatchPlanning';
+import { displayConsignmentNo } from '../utils/consignmentIdentity';
 
 const FULL_COL_COUNT = 29;
 const COMPACT_COL_COUNT = 17;
@@ -123,8 +124,9 @@ export default function Consignments() {
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [selected, setSelected] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [editingRow, setEditingRow] = useState(null);
-  const [editForm, setEditForm] = useState({});
+  const [editingId, setEditingId] = useState(null);
+  const skusLoadedRef = useRef(false);
+  const editLoadRef = useRef(0);
   const debouncedSearch = useDebounce(search, 400);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -208,8 +210,9 @@ export default function Consignments() {
   }, [listTab, pendingChanges, seenChangeIds]);
 
   const openCreateModal = () => {
-    setEditingRow(null);
-    setEditForm({});
+    editLoadRef.current += 1;
+    setEditingId(null);
+    skusLoadedRef.current = true;
     setShowDelete(false);
     setShowFinalDelete(false);
     setDeleteConfirmText('');
@@ -222,6 +225,8 @@ export default function Consignments() {
 
   const closeCreateModal = () => {
     if (isSubmitting) return;
+    editLoadRef.current += 1;
+    setEditingId(null);
     setShowCreate(false);
     setShowAdvanced(false);
     setForm(createEmptyForm());
@@ -302,7 +307,7 @@ export default function Consignments() {
 
   // Auto-fetch on paste or typing, once the field settles.
   useEffect(() => {
-    if (!showCreate) return undefined;
+    if (!showCreate || editingId) return undefined;
     const live = String(form.internalShipmentNo || '').trim();
     const query = String(debouncedShipmentNo || '').trim();
     // Ignore a debounced value that no longer matches the field: mid-typing, or
@@ -316,23 +321,41 @@ export default function Consignments() {
     const controller = new AbortController();
     runSheetLookup(query, { signal: controller.signal });
     return () => controller.abort();
-  }, [debouncedShipmentNo, form.internalShipmentNo, showCreate, runSheetLookup]);
+  }, [debouncedShipmentNo, form.internalShipmentNo, showCreate, editingId, runSheetLookup]);
 
   const handleCreate = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
     try {
       const payload = {
-        ...form,
-        id: form.id?.trim() || undefined,
+        consignmentNo: form.id?.trim() || '',
+        internalShipmentNo: form.internalShipmentNo?.trim(),
+        name: form.name,
+        description: form.description,
+        expectedDate: form.expectedDate,
+        marketplaceId: form.marketplaceId,
+        warehouse: form.warehouse,
+        poExpiryDate: form.poExpiryDate,
+        appointmentDate: form.appointmentDate,
+        scheduledDispatchDate: form.scheduledDispatchDate,
+        actualDispatchDate: form.actualDispatchDate,
+        dateOfInward: form.dateOfInward,
+        forwardInvoiceNo: form.forwardInvoiceNo,
+        docketCompany: form.docketCompany,
+        docketNo: form.docketNo,
+        marketplaceTicketId: form.marketplaceTicketId,
+        shipmentStatus: form.shipmentStatus,
         unitsShipped: parseInt(form.unitsShipped) || 0,
         unitsReceived: parseInt(form.unitsReceived) || 0,
         unitsInwarded: parseInt(form.unitsInwarded) || 0,
         qaFailExcessQty: parseInt(form.qaFailExcessQty) || 0,
         isDisputed: Boolean(form.isDisputed),
-        skus: form.skus.filter(s => getScanBarcode(s) || s.internalSku).map(s => {
+      };
+      if (!editingId || skusLoadedRef.current) {
+        payload.skus = form.skus.filter(s => getScanBarcode(s) || s.internalSku).map(s => {
           const marketplaceBarcode = getScanBarcode(s);
           return {
+            id: s.id,
             marketplaceBarcode,
             marketplaceBarcodeType: clean(s.marketplaceBarcodeType),
             barcode: marketplaceBarcode,
@@ -340,20 +363,41 @@ export default function Consignments() {
             internalSku: s.internalSku,
             requiredQty: parseInt(s.requiredQty) || 0
           };
-        })
-      };
-      const { data } = await consignmentsAPI.create(payload);
-      const created = data.consignment;
-      if (created) {
-        setConsignments((prev) => sortByWorkflowPriority([created, ...prev.filter((c) => c.id !== created.id)]));
-        setTotal((prev) => prev + 1);
+        });
       }
-      addToast(
-        created?.pendingExternalId
-          ? `Consignment created — pack using Internal Shipment No. ${created.internalShipmentNo}`
-          : 'Consignment created',
-        'success'
-      );
+      if (editingId) {
+        const { data } = await consignmentsAPI.update(editingId, payload);
+        const saved = data.consignment;
+        if (saved) {
+          setConsignments((prev) => sortByWorkflowPriority(prev.map((c) => c.id === editingId ? { ...c, ...saved } : c)));
+          if (saved.id && saved.id !== editingId) {
+            setSelectedIds((prev) => {
+              if (!prev.has(editingId)) return prev;
+              const next = new Set(prev);
+              next.delete(editingId);
+              next.add(saved.id);
+              return next;
+            });
+          }
+        }
+        addToast(
+          saved?.id && saved.id !== editingId
+            ? `Updated. Internal shipment key is now ${saved.internalShipmentNo || saved.id}`
+            : 'Consignment updated',
+          'success'
+        );
+      } else {
+        const { data } = await consignmentsAPI.create(payload);
+        const created = data.consignment;
+        if (created) {
+          setConsignments((prev) => sortByWorkflowPriority([created, ...prev.filter((c) => c.id !== created.id)]));
+          setTotal((prev) => prev + 1);
+        }
+        addToast(
+          `Consignment created — pack using Internal Shipment No. ${created?.internalShipmentNo || ''}`,
+          'success'
+        );
+      }
       closeCreateModal();
     } catch (error) {
       const msg = error.response?.data?.error || 'Failed';
@@ -373,7 +417,7 @@ export default function Consignments() {
     if (!rows.length) return;
     const headers = ['Consignment No','Internal Shipment No','Portal','FC Name','Planned','Packed','Pending','Pack Status','Ship Status','Disputed','Protected','Total Weight','Weight Unit'];
     const csv = [headers, ...rows.map(c => [
-      c.id, c.internalShipmentNo || '', getMpName(c.marketplaceId), c.warehouse || '',
+      displayConsignmentNo(c), c.internalShipmentNo || '', getMpName(c.marketplaceId), c.warehouse || '',
       c.totalRequiredQty || 0, c.totalPackedQty || 0, Math.max(0,(c.totalRequiredQty||0)-(c.totalPackedQty||0)),
       c.status || '', c.shipmentStatus || '', c.isDisputed ? 'Yes' : 'No',
       (c.isDisputed || c.marketplaceTicketId) ? 'Yes' : 'No', c.totalWeight || 0, c.weightUnit || 'KG'
@@ -385,7 +429,7 @@ export default function Consignments() {
     addToast(`Exported ${rows.length} consignment(s)`, 'success');
   };
 
-  const deletionTargets = selected ? [selected.id, selected.name, selected.internalShipmentNo].filter(Boolean).map((v) => String(v).trim().toLowerCase()) : [];
+  const deletionTargets = selected ? [selected.id, selected.name, selected.internalShipmentNo, displayConsignmentNo(selected)].filter(Boolean).map((v) => String(v).trim().toLowerCase()) : [];
   const deleteConfirmationMatches = deletionTargets.includes(deleteConfirmText.trim().toLowerCase());
 
   const openDelete = (consignment) => {
@@ -481,47 +525,69 @@ export default function Consignments() {
 
   const getMpName = (id) => marketplaces.find(m => m.id === id)?.name || '';
 
-  const startEdit = (c) => {
-    setShowCreate(false);
-    setEditingRow(c.id);
-    setEditForm({
+  const dateInput = (value) => {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    return text.length >= 10 ? text.slice(0, 10) : text;
+  };
+
+  const openEdit = async (c) => {
+    const loadToken = editLoadRef.current + 1;
+    editLoadRef.current = loadToken;
+    setShowDelete(false);
+    setShowFinalDelete(false);
+    setShowAdvanced(true);
+    setSheetLookup(SHEET_IDLE);
+    lastAutoFilledSkus.current = null;
+    skusLoadedRef.current = false;
+    setEditingId(c.id);
+    setForm({
+      ...createEmptyForm(),
+      id: displayConsignmentNo(c),
+      internalShipmentNo: c.internalShipmentNo || '',
+      name: c.name || '',
+      description: c.description || '',
+      expectedDate: dateInput(c.expectedDate),
       marketplaceId: c.marketplaceId || '',
       warehouse: c.warehouse || '',
-      appointmentDate: c.appointmentDate || '',
-      scheduledDispatchDate: c.scheduledDispatchDate || c.requiredDispatchDate || '',
-      actualDispatchDate: c.actualDispatchDate || '',
-      dateOfInward: c.dateOfInward || '',
+      poExpiryDate: dateInput(c.poExpiryDate),
+      appointmentDate: dateInput(c.appointmentDate),
+      scheduledDispatchDate: dateInput(c.scheduledDispatchDate || c.requiredDispatchDate),
+      actualDispatchDate: dateInput(c.actualDispatchDate),
+      dateOfInward: dateInput(c.dateOfInward),
       forwardInvoiceNo: c.forwardInvoiceNo || '',
       docketCompany: c.docketCompany || '',
       docketNo: c.docketNo || '',
       marketplaceTicketId: c.marketplaceTicketId || '',
       isDisputed: Boolean(c.isDisputed),
+      shipmentStatus: c.shipmentStatus || 'Planned',
       unitsShipped: c.unitsShipped || '',
       unitsReceived: c.unitsReceived || '',
       unitsInwarded: c.unitsInwarded || '',
       qaFailExcessQty: c.qaFailExcessQty || '',
     });
-  };
-
-  const cancelEdit = () => { setEditingRow(null); setEditForm({}); };
-
-  const saveEdit = async (c) => {
-    setIsSubmitting(true);
+    setShowCreate(true);
     try {
-      const payload = {
-        ...editForm,
-        unitsShipped: parseInt(editForm.unitsShipped) || 0,
-        unitsReceived: parseInt(editForm.unitsReceived) || 0,
-        unitsInwarded: parseInt(editForm.unitsInwarded) || 0,
-        qaFailExcessQty: parseInt(editForm.qaFailExcessQty) || 0,
-        isDisputed: Boolean(editForm.isDisputed),
-      };
-      await consignmentsAPI.update(c.id, payload);
-      addToast('Updated', 'success');
-      setEditingRow(null);
-      fetchData({ silent: true });
-    } catch (error) { addToast('Update failed', 'error'); }
-    setIsSubmitting(false);
+      const { data } = await consignmentsAPI.getById(c.id);
+      if (editLoadRef.current !== loadToken) return;
+      const rows = (data?.consignment?.skus || []).filter(Boolean);
+      const skus = rows.length
+        ? rows.map((sku) => ({
+          id: sku.id,
+          marketplaceBarcode: sku.marketplaceBarcode || sku.barcode || '',
+          marketplaceBarcodeType: sku.marketplaceBarcodeType || '',
+          marketplaceSku: sku.marketplaceSku || '',
+          internalSku: sku.internalSku || '',
+          requiredQty: sku.requiredQty ?? '',
+          packedQty: Number(sku.packedQty) || 0,
+        }))
+        : [{ ...EMPTY_SKU_ROW }];
+      skusLoadedRef.current = true;
+      setForm((prev) => ({ ...prev, skus }));
+    } catch {
+      if (editLoadRef.current !== loadToken) return;
+      addToast('SKU list could not be loaded. Other fields can still be saved.', 'warning');
+    }
   };
 
   const fmtDate = (d) => {
@@ -540,7 +606,7 @@ export default function Consignments() {
     const rows = consignments.map(c => {
       const shortQty = (c.totalRequiredQty || 0) - (c.unitsInwarded || 0);
       return [
-        c.id, c.internalShipmentNo || '', getMpName(c.marketplaceId), c.warehouse || '',
+        displayConsignmentNo(c), c.internalShipmentNo || '', getMpName(c.marketplaceId), c.warehouse || '',
         c.actualDispatchDate || '', c.dateOfInward || '', c.docketCompany || '', c.docketNo || '',
         c.forwardInvoiceNo || '', c.marketplaceTicketId || '', c.isDisputed ? 'Yes' : 'No',
         (c.isDisputed || c.marketplaceTicketId) ? 'Yes' : 'No', c.totalRequiredQty || 0,
@@ -902,11 +968,10 @@ export default function Consignments() {
                 }
                 const c = entry.c;
                 const shortQty = (c.totalRequiredQty || 0) - (c.unitsInwarded || 0);
-                const isEditing = editingRow === c.id;
                 const isSelected = selectedIds.has(c.id);
                 const priority = getShipmentPriority(c);
-                const rowClass = getCriticalityRowClass(priority, { selected: isSelected, editing: isEditing });
-                const stickyBg = isEditing ? 'bg-slate-50' : isSelected ? 'bg-slate-100' :
+                const rowClass = getCriticalityRowClass(priority, { selected: isSelected, editing: false });
+                const stickyBg = isSelected ? 'bg-slate-100' :
                   priority.level === 'critical' ? 'bg-red-50/90' :
                   priority.level === 'high' ? 'bg-orange-50/70' :
                   priority.level === 'medium' ? 'bg-amber-50/60' : 'bg-white';
@@ -914,7 +979,7 @@ export default function Consignments() {
                 <React.Fragment key={c.id}>
                   <tr className={`group transition-colors ${rowClass}`}>
                     <td className={`sticky left-0 z-10 border-r border-slate-100 ${stickyBg}`}><input type="checkbox" checked={isSelected} onChange={() => toggleSelect(c.id)} className="w-3.5 h-3.5 rounded accent-primary-600 cursor-pointer" /></td>
-                    <td className="font-medium text-slate-800 whitespace-nowrap">{c.id}</td>
+                    <td className="font-medium text-slate-800 whitespace-nowrap">{displayConsignmentNo(c) || '—'}</td>
                     <td className="font-semibold text-slate-900 whitespace-nowrap">{c.internalShipmentNo || '—'}</td>
                     <td className="whitespace-nowrap">
                       {priority.level !== 'normal' ? (
@@ -985,41 +1050,11 @@ export default function Consignments() {
                       />
                     </td>
                     <td className={`whitespace-nowrap sticky right-0 z-10 border-l border-slate-100 ${stickyBg}`}><div className="flex items-center justify-end gap-0.5">
-                      {isEditing ? (
-                        <>
-                          <button onClick={()=>saveEdit(c)} disabled={isSubmitting} className="p-1 text-emerald-600 hover:bg-emerald-50 rounded transition-colors" title="Save"><CheckCircle2 className="w-3.5 h-3.5" /></button>
-                          <button onClick={cancelEdit} className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded transition-colors" title="Cancel"><X className="w-3.5 h-3.5" /></button>
-                        </>
-                      ) : (
-                        <>
-                          <button onClick={()=>startEdit(c)} className="p-1 text-slate-400 hover:text-primary-600 hover:bg-slate-100 rounded transition-colors" title="Edit tracking"><Pencil className="w-3.5 h-3.5" /></button>
-                          <Link to={`/consignments/${c.id}`} className="p-1 text-slate-400 hover:text-primary-600 hover:bg-slate-100 rounded transition-colors"><Eye className="w-3.5 h-3.5" /></Link>
-                          {canDeleteConsignments && <button onClick={()=>openDelete(c)} className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors" title="Delete consignment"><Trash2 className="w-3.5 h-3.5" /></button>}
-                        </>
-                      )}
+                      <button onClick={()=>openEdit(c)} className="p-1 text-slate-400 hover:text-primary-600 hover:bg-slate-100 rounded transition-colors" title="Edit consignment"><Pencil className="w-3.5 h-3.5" /></button>
+                      <Link to={`/consignments/${c.id}`} className="p-1 text-slate-400 hover:text-primary-600 hover:bg-slate-100 rounded transition-colors"><Eye className="w-3.5 h-3.5" /></Link>
+                      {canDeleteConsignments && <button onClick={()=>openDelete(c)} className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors" title="Delete consignment"><Trash2 className="w-3.5 h-3.5" /></button>}
                     </div></td>
                   </tr>
-                  {isEditing && (
-                    <tr className="bg-slate-50">
-                      <td colSpan={colCount} className="px-3 py-2">
-                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Appointment Date</label><input type="date" value={editForm.appointmentDate || ''} onChange={e=>setEditForm(applyDispatchToForm({...editForm,appointmentDate:e.target.value}, marketplaces))} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" /></div>
-                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Required Dispatch</label><input type="date" value={editForm.scheduledDispatchDate || ''} readOnly className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm bg-slate-50 text-slate-600" title="Auto-calculated from appointment − transit days" /></div>
-                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Actual Dispatch</label><input type="date" value={editForm.actualDispatchDate || ''} onChange={e=>setEditForm({...editForm,actualDispatchDate:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" /></div>
-                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Date of Inward</label><input type="date" value={editForm.dateOfInward || ''} onChange={e=>setEditForm({...editForm,dateOfInward:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" /></div>
-                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Docket Company</label><select value={editForm.docketCompany || ''} onChange={e=>setEditForm({...editForm,docketCompany:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none bg-white"><option value="">Select</option>{docketCompanies.map(dc=><option key={dc.id} value={dc.name}>{dc.name}</option>)}</select></div>
-                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Docket No</label><input type="text" value={editForm.docketNo || ''} onChange={e=>setEditForm({...editForm,docketNo:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" placeholder="Docket #" /></div>
-                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Forward Invoice No.</label><input type="text" value={editForm.forwardInvoiceNo || ''} onChange={e=>setEditForm({...editForm,forwardInvoiceNo:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" placeholder="Invoice #" /></div>
-                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Marketplace Ticket ID</label><input type="text" value={editForm.marketplaceTicketId || ''} onChange={e=>setEditForm({...editForm,marketplaceTicketId:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" placeholder="Ticket ID" /></div>
-                          <label className="flex items-center gap-2 text-sm text-slate-700 border border-slate-200 rounded px-2 py-1.5"><input type="checkbox" checked={!!editForm.isDisputed} onChange={e=>setEditForm({...editForm,isDisputed:e.target.checked})} /> Disputed (protect videos)</label>
-                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Units Shipped</label><input type="number" min="0" value={editForm.unitsShipped || ''} onChange={e=>setEditForm({...editForm,unitsShipped:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" placeholder="0" /></div>
-                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Units Received</label><input type="number" min="0" value={editForm.unitsReceived || ''} onChange={e=>setEditForm({...editForm,unitsReceived:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" placeholder="0" /></div>
-                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Units Inwarded</label><input type="number" min="0" value={editForm.unitsInwarded || ''} onChange={e=>setEditForm({...editForm,unitsInwarded:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" placeholder="0" /></div>
-                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">QA Fail / Excess</label><input type="number" min="0" value={editForm.qaFailExcessQty || ''} onChange={e=>setEditForm({...editForm,qaFailExcessQty:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" placeholder="0" /></div>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
                 </React.Fragment>
               )}) : <tr><td colSpan={colCount} className="py-12 text-center text-slate-400"><Package className="w-12 h-12 mx-auto mb-3 text-slate-300" /><p>No consignments found</p></td></tr>}
             </tbody>
@@ -1097,15 +1132,17 @@ export default function Consignments() {
       <Modal
         open={showCreate}
         onClose={closeCreateModal}
-        title="Create New Consignment"
-        subtitle={<>Fields marked <span className="text-red-500">*</span> are required · IDs must be unique</>}
+        title={editingId ? 'Edit Consignment' : 'Create New Consignment'}
+        subtitle={editingId
+          ? <>Internal Shipment No. stays unique. Consignment No. can be reused.</>
+          : <>Fields marked <span className="text-red-500">*</span> are required. Internal Shipment No. must be unique.</>}
         size="xl"
         footer={
           <div className="flex justify-end gap-3">
             <button type="button" onClick={closeCreateModal} className="px-5 py-2.5 border border-slate-200 rounded-lg text-slate-700 hover:bg-slate-50 text-sm" disabled={isSubmitting}>Cancel</button>
             <button type="submit" form="create-consignment-form" disabled={isSubmitting} className="px-5 py-2.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 flex items-center gap-2 text-sm font-medium">
               {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
-              Create Consignment
+              {editingId ? 'Save changes' : 'Create Consignment'}
             </button>
           </div>
         }
@@ -1119,7 +1156,7 @@ export default function Consignments() {
                 </div>
 
                 <div className="rounded-lg border border-amber-100 bg-amber-50/70 px-3 py-2 text-[11px] text-amber-900">
-                  Consignment ID and Internal Shipment No. must be unique — including archived consignments.
+                  Internal Shipment No. must be unique, including archived consignments. The same Consignment No. can be entered again when the internal shipment is different. Packed boxes stay linked to this shipment.
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -1172,9 +1209,9 @@ export default function Consignments() {
                   </div>
                   <div>
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
-                      Consignment ID <span className="text-slate-400 font-normal normal-case">(optional)</span>
+                      Consignment No. <span className="text-slate-400 font-normal normal-case">(can repeat)</span>
                     </label>
-                    <input type="text" value={form.id} onChange={e=>setForm({...form,id:e.target.value})} className="inp" placeholder="Blank → uses Internal Shipment No." />
+                    <input type="text" value={form.id} onChange={e=>setForm({...form,id:e.target.value})} className="inp" placeholder="e.g. MYNJ-VBXOEO310826-11" />
                   </div>
                   <div>
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
@@ -1270,7 +1307,7 @@ export default function Consignments() {
                     <LayoutList className="w-4 h-4 text-primary-600" />
                     <div>
                       <h3 className="text-sm font-semibold text-slate-800">SKU Items</h3>
-                      <p className="text-[10px] text-slate-400">Marketplace barcode is required for scanning</p>
+                      <p className="text-[10px] text-slate-400">{editingId ? 'Packed rows stay on this shipment and cannot be removed' : 'Marketplace barcode is required for scanning'}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -1322,14 +1359,15 @@ export default function Consignments() {
                         <input type="text" value={sku.marketplaceSku} onChange={e=>updateSku(i,'marketplaceSku',e.target.value)} className={inputClass(false)} placeholder="Marketplace SKU" />
                         <input type="text" value={sku.internalSku} onChange={e=>updateSku(i,'internalSku',e.target.value)} className={inputClass(false)} placeholder="OMS SKU" />
                         <div className="flex gap-1.5 items-center">
-                          <input type="number" value={sku.requiredQty} onChange={e=>updateSku(i,'requiredQty',e.target.value)} className={inputClass(false)} placeholder="Qty" min="0" />
-                          {form.skus.length>1 && (
+                          <input type="number" value={sku.requiredQty} onChange={e=>updateSku(i,'requiredQty',e.target.value)} className={inputClass(false)} placeholder="Qty" min={sku.packedQty || 0} />
+                          {Number(sku.packedQty) > 0 && <span className="text-[10px] text-slate-400 whitespace-nowrap">Packed {sku.packedQty}</span>}
+                          {form.skus.length>1 && !Number(sku.packedQty) && (
                             <button type="button" onClick={()=>removeSku(i)} className="md:hidden p-1.5 text-slate-400 hover:text-red-600 rounded" title="Remove row">
                               <Trash2 className="w-4 h-4" />
                             </button>
                           )}
                         </div>
-                        {form.skus.length>1 ? (
+                        {form.skus.length>1 && !Number(sku.packedQty) ? (
                           <button type="button" onClick={()=>removeSku(i)} className="hidden md:inline-flex p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded justify-center" title="Remove row">
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -1376,23 +1414,23 @@ export default function Consignments() {
 
           <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
             <div className="grid grid-cols-[110px_1fr] gap-y-1">
-              <span className="font-semibold text-slate-500">Consignment ID</span>
-              <span className="font-mono text-slate-900">{selected?.id}</span>
-              <span className="font-semibold text-slate-500">Name</span>
-              <span className="text-slate-900">{selected?.name || selected?.internalShipmentNo || '-'}</span>
+              <span className="font-semibold text-slate-500">Consignment No.</span>
+              <span className="font-mono text-slate-900">{displayConsignmentNo(selected) || '—'}</span>
+              <span className="font-semibold text-slate-500">Internal Shipment</span>
+              <span className="font-mono text-slate-900">{selected?.internalShipmentNo || selected?.id}</span>
             </div>
           </div>
 
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Type the Consignment ID or Name to enable deletion
+              Type the Consignment No., Internal Shipment No., or name to enable deletion
             </label>
             <input
               type="text"
               value={deleteConfirmText}
               onChange={(e) => setDeleteConfirmText(e.target.value)}
               className="inp font-mono"
-              placeholder={selected?.id || 'Consignment ID'}
+              placeholder={displayConsignmentNo(selected) || selected?.internalShipmentNo || selected?.id || 'Consignment No.'}
               autoComplete="off"
             />
           </div>
