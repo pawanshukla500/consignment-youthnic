@@ -452,6 +452,8 @@ const ConsignmentDetail = () => {
 
   const openTrackingEdit = () => {
     const initial = {
+      consignmentNo: consignment.consignmentNo || consignment.marketplaceConsignmentId || consignment.id || '',
+      internalShipmentNo: consignment.internalShipmentNo || '',
       appointmentDate: consignment.appointmentDate || '',
       scheduledDispatchDate: consignment.scheduledDispatchDate || '',
       actualDispatchDate: consignment.actualDispatchDate || '',
@@ -1384,17 +1386,21 @@ const ConsignmentDetail = () => {
       addToast('Enter the official consignment ID', 'error');
       return;
     }
-    if (trimmed === consignment.id) {
+    if (trimmed === consignment.id && trimmed === (consignment.consignmentNo || consignment.id)) {
       addToast('New ID must differ from the current ID', 'error');
       return;
     }
     setReassigningId(true);
     try {
       const { data } = await consignmentsAPI.reassignId(consignment.id, trimmed);
-      addToast(`Consignment ID updated to ${data.newId}`, 'success');
+      addToast(`Consignment ID updated to ${data.newId || trimmed}`, 'success');
       setShowReassignId(false);
       setNewConsignmentId('');
-      navigate(`/consignments/${data.newId}`, { replace: true });
+      if (data.newId && data.newId !== consignment.id) {
+        navigate(`/consignments/${data.newId}`, { replace: true });
+      } else {
+        await fetchConsignment({ silent: true });
+      }
     } catch (error) {
       addToast(error.response?.data?.error || 'Could not update consignment ID', 'error');
     } finally {
@@ -1464,23 +1470,28 @@ const ConsignmentDetail = () => {
 
             <div className="flex flex-wrap items-baseline gap-3">
               <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
-                <span>{consignment.internalShipmentNo || consignment.id}</span>
+                <span>{consignment.consignmentNo || consignment.id}</span>
                 <button
                   type="button"
                   onClick={async () => {
                     try {
-                      await navigator.clipboard.writeText(consignment.internalShipmentNo || consignment.id);
-                      addToast('Copied ID to clipboard', 'info');
+                      await navigator.clipboard.writeText(consignment.consignmentNo || consignment.id);
+                      addToast('Copied Consignment No to clipboard', 'info');
                     } catch {
                       addToast('Failed to copy to clipboard', 'warning');
                     }
                   }}
                   className="p-1 text-slate-400 hover:text-slate-700 rounded-md transition-colors cursor-pointer"
-                  title="Copy Consignment ID"
+                  title="Copy Consignment No"
                 >
                   <Copy className="w-4 h-4" />
                 </button>
               </h1>
+              {consignment.internalShipmentNo && (
+                <span className="text-xs font-semibold text-slate-700 bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-lg">
+                  Internal: {consignment.internalShipmentNo}
+                </span>
+              )}
               {consignment.warehouse && (
                 <span className="text-xs font-semibold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg">
                   WH: {consignment.warehouse}
@@ -1688,6 +1699,8 @@ const ConsignmentDetail = () => {
             {editingTracking ? (
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 pt-2">
                 {[
+                  { label: 'Consignment No', field: 'consignmentNo', type: 'text' },
+                  { label: 'Internal Shipment No', field: 'internalShipmentNo', type: 'text' },
                   { label: 'Appointment Date', field: 'appointmentDate', type: 'date' },
                   { label: 'Scheduled Dispatch', field: 'scheduledDispatchDate', type: 'date' },
                   { label: 'Actual Dispatch', field: 'actualDispatchDate', type: 'date' },
