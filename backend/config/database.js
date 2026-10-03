@@ -137,6 +137,9 @@ async function initSchema() {
       CREATE INDEX IF NOT EXISTS idx_documents_consignments_internal_shipment
         ON documents ((data->>'internalShipmentNo'))
         WHERE collection = 'consignments';
+      CREATE INDEX IF NOT EXISTS idx_documents_consignments_consignment_no
+        ON documents ((data->>'consignmentNo'))
+        WHERE collection = 'consignments';
       CREATE INDEX IF NOT EXISTS idx_documents_consignment_id
         ON documents ((data->>'consignmentId'))
         WHERE collection IN ('skus', 'boxes', 'videos', 'documents', 'packing_drafts', 'scan_events', 'packing_sync_jobs');

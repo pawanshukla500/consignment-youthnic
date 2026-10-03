@@ -24,17 +24,28 @@ async function reassignConsignmentId(oldId, newId, userId) {
   const existing = await firestoreHelpers.getDocument('consignments', oldId);
   if (!existing) return { ok: false, error: 'Consignment not found.' };
 
-  const conflict = await findConsignmentIdentityConflict({
-    keys: [trimmedNew],
-    excludeId: oldId,
-  });
-  if (conflict) {
-    return { ok: false, error: formatIdentityConflictError(conflict) };
+  const existingWithId = await firestoreHelpers.getDocument('consignments', trimmedNew);
+  if (existingWithId && trimmedNew !== oldId) {
+    // The document ID is already taken by another consignment with this Consignment No.
+    // Update consignmentNo and marketplaceConsignmentId on this consignment in-place,
+    // preserving its unique document ID.
+    const updatedConsignment = {
+      ...existing,
+      consignmentNo: trimmedNew,
+      marketplaceConsignmentId: trimmedNew,
+      pendingExternalId: false,
+      updatedAt: now(),
+      updatedBy: userId,
+    };
+    await firestoreHelpers.setDocument('consignments', oldId, updatedConsignment);
+    return { ok: true, consignment: updatedConsignment, oldId, newId: oldId };
   }
 
   const updatedConsignment = {
     ...existing,
     id: trimmedNew,
+    consignmentNo: trimmedNew,
+    marketplaceConsignmentId: trimmedNew,
     pendingExternalId: false,
     updatedAt: now(),
     updatedBy: userId,

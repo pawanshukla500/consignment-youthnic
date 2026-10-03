@@ -17,6 +17,7 @@ function mapChange(c) {
     boxIds: c.boxIds,
     updatedAt: c.updatedAt,
     internalShipmentNo: c.internalShipmentNo,
+    consignmentNo: c.consignmentNo || c.id,
   };
 }
 

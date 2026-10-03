@@ -261,6 +261,8 @@ const pgHelpers = {
         lower(data->>'id') LIKE $${n}
         OR lower(coalesce(data->>'shipmentNo','')) LIKE $${n}
         OR lower(coalesce(data->>'internalShipmentNo','')) LIKE $${n}
+        OR lower(coalesce(data->>'consignmentNo','')) LIKE $${n}
+        OR lower(coalesce(data->>'marketplaceConsignmentId','')) LIKE $${n}
         OR lower(coalesce(data->>'name','')) LIKE $${n}
         OR lower(coalesce(data->>'docketNo','')) LIKE $${n}
         OR lower(coalesce(data->>'forwardInvoiceNo','')) LIKE $${n}

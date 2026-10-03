@@ -11,6 +11,12 @@ async function resolveConsignmentByKey(key) {
   const byInternal = await firestoreHelpers.queryCollection('consignments', 'internalShipmentNo', '==', trimmed);
   if (byInternal.length) return byInternal[0];
 
+  const byConsignmentNo = await firestoreHelpers.queryCollection('consignments', 'consignmentNo', '==', trimmed);
+  if (byConsignmentNo.length) {
+    const active = byConsignmentNo.find((c) => c.status !== 'completed' && c.status !== 'archived');
+    return active || byConsignmentNo[0];
+  }
+
   const byShipNo = await firestoreHelpers.queryCollection('consignments', 'shipmentNo', '==', trimmed);
   if (byShipNo.length) return byShipNo[0];
 
@@ -37,13 +43,62 @@ function normalizeIdentityKey(value) {
 
 /**
  * Find an existing consignment that already owns any of the given identity keys.
- * Matches document id, data.id, internalShipmentNo, and shipmentNo (case-insensitive).
- * Archived consignments still count — the same number cannot be reused.
+ * Internal shipment numbers MUST be unique across all consignments.
+ * Consignment numbers can be shared across distinct internal shipments.
  *
- * @param {{ keys?: string[], excludeId?: string }} opts
+ * @param {{ keys?: string[], internalShipmentNos?: string[], excludeId?: string }} opts
  * @returns {Promise<null | { field: string, value: string, consignment: object }>}
  */
-async function findConsignmentIdentityConflict({ keys = [], excludeId = null } = {}) {
+async function findConsignmentIdentityConflict({ keys = [], internalShipmentNos = [], excludeId = null } = {}) {
+  const internals = [...new Set(
+    (Array.isArray(internalShipmentNos) ? internalShipmentNos : [internalShipmentNos])
+      .map((k) => String(k || '').trim())
+      .filter(Boolean)
+  )];
+  const exclude = String(excludeId || '').trim();
+
+  // If internalShipmentNos is provided, check internal shipment uniqueness specifically
+  if (internals.length > 0) {
+    const lowerInternals = internals.map((k) => k.toLowerCase());
+    if (pgEnabled()) {
+      try {
+        const params = [lowerInternals];
+        let n = 2;
+        let excludeSql = '';
+        if (exclude) {
+          excludeSql = `AND lower(id) <> lower($${n++})`;
+          params.push(exclude);
+        }
+        const { rows } = await getPool().query(
+          `SELECT id, data
+           FROM documents
+           WHERE collection = 'consignments'
+             ${excludeSql}
+             AND (
+               lower(coalesce(data->>'internalShipmentNo','')) = ANY($1::text[])
+             )
+           LIMIT 1`,
+          params
+        );
+        if (rows[0]) {
+          const consignment = rows[0].data || { id: rows[0].id };
+          return { field: 'internalShipmentNo', value: consignment.internalShipmentNo || internals[0], consignment };
+        }
+        return null;
+      } catch (e) {
+        console.warn('[Consignments] internal shipment conflict SQL failed, falling back:', e.message);
+      }
+    }
+    for (const internalNo of internals) {
+      const byInternal = await firestoreHelpers.queryCollection('consignments', 'internalShipmentNo', '==', internalNo);
+      const hit = byInternal.find((c) => !exclude || c.id !== exclude);
+      if (hit) {
+        return { field: 'internalShipmentNo', value: hit.internalShipmentNo || internalNo, consignment: hit };
+      }
+    }
+    return null;
+  }
+
   const normalized = [...new Set(
     (Array.isArray(keys) ? keys : [keys])
       .map((k) => String(k || '').trim())
@@ -51,7 +106,6 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
   )];
   if (!normalized.length) return null;
 
-  const exclude = String(excludeId || '').trim();
   const lowerKeys = normalized.map((k) => k.toLowerCase());
 
   if (pgEnabled()) {
@@ -150,7 +204,7 @@ function formatIdentityConflictError(conflict) {
     conflict.field === 'internalShipmentNo' ? 'Internal Shipment No.'
       : conflict.field === 'shipmentNo' ? 'Shipment No.'
         : 'Consignment ID';
-  return `${label} "${conflict.value}" already exists. You cannot create the same consignment again.`;
+  return `${label} "${conflict.value}" already exists. Each internal shipment must have a unique Internal Shipment No.`;
 }
 
 module.exports = {
