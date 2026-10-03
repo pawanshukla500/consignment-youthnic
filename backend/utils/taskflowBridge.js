@@ -83,7 +83,8 @@ function maxTargetFromStages(stages = []) {
 
 function consignmentNoOf(consignment) {
   return String(
-    consignment?.internalShipmentNo
+    consignment?.consignmentNo
+    || consignment?.internalShipmentNo
     || consignment?.shipmentNo
     || consignment?.id
     || ''

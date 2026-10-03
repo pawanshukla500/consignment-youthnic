@@ -35,6 +35,7 @@ async function reassignConsignmentId(oldId, newId, userId) {
   const updatedConsignment = {
     ...existing,
     id: trimmedNew,
+    consignmentNo: existing.consignmentNo || trimmedNew,
     pendingExternalId: false,
     updatedAt: now(),
     updatedBy: userId,

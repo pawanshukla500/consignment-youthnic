@@ -26,6 +26,7 @@ import ConsignmentWorkflowPanel from '../components/ConsignmentWorkflowPanel';
 import { useAuth } from '../context/AuthContext';
 import { summarizeOmsGuruSkus } from '../utils/omsGuruSku';
 import { inwardStatusClass, inwardStatusLabel } from '../utils/inwardSku';
+import { displayConsignmentNo } from '../utils/consignmentIdentity';
 
 const PACKING_LIVE_TYPES = new Set([
   'packing_scan',
@@ -452,6 +453,8 @@ const ConsignmentDetail = () => {
 
   const openTrackingEdit = () => {
     const initial = {
+      consignmentNo: displayConsignmentNo(consignment),
+      internalShipmentNo: consignment.internalShipmentNo || '',
       appointmentDate: consignment.appointmentDate || '',
       scheduledDispatchDate: consignment.scheduledDispatchDate || '',
       actualDispatchDate: consignment.actualDispatchDate || '',
@@ -486,11 +489,18 @@ const ConsignmentDetail = () => {
         if (val !== initial[key]) {
           if (numericFields.has(key)) {
             dirtyPayload[key] = val === '' ? null : (Number(val) || 0);
+          } else if (key === 'consignmentNo' || key === 'internalShipmentNo') {
+            dirtyPayload[key] = String(val || '').trim();
           } else {
             dirtyPayload[key] = val;
           }
         }
       });
+
+      if (Object.prototype.hasOwnProperty.call(dirtyPayload, 'internalShipmentNo') && !dirtyPayload.internalShipmentNo) {
+        addToast('Internal Shipment No. is required and must stay unique', 'error');
+        return;
+      }
 
       if (Object.keys(dirtyPayload).length > 0) {
         await consignmentsAPI.update(id, dirtyPayload);
@@ -1489,7 +1499,12 @@ const ConsignmentDetail = () => {
             </div>
 
             <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
-              {consignment.shipmentNo && (
+              {displayConsignmentNo(consignment) && (
+                <span className="bg-slate-50 border border-slate-200 px-2 py-0.5 rounded text-[11px] font-semibold text-slate-700">
+                  Consignment No: {displayConsignmentNo(consignment)}
+                </span>
+              )}
+              {consignment.shipmentNo && consignment.shipmentNo !== displayConsignmentNo(consignment) && consignment.shipmentNo !== consignment.internalShipmentNo && (
                 <span className="bg-slate-50 border border-slate-200 px-2 py-0.5 rounded text-[11px] font-semibold text-slate-700">
                   Shipment Ref: {consignment.shipmentNo}
                 </span>
@@ -1688,6 +1703,8 @@ const ConsignmentDetail = () => {
             {editingTracking ? (
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 pt-2">
                 {[
+                  { label: 'Consignment No', field: 'consignmentNo', type: 'text' },
+                  { label: 'Internal Shipment No. *', field: 'internalShipmentNo', type: 'text' },
                   { label: 'Appointment Date', field: 'appointmentDate', type: 'date' },
                   { label: 'Scheduled Dispatch', field: 'scheduledDispatchDate', type: 'date' },
                   { label: 'Actual Dispatch', field: 'actualDispatchDate', type: 'date' },
@@ -1770,6 +1787,14 @@ const ConsignmentDetail = () => {
                     Carrier & Documents
                   </span>
                   <div className="space-y-2 text-xs">
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-400">Consignment No:</span>
+                      <span className="font-semibold font-mono text-slate-800 text-right">{displayConsignmentNo(consignment) || '—'}</span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-400">Internal Shipment:</span>
+                      <span className="font-semibold font-mono text-slate-800 text-right">{consignment.internalShipmentNo || '—'}</span>
+                    </div>
                     <div className="flex justify-between">
                       <span className="text-slate-400">Courier:</span>
                       <span className="font-semibold text-slate-800">{consignment.docketCompany || '—'}</span>
@@ -3603,6 +3628,9 @@ const ConsignmentDetail = () => {
               {consignment.internalShipmentNo && (
                 <> · Internal: <span className="font-semibold">{consignment.internalShipmentNo}</span></>
               )}
+            </p>
+            <p className="text-xs text-slate-500">
+              Use Edit Details to change Consignment No without moving related boxes and videos. Only reassign the record ID when you need a new unique URL. The same Consignment No can exist on more than one internal shipment.
             </p>
             <div>
               <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">

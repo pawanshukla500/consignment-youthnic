@@ -1,44 +1,150 @@
 const { firestoreHelpers } = require('./helpers');
 const { pgEnabled, getPool } = require('../config/database');
 
-async function resolveConsignmentByKey(key) {
-  const trimmed = String(key || '').trim();
-  if (!trimmed) return null;
-
-  let consignment = await firestoreHelpers.getDocument('consignments', trimmed);
-  if (consignment) return consignment;
-
-  const byInternal = await firestoreHelpers.queryCollection('consignments', 'internalShipmentNo', '==', trimmed);
-  if (byInternal.length) return byInternal[0];
-
-  const byShipNo = await firestoreHelpers.queryCollection('consignments', 'shipmentNo', '==', trimmed);
-  if (byShipNo.length) return byShipNo[0];
-
-  // Case-insensitive fallback (PG) for id / internalShipmentNo / shipmentNo.
-  const conflict = await findConsignmentIdentityConflict({
-    keys: [trimmed],
-  });
-  return conflict?.consignment || null;
-}
-
-function buildConsignmentId(requestedId, internalShipmentNo) {
-  const trimmedId = String(requestedId || '').trim();
-  if (trimmedId) return trimmedId;
-
-  const fromInternal = String(internalShipmentNo || '').trim().replace(/[^\w.-]/g, '_');
-  if (fromInternal) return fromInternal;
-
-  return null;
-}
-
 function normalizeIdentityKey(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function displayConsignmentNo(consignment) {
+  return String(consignment?.consignmentNo || consignment?.id || '').trim();
+}
+
 /**
- * Find an existing consignment that already owns any of the given identity keys.
- * Matches document id, data.id, internalShipmentNo, and shipmentNo (case-insensitive).
- * Archived consignments still count — the same number cannot be reused.
+ * Stable unique document id is always derived from Internal Shipment No.
+ * Marketplace consignment numbers may be reused across different internal shipments.
+ */
+function buildConsignmentId(requestedId, internalShipmentNo) {
+  const fromInternal = String(internalShipmentNo || '').trim().replace(/[^\w.-]/g, '_');
+  if (fromInternal) return fromInternal;
+  const trimmedId = String(requestedId || '').trim();
+  if (trimmedId) return trimmedId;
+  return null;
+}
+
+function uniqueIdentityKeys({ resolvedId, internalShipmentNo } = {}) {
+  return [...new Set(
+    [resolvedId, internalShipmentNo]
+      .map((k) => String(k || '').trim())
+      .filter(Boolean)
+  )];
+}
+
+function normalizeCreateIdentity({ id, consignmentNo, internalShipmentNo, shipmentNo } = {}) {
+  const trimmedInternal = String(internalShipmentNo || '').trim();
+  const trimmedConsignmentNo = String(consignmentNo || id || '').trim();
+  const trimmedShipmentNo = String(shipmentNo || '').trim();
+  const resolvedId = buildConsignmentId(null, trimmedInternal);
+  return {
+    trimmedInternal,
+    trimmedConsignmentNo,
+    trimmedShipmentNo,
+    resolvedId,
+    pendingExternalId: !trimmedConsignmentNo,
+  };
+}
+
+function ambiguousConsignmentError(value) {
+  const error = new Error(
+    `Multiple consignments share "${value}". Load using the unique Internal Shipment No.`
+  );
+  error.statusCode = 409;
+  error.code = 'AMBIGUOUS_CONSIGNMENT_ID';
+  return error;
+}
+
+function identityRank(consignment, lowerKey) {
+  if (normalizeIdentityKey(consignment?.id) === lowerKey) return 0;
+  if (normalizeIdentityKey(consignment?.internalShipmentNo) === lowerKey) return 1;
+  if (normalizeIdentityKey(consignment?.consignmentNo) === lowerKey) return 2;
+  if (normalizeIdentityKey(consignment?.shipmentNo) === lowerKey) return 3;
+  return 9;
+}
+
+function pickResolvedConsignment(matches, key) {
+  const lower = normalizeIdentityKey(key);
+  const ranked = (Array.isArray(matches) ? matches : []).filter(Boolean);
+  if (!ranked.length) return null;
+
+  const bestRank = Math.min(...ranked.map((c) => identityRank(c, lower)));
+  const best = ranked.filter((c) => identityRank(c, lower) === bestRank);
+  if (best.length > 1 && bestRank >= 2) {
+    throw ambiguousConsignmentError(key);
+  }
+  if (best.length > 1) {
+    throw ambiguousConsignmentError(key);
+  }
+  return best[0];
+}
+
+async function findLookupMatchesPg(lowerKey) {
+  const { rows } = await getPool().query(
+    `SELECT id, data
+     FROM documents
+     WHERE collection = 'consignments'
+       AND (
+         lower(id) = $1
+         OR lower(coalesce(data->>'id','')) = $1
+         OR lower(coalesce(data->>'internalShipmentNo','')) = $1
+         OR lower(coalesce(data->>'consignmentNo','')) = $1
+         OR (
+           coalesce(data->>'shipmentNo','') <> ''
+           AND lower(data->>'shipmentNo') = $1
+         )
+       )`,
+    [lowerKey]
+  );
+  return rows.map((row) => {
+    const consignment = row.data || { id: row.id };
+    return { ...consignment, id: consignment.id || row.id };
+  });
+}
+
+async function resolveConsignmentByKey(key) {
+  const trimmed = String(key || '').trim();
+  if (!trimmed) return null;
+
+  const byId = await firestoreHelpers.getDocument('consignments', trimmed);
+  if (byId) return byId;
+
+  const byInternal = await firestoreHelpers.queryCollection('consignments', 'internalShipmentNo', '==', trimmed);
+  if (byInternal.length === 1) return byInternal[0];
+  if (byInternal.length > 1) throw ambiguousConsignmentError(trimmed);
+
+  if (pgEnabled()) {
+    try {
+      const matches = await findLookupMatchesPg(trimmed.toLowerCase());
+      return pickResolvedConsignment(matches, trimmed);
+    } catch (e) {
+      if (e.code === 'AMBIGUOUS_CONSIGNMENT_ID') throw e;
+      console.warn('[Consignments] lookup SQL failed, falling back:', e.message);
+    }
+  }
+
+  const byConsNo = await firestoreHelpers.queryCollection('consignments', 'consignmentNo', '==', trimmed);
+  const byShipNo = await firestoreHelpers.queryCollection('consignments', 'shipmentNo', '==', trimmed);
+  try {
+    const all = await firestoreHelpers.getCollection('consignments');
+    const lower = normalizeIdentityKey(trimmed);
+    const matches = (all || []).filter((c) => c && (
+      normalizeIdentityKey(c.id) === lower
+      || normalizeIdentityKey(c.internalShipmentNo) === lower
+      || normalizeIdentityKey(c.consignmentNo) === lower
+      || normalizeIdentityKey(c.shipmentNo) === lower
+    ));
+    if (matches.length) return pickResolvedConsignment(matches, trimmed);
+  } catch (e) {
+    console.warn('[Consignments] lookup fallback scan failed:', e.message);
+  }
+
+  const combined = [...byConsNo, ...byShipNo];
+  if (combined.length) return pickResolvedConsignment(combined, trimmed);
+  return null;
+}
+
+/**
+ * Find an existing consignment that already owns a *unique* identity key.
+ * Unique keys are document id and internalShipmentNo only.
+ * Marketplace consignmentNo may be reused when Internal Shipment No differs.
  *
  * @param {{ keys?: string[], excludeId?: string }} opts
  * @returns {Promise<null | { field: string, value: string, consignment: object }>}
@@ -72,10 +178,6 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
              lower(id) = ANY($1::text[])
              OR lower(coalesce(data->>'id','')) = ANY($1::text[])
              OR lower(coalesce(data->>'internalShipmentNo','')) = ANY($1::text[])
-             OR (
-               coalesce(data->>'shipmentNo','') <> ''
-               AND lower(data->>'shipmentNo') = ANY($1::text[])
-             )
            )
          LIMIT 1`,
         params
@@ -86,16 +188,13 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
           normalizeIdentityKey(rows[0].id) === k
           || normalizeIdentityKey(consignment.id) === k
           || normalizeIdentityKey(consignment.internalShipmentNo) === k
-          || normalizeIdentityKey(consignment.shipmentNo) === k
         )) || lowerKeys[0];
-        const field =
-          normalizeIdentityKey(consignment.internalShipmentNo) === hit ? 'internalShipmentNo'
-            : normalizeIdentityKey(consignment.shipmentNo) === hit ? 'shipmentNo'
-              : 'id';
-        const value =
-          field === 'internalShipmentNo' ? consignment.internalShipmentNo
-            : field === 'shipmentNo' ? consignment.shipmentNo
-              : (consignment.id || rows[0].id);
+        const field = normalizeIdentityKey(consignment.internalShipmentNo) === hit
+          ? 'internalShipmentNo'
+          : 'id';
+        const value = field === 'internalShipmentNo'
+          ? consignment.internalShipmentNo
+          : (consignment.id || rows[0].id);
         return { field, value: String(value || hit), consignment };
       }
       return null;
@@ -104,7 +203,6 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
     }
   }
 
-  // Memory / fallback path — exact field queries then case-insensitive scan.
   for (const key of normalized) {
     const byId = await firestoreHelpers.getDocument('consignments', key);
     if (byId && (!exclude || byId.id !== exclude)) {
@@ -114,11 +212,6 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
     const internalHit = byInternal.find((c) => !exclude || c.id !== exclude);
     if (internalHit) {
       return { field: 'internalShipmentNo', value: internalHit.internalShipmentNo || key, consignment: internalHit };
-    }
-    const byShip = await firestoreHelpers.queryCollection('consignments', 'shipmentNo', '==', key);
-    const shipHit = byShip.find((c) => !exclude || c.id !== exclude);
-    if (shipHit) {
-      return { field: 'shipmentNo', value: shipHit.shipmentNo || key, consignment: shipHit };
     }
   }
 
@@ -133,9 +226,6 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
       if (c.internalShipmentNo && keySet.has(normalizeIdentityKey(c.internalShipmentNo))) {
         return { field: 'internalShipmentNo', value: c.internalShipmentNo, consignment: c };
       }
-      if (c.shipmentNo && keySet.has(normalizeIdentityKey(c.shipmentNo))) {
-        return { field: 'shipmentNo', value: c.shipmentNo, consignment: c };
-      }
     }
   } catch (e) {
     console.warn('[Consignments] identity conflict fallback scan failed:', e.message);
@@ -146,11 +236,10 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
 
 function formatIdentityConflictError(conflict) {
   if (!conflict) return 'Consignment already exists';
-  const label =
-    conflict.field === 'internalShipmentNo' ? 'Internal Shipment No.'
-      : conflict.field === 'shipmentNo' ? 'Shipment No.'
-        : 'Consignment ID';
-  return `${label} "${conflict.value}" already exists. You cannot create the same consignment again.`;
+  if (conflict.field === 'internalShipmentNo') {
+    return `Internal Shipment No. "${conflict.value}" already exists. Each internal shipment must be unique — the same Consignment No. can be used on more than one internal shipment.`;
+  }
+  return `Internal identity "${conflict.value}" already exists as another consignment. Internal Shipment No. must stay unique.`;
 }
 
 module.exports = {
@@ -159,4 +248,9 @@ module.exports = {
   findConsignmentIdentityConflict,
   formatIdentityConflictError,
   normalizeIdentityKey,
+  displayConsignmentNo,
+  uniqueIdentityKeys,
+  normalizeCreateIdentity,
+  pickResolvedConsignment,
+  ambiguousConsignmentError,
 };

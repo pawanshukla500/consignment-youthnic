@@ -2772,7 +2772,7 @@ export default function PackingStation() {
                     const loadKey = c.internalShipmentNo || c.shipmentNo || c.id;
                     return (
                       <option key={c.id} value={loadKey}>
-                        [{getDisplayLabel(p)}] {c.internalShipmentNo || c.id} · {p.packingPercent ?? 0}% · Dispatch {formatDispatchDate(c.requiredDispatchDate || c.scheduledDispatchDate)}
+                        [{getDisplayLabel(p)}] {c.internalShipmentNo || c.id}{c.consignmentNo && c.consignmentNo !== (c.internalShipmentNo || c.id) ? ` · ${c.consignmentNo}` : ''} · {p.packingPercent ?? 0}% · Dispatch {formatDispatchDate(c.requiredDispatchDate || c.scheduledDispatchDate)}
                       </option>
                     );
                   })}
