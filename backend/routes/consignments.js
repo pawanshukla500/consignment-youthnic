@@ -1483,9 +1483,12 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
     const resolvedId = buildConsignmentId(trimmedRequestedId, trimmedInternal);
     if (!resolvedId) return res.status(400).json({ error: 'Internal Shipment No. is required to create a consignment.' });
 
-    // Block reuse of the same Consignment ID / Internal Shipment No (including archived).
+    // Uniqueness is enforced on the document ID + Internal Shipment No.
+    // only (including archived). The marketplace Shipment No. / Consignment
+    // No. may repeat — one marketplace number is routinely split across
+    // several internal shipments — so it is never part of the conflict check.
     const conflict = await findConsignmentIdentityConflict({
-      keys: [resolvedId, trimmedRequestedId, trimmedInternal, shipmentNo],
+      keys: [resolvedId, trimmedRequestedId, trimmedInternal],
     });
     if (conflict) {
       return res.status(409).json({
@@ -1681,6 +1684,44 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
       'groundTeamUserId', 'groundTeamName', 'groundTeamEmail'];
     const updateData = { updatedAt: now() };
     allowed.forEach(f => { if (updates[f] !== undefined) updateData[f] = updates[f]; });
+    // The document id itself can only change via POST /:id/reassign-id
+    // (which migrates boxes/skus/videos). Ignore any id in the PUT body.
+    delete updateData.id;
+    // Normalize identity strings so " ABC " and "ABC" are the same number.
+    if (typeof updateData.internalShipmentNo === 'string') {
+      updateData.internalShipmentNo = updateData.internalShipmentNo.trim();
+    }
+    if (typeof updateData.shipmentNo === 'string') {
+      updateData.shipmentNo = updateData.shipmentNo.trim();
+    }
+    if (typeof updateData.name === 'string') {
+      updateData.name = updateData.name.trim();
+    }
+
+    // Internal Shipment No. must stay non-empty and unique (case-insensitive,
+    // archived rows included). Shipment No. / Consignment No. may duplicate —
+    // one marketplace number routinely spans several internal shipments — so
+    // it is never conflict-checked here.
+    if (updateData.internalShipmentNo !== undefined) {
+      if (!updateData.internalShipmentNo) {
+        return res.status(400).json({ error: 'Internal Shipment No. cannot be empty.' });
+      }
+      if (updateData.internalShipmentNo !== existing.internalShipmentNo) {
+        const conflict = await findConsignmentIdentityConflict({
+          keys: [updateData.internalShipmentNo],
+          excludeId: id,
+        });
+        if (conflict) {
+          return res.status(409).json({
+            error: formatIdentityConflictError(conflict),
+            code: 'CONSIGNMENT_ALREADY_EXISTS',
+            field: conflict.field,
+            value: conflict.value,
+            existingId: conflict.consignment?.id || null,
+          });
+        }
+      }
+    }
 
     if (updateData.shipmentStatus && updateData.shipmentStatus !== existing.shipmentStatus) {
       const gate = canAdvanceLogistics(existing, updateData.shipmentStatus);

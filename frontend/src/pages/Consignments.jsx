@@ -32,7 +32,7 @@ const FULL_COL_COUNT = 29;
 const COMPACT_COL_COUNT = 17;
 
 const EMPTY_FORM = {
-  id: '', internalShipmentNo: '', name: '', description: '', expectedDate: '', marketplaceId: '', warehouse: '',
+  id: '', shipmentNo: '', internalShipmentNo: '', name: '', description: '', expectedDate: '', marketplaceId: '', warehouse: '',
   poExpiryDate: '', appointmentDate: '', scheduledDispatchDate: '', actualDispatchDate: '', dateOfInward: '',
   forwardInvoiceNo: '', docketCompany: '', docketNo: '', marketplaceTicketId: '', isDisputed: false, shipmentStatus: 'Planned',
   unitsShipped: '', unitsReceived: '', unitsInwarded: '', qaFailExcessQty: '',
@@ -325,6 +325,8 @@ export default function Consignments() {
       const payload = {
         ...form,
         id: form.id?.trim() || undefined,
+        shipmentNo: form.shipmentNo?.trim() || undefined,
+        internalShipmentNo: form.internalShipmentNo?.trim() || undefined,
         unitsShipped: parseInt(form.unitsShipped) || 0,
         unitsReceived: parseInt(form.unitsReceived) || 0,
         unitsInwarded: parseInt(form.unitsInwarded) || 0,
@@ -373,7 +375,7 @@ export default function Consignments() {
     if (!rows.length) return;
     const headers = ['Consignment No','Internal Shipment No','Portal','FC Name','Planned','Packed','Pending','Pack Status','Ship Status','Disputed','Protected','Total Weight','Weight Unit'];
     const csv = [headers, ...rows.map(c => [
-      c.id, c.internalShipmentNo || '', getMpName(c.marketplaceId), c.warehouse || '',
+      c.shipmentNo || c.id, c.internalShipmentNo || '', getMpName(c.marketplaceId), c.warehouse || '',
       c.totalRequiredQty || 0, c.totalPackedQty || 0, Math.max(0,(c.totalRequiredQty||0)-(c.totalPackedQty||0)),
       c.status || '', c.shipmentStatus || '', c.isDisputed ? 'Yes' : 'No',
       (c.isDisputed || c.marketplaceTicketId) ? 'Yes' : 'No', c.totalWeight || 0, c.weightUnit || 'KG'
@@ -485,8 +487,12 @@ export default function Consignments() {
     setShowCreate(false);
     setEditingRow(c.id);
     setEditForm({
+      name: c.name || '',
+      shipmentNo: c.shipmentNo || '',
+      internalShipmentNo: c.internalShipmentNo || '',
       marketplaceId: c.marketplaceId || '',
       warehouse: c.warehouse || '',
+      expectedDate: c.expectedDate || '',
       appointmentDate: c.appointmentDate || '',
       scheduledDispatchDate: c.scheduledDispatchDate || c.requiredDispatchDate || '',
       actualDispatchDate: c.actualDispatchDate || '',
@@ -510,17 +516,28 @@ export default function Consignments() {
     try {
       const payload = {
         ...editForm,
+        name: (editForm.name || '').trim() || c.name || c.internalShipmentNo || c.id,
+        shipmentNo: (editForm.shipmentNo || '').trim(),
+        internalShipmentNo: (editForm.internalShipmentNo || '').trim(),
         unitsShipped: parseInt(editForm.unitsShipped) || 0,
         unitsReceived: parseInt(editForm.unitsReceived) || 0,
         unitsInwarded: parseInt(editForm.unitsInwarded) || 0,
         qaFailExcessQty: parseInt(editForm.qaFailExcessQty) || 0,
         isDisputed: Boolean(editForm.isDisputed),
       };
-      await consignmentsAPI.update(c.id, payload);
+      if (!payload.internalShipmentNo) {
+        addToast('Internal Shipment No. cannot be empty', 'error');
+        setIsSubmitting(false);
+        return;
+      }
+      const { data } = await consignmentsAPI.update(c.id, payload);
       addToast('Updated', 'success');
+      if (data?.consignment) {
+        setConsignments((prev) => prev.map((row) => (row.id === c.id ? { ...row, ...data.consignment } : row)));
+      }
       setEditingRow(null);
       fetchData({ silent: true });
-    } catch (error) { addToast('Update failed', 'error'); }
+    } catch (error) { addToast(error.response?.data?.error || 'Update failed', 'error'); }
     setIsSubmitting(false);
   };
 
@@ -540,7 +557,7 @@ export default function Consignments() {
     const rows = consignments.map(c => {
       const shortQty = (c.totalRequiredQty || 0) - (c.unitsInwarded || 0);
       return [
-        c.id, c.internalShipmentNo || '', getMpName(c.marketplaceId), c.warehouse || '',
+        c.shipmentNo || c.id, c.internalShipmentNo || '', getMpName(c.marketplaceId), c.warehouse || '',
         c.actualDispatchDate || '', c.dateOfInward || '', c.docketCompany || '', c.docketNo || '',
         c.forwardInvoiceNo || '', c.marketplaceTicketId || '', c.isDisputed ? 'Yes' : 'No',
         (c.isDisputed || c.marketplaceTicketId) ? 'Yes' : 'No', c.totalRequiredQty || 0,
@@ -914,8 +931,39 @@ export default function Consignments() {
                 <React.Fragment key={c.id}>
                   <tr className={`group transition-colors ${rowClass}`}>
                     <td className={`sticky left-0 z-10 border-r border-slate-100 ${stickyBg}`}><input type="checkbox" checked={isSelected} onChange={() => toggleSelect(c.id)} className="w-3.5 h-3.5 rounded accent-primary-600 cursor-pointer" /></td>
-                    <td className="font-medium text-slate-800 whitespace-nowrap">{c.id}</td>
-                    <td className="font-semibold text-slate-900 whitespace-nowrap">{c.internalShipmentNo || '—'}</td>
+                    <td className="whitespace-nowrap">
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          value={editForm.shipmentNo ?? ''}
+                          onChange={(e) => setEditForm({ ...editForm, shipmentNo: e.target.value })}
+                          placeholder="Consignment No."
+                          title="Marketplace Consignment No. — may repeat across internal shipments"
+                          className="w-36 px-1.5 py-1 border border-primary-300 rounded text-xs font-medium font-mono focus:ring-2 focus:ring-primary-500 outline-none"
+                        />
+                      ) : (
+                        <span className="font-medium text-slate-800" title={c.shipmentNo && c.shipmentNo !== c.id ? `Record ID: ${c.id}` : undefined}>
+                          {c.shipmentNo || c.id}
+                          {c.shipmentNo && c.shipmentNo !== c.id && (
+                            <span className="block text-[9px] font-mono font-normal text-slate-400">{c.id}</span>
+                          )}
+                        </span>
+                      )}
+                    </td>
+                    <td className="font-semibold text-slate-900 whitespace-nowrap">
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          value={editForm.internalShipmentNo ?? ''}
+                          onChange={(e) => setEditForm({ ...editForm, internalShipmentNo: e.target.value })}
+                          placeholder="Internal Shipment No."
+                          title="Internal Shipment No. — must stay unique"
+                          className="w-32 px-1.5 py-1 border border-primary-300 rounded text-xs font-semibold focus:ring-2 focus:ring-primary-500 outline-none"
+                        />
+                      ) : (
+                        c.internalShipmentNo || '—'
+                      )}
+                    </td>
                     <td className="whitespace-nowrap">
                       {priority.level !== 'normal' ? (
                         <CriticalityBadge priority={priority} showSublabel />
@@ -992,7 +1040,7 @@ export default function Consignments() {
                         </>
                       ) : (
                         <>
-                          <button onClick={()=>startEdit(c)} className="p-1 text-slate-400 hover:text-primary-600 hover:bg-slate-100 rounded transition-colors" title="Edit tracking"><Pencil className="w-3.5 h-3.5" /></button>
+                          <button onClick={()=>startEdit(c)} className="p-1 text-slate-400 hover:text-primary-600 hover:bg-slate-100 rounded transition-colors" title="Edit consignment & tracking"><Pencil className="w-3.5 h-3.5" /></button>
                           <Link to={`/consignments/${c.id}`} className="p-1 text-slate-400 hover:text-primary-600 hover:bg-slate-100 rounded transition-colors"><Eye className="w-3.5 h-3.5" /></Link>
                           {canDeleteConsignments && <button onClick={()=>openDelete(c)} className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors" title="Delete consignment"><Trash2 className="w-3.5 h-3.5" /></button>}
                         </>
@@ -1002,7 +1050,16 @@ export default function Consignments() {
                   {isEditing && (
                     <tr className="bg-slate-50">
                       <td colSpan={colCount} className="px-3 py-2">
+                        <div className="mb-3 rounded-lg border border-primary-100 bg-primary-50/50 px-3 py-2 text-[11px] text-primary-900">
+                          Consignment No. may repeat across internal shipments — only Internal Shipment No. must stay unique. Record ID <span className="font-mono font-semibold">{c.id}</span> itself can only be changed from the detail page.
+                        </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Consignment No.</label><input type="text" value={editForm.shipmentNo || ''} onChange={e=>setEditForm({...editForm,shipmentNo:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none font-mono" placeholder="MYNJ-…" /></div>
+                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Internal Shipment No. *</label><input type="text" required value={editForm.internalShipmentNo || ''} onChange={e=>setEditForm({...editForm,internalShipmentNo:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none font-semibold" placeholder="SEP-PH1-S…" /></div>
+                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Title / Name</label><input type="text" value={editForm.name || ''} onChange={e=>setEditForm({...editForm,name:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" placeholder="Shipment title" /></div>
+                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Portal</label><select value={editForm.marketplaceId || ''} onChange={e=>setEditForm(applyDispatchToForm({...editForm,marketplaceId:e.target.value,warehouse:''}, marketplaces))} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none bg-white"><option value="">Select</option>{marketplaces.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></div>
+                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">FC Name</label><select value={editForm.warehouse || ''} onChange={e=>setEditForm({...editForm,warehouse:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none bg-white"><option value="">Select</option>{getMpWarehouses(editForm.marketplaceId).map(w=><option key={w.name} value={w.name}>{w.name}</option>)}</select></div>
+                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Expected Date</label><input type="date" value={editForm.expectedDate || ''} onChange={e=>setEditForm({...editForm,expectedDate:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" /></div>
                           <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Appointment Date</label><input type="date" value={editForm.appointmentDate || ''} onChange={e=>setEditForm(applyDispatchToForm({...editForm,appointmentDate:e.target.value}, marketplaces))} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" /></div>
                           <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Required Dispatch</label><input type="date" value={editForm.scheduledDispatchDate || ''} readOnly className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm bg-slate-50 text-slate-600" title="Auto-calculated from appointment − transit days" /></div>
                           <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Actual Dispatch</label><input type="date" value={editForm.actualDispatchDate || ''} onChange={e=>setEditForm({...editForm,actualDispatchDate:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" /></div>
@@ -1098,7 +1155,7 @@ export default function Consignments() {
         open={showCreate}
         onClose={closeCreateModal}
         title="Create New Consignment"
-        subtitle={<>Fields marked <span className="text-red-500">*</span> are required · IDs must be unique</>}
+        subtitle={<>Fields marked <span className="text-red-500">*</span> are required · Internal Shipment No. must be unique</>}
         size="xl"
         footer={
           <div className="flex justify-end gap-3">
@@ -1119,10 +1176,16 @@ export default function Consignments() {
                 </div>
 
                 <div className="rounded-lg border border-amber-100 bg-amber-50/70 px-3 py-2 text-[11px] text-amber-900">
-                  Consignment ID and Internal Shipment No. must be unique — including archived consignments.
+                  Internal Shipment No. must be unique — including archived consignments. Consignment No. (marketplace) may repeat across internal shipments.
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                      Consignment No. <span className="text-slate-400 font-normal normal-case">(marketplace, may repeat)</span>
+                    </label>
+                    <input type="text" value={form.shipmentNo} onChange={e=>setForm({...form,shipmentNo:e.target.value})} className="inp font-mono" placeholder="e.g. MYNJ-VBXOE0310826-11" />
+                  </div>
                   <div>
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
                       Internal Shipment No. <span className="text-primary-600">*</span>
@@ -1172,7 +1235,7 @@ export default function Consignments() {
                   </div>
                   <div>
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
-                      Consignment ID <span className="text-slate-400 font-normal normal-case">(optional)</span>
+                      Consignment ID <span className="text-slate-400 font-normal normal-case">(optional, unique)</span>
                     </label>
                     <input type="text" value={form.id} onChange={e=>setForm({...form,id:e.target.value})} className="inp" placeholder="Blank → uses Internal Shipment No." />
                   </div>

@@ -452,6 +452,9 @@ const ConsignmentDetail = () => {
 
   const openTrackingEdit = () => {
     const initial = {
+      name: consignment.name || '',
+      shipmentNo: consignment.shipmentNo || '',
+      internalShipmentNo: consignment.internalShipmentNo || '',
       appointmentDate: consignment.appointmentDate || '',
       scheduledDispatchDate: consignment.scheduledDispatchDate || '',
       actualDispatchDate: consignment.actualDispatchDate || '',
@@ -493,6 +496,11 @@ const ConsignmentDetail = () => {
       });
 
       if (Object.keys(dirtyPayload).length > 0) {
+        if ('internalShipmentNo' in dirtyPayload && !String(dirtyPayload.internalShipmentNo || '').trim()) {
+          addToast('Internal Shipment No. cannot be empty', 'error');
+          setSavingTracking(false);
+          return;
+        }
         await consignmentsAPI.update(id, dirtyPayload);
         addToast('Tracking details updated', 'success');
       } else {
@@ -1491,7 +1499,7 @@ const ConsignmentDetail = () => {
             <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
               {consignment.shipmentNo && (
                 <span className="bg-slate-50 border border-slate-200 px-2 py-0.5 rounded text-[11px] font-semibold text-slate-700">
-                  Shipment Ref: {consignment.shipmentNo}
+                  Consignment No: {consignment.shipmentNo}
                 </span>
               )}
               {consignment.pendingExternalId && (
@@ -1687,7 +1695,13 @@ const ConsignmentDetail = () => {
           <div className="px-5 pb-5">
             {editingTracking ? (
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 pt-2">
+                <div className="col-span-2 md:col-span-4 lg:col-span-5 rounded-lg border border-primary-100 bg-primary-50/50 px-3 py-2 text-[11px] text-primary-900">
+                  Consignment No. may repeat across internal shipments — only Internal Shipment No. must stay unique.
+                </div>
                 {[
+                  { label: 'Consignment No.', field: 'shipmentNo', type: 'text' },
+                  { label: 'Internal Shipment No. *', field: 'internalShipmentNo', type: 'text' },
+                  { label: 'Title / Name', field: 'name', type: 'text' },
                   { label: 'Appointment Date', field: 'appointmentDate', type: 'date' },
                   { label: 'Scheduled Dispatch', field: 'scheduledDispatchDate', type: 'date' },
                   { label: 'Actual Dispatch', field: 'actualDispatchDate', type: 'date' },
