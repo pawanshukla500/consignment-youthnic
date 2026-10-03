@@ -259,6 +259,7 @@ const pgHelpers = {
       const term = `%${search.toLowerCase()}%`;
       whereClauses.push(`(
         lower(data->>'id') LIKE $${n}
+        OR lower(coalesce(data->>'consignmentNo','')) LIKE $${n}
         OR lower(coalesce(data->>'shipmentNo','')) LIKE $${n}
         OR lower(coalesce(data->>'internalShipmentNo','')) LIKE $${n}
         OR lower(coalesce(data->>'name','')) LIKE $${n}

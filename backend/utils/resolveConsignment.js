@@ -14,6 +14,9 @@ async function resolveConsignmentByKey(key) {
   const byShipNo = await firestoreHelpers.queryCollection('consignments', 'shipmentNo', '==', trimmed);
   if (byShipNo.length) return byShipNo[0];
 
+  const byConsignmentNo = await firestoreHelpers.queryCollection('consignments', 'consignmentNo', '==', trimmed);
+  if (byConsignmentNo.length === 1) return byConsignmentNo[0];
+
   // Case-insensitive fallback (PG) for id / internalShipmentNo / shipmentNo.
   const conflict = await findConsignmentIdentityConflict({
     keys: [trimmed],

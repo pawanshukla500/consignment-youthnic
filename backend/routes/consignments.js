@@ -740,6 +740,7 @@ router.get('/', authenticateToken, requirePermission('consignments', 'view consi
         const s = search.toLowerCase();
         consignments = consignments.filter(c =>
           c.id?.toLowerCase().includes(s) ||
+          c.consignmentNo?.toLowerCase().includes(s) ||
           c.shipmentNo?.toLowerCase().includes(s) ||
           c.internalShipmentNo?.toLowerCase().includes(s) ||
           c.name?.toLowerCase().includes(s) ||
@@ -1471,7 +1472,7 @@ router.get('/:id', authenticateToken, requireAnyPermission(['consignments', 'pac
 // Create consignment
 router.post('/', authenticateToken, requirePermission('consignments', 'create consignment'), async (req, res) => {
   try {
-    const { id, shipmentNo, internalShipmentNo, name, description, expectedDate, marketplaceId, warehouse,
+    const { id, consignmentNo, shipmentNo, internalShipmentNo, name, description, expectedDate, marketplaceId, warehouse,
       poExpiryDate, appointmentDate, scheduledDispatchDate, actualDispatchDate, dateOfInward,
       forwardInvoiceNo, docketCompany, docketNo, marketplaceTicketId, shipmentStatus, isDisputed,
       unitsShipped, unitsReceived, unitsInwarded, qaFailExcessQty, skus = [] } = req.body;
@@ -1479,13 +1480,14 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
     if (!internalShipmentNo) return res.status(400).json({ error: 'Internal Shipment No. is required' });
 
     const trimmedInternal = String(internalShipmentNo || '').trim();
-    const trimmedRequestedId = String(id || '').trim();
-    const resolvedId = buildConsignmentId(trimmedRequestedId, trimmedInternal);
-    if (!resolvedId) return res.status(400).json({ error: 'Internal Shipment No. is required to create a consignment.' });
+    if (!trimmedInternal) return res.status(400).json({ error: 'Internal Shipment No. is required to create a consignment.' });
 
-    // Block reuse of the same Consignment ID / Internal Shipment No (including archived).
+    const trimmedConsignmentNo = String(consignmentNo || id || '').trim();
+
+    // Block reuse of the same Internal Shipment No (including archived).
+    // Consignment No / ID can be shared across multiple internal shipments.
     const conflict = await findConsignmentIdentityConflict({
-      keys: [resolvedId, trimmedRequestedId, trimmedInternal, shipmentNo],
+      keys: [trimmedInternal],
     });
     if (conflict) {
       return res.status(409).json({
@@ -1497,14 +1499,33 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
       });
     }
 
-    const pendingExternalId = !trimmedRequestedId;
+    // Resolve unique document ID primary key for internal datastore
+    let resolvedId = null;
+    if (trimmedConsignmentNo) {
+      const existingWithConsignmentId = await firestoreHelpers.getDocument('consignments', trimmedConsignmentNo);
+      if (!existingWithConsignmentId) {
+        resolvedId = trimmedConsignmentNo;
+      }
+    }
+    if (!resolvedId) {
+      const baseInternalId = buildConsignmentId('', trimmedInternal) || 'consignment';
+      const existingWithInternalId = await firestoreHelpers.getDocument('consignments', baseInternalId);
+      if (!existingWithInternalId) {
+        resolvedId = baseInternalId;
+      } else {
+        resolvedId = `${baseInternalId}_${Date.now().toString(36)}`;
+      }
+    }
+
+    const pendingExternalId = !trimmedConsignmentNo;
 
     const consignmentData = {
       id: resolvedId,
+      consignmentNo: trimmedConsignmentNo || '',
       internalShipmentNo: trimmedInternal,
       pendingExternalId,
-      name: name || trimmedInternal,
-      shipmentNo: String(shipmentNo || trimmedInternal || '').trim(),
+      name: name || trimmedConsignmentNo || trimmedInternal,
+      shipmentNo: String(shipmentNo || trimmedConsignmentNo || trimmedInternal || '').trim(),
       description: description || '',
       expectedDate: expectedDate || '',
       marketplaceId: marketplaceId || '',
@@ -1615,6 +1636,7 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
       shipmentStatus: consignmentOut.shipmentStatus,
       totalPackedQty: consignmentOut.totalPackedQty,
       totalRequiredQty: consignmentOut.totalRequiredQty,
+      consignmentNo: consignmentOut.consignmentNo,
       internalShipmentNo: consignmentOut.internalShipmentNo,
       updatedAt: consignmentOut.updatedAt,
     });
@@ -1673,7 +1695,7 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
     const existing = await firestoreHelpers.getDocument('consignments', id);
     if (!existing) return res.status(404).json({ error: 'Not found' });
 
-    const allowed = ['name', 'shipmentNo', 'internalShipmentNo', 'description', 'expectedDate', 'marketplaceId', 'warehouse',
+    const allowed = ['name', 'consignmentNo', 'shipmentNo', 'internalShipmentNo', 'description', 'expectedDate', 'marketplaceId', 'warehouse',
       'poExpiryDate', 'appointmentDate', 'scheduledDispatchDate', 'actualDispatchDate', 'dateOfInward',
       'forwardInvoiceNo', 'docketCompany', 'docketNo', 'marketplaceTicketId', 'isDisputed', 'shipmentStatus', 'status',
       'unitsShipped', 'unitsReceived', 'unitsInwarded', 'qaFailExcessQty',
@@ -1681,6 +1703,38 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
       'groundTeamUserId', 'groundTeamName', 'groundTeamEmail'];
     const updateData = { updatedAt: now() };
     allowed.forEach(f => { if (updates[f] !== undefined) updateData[f] = updates[f]; });
+
+    // Handle consignmentNo edit (can be shared across shipments)
+    if (updates.consignmentNo !== undefined) {
+      const trimmedConsignmentNo = String(updates.consignmentNo || '').trim();
+      updateData.consignmentNo = trimmedConsignmentNo;
+      if (trimmedConsignmentNo) {
+        updateData.pendingExternalId = false;
+      }
+    }
+
+    // Handle internalShipmentNo edit with strict uniqueness check
+    if (updates.internalShipmentNo !== undefined) {
+      const trimmedInternal = String(updates.internalShipmentNo || '').trim();
+      if (!trimmedInternal) {
+        return res.status(400).json({ error: 'Internal Shipment No. is required' });
+      }
+      if (trimmedInternal.toLowerCase() !== String(existing.internalShipmentNo || '').toLowerCase()) {
+        const conflict = await findConsignmentIdentityConflict({
+          keys: [trimmedInternal],
+          excludeId: id,
+        });
+        if (conflict) {
+          return res.status(409).json({
+            error: formatIdentityConflictError(conflict),
+            code: 'CONSIGNMENT_ALREADY_EXISTS',
+            field: conflict.field,
+            value: conflict.value,
+          });
+        }
+      }
+      updateData.internalShipmentNo = trimmedInternal;
+    }
 
     if (updateData.shipmentStatus && updateData.shipmentStatus !== existing.shipmentStatus) {
       const gate = canAdvanceLogistics(existing, updateData.shipmentStatus);
@@ -1701,9 +1755,13 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
       shipmentStatus: enriched.shipmentStatus,
       totalPackedQty: enriched.totalPackedQty,
       totalRequiredQty: enriched.totalRequiredQty,
+      consignmentNo: enriched.consignmentNo,
       internalShipmentNo: enriched.internalShipmentNo,
       updatedAt: enriched.updatedAt,
     });
+    if (updates.consignmentNo && updates.consignmentNo !== existing.consignmentNo) {
+      syncConsignmentIdChange(id, enriched).catch(() => {});
+    }
     res.json({ consignment: enriched });
     const planningFields = ['appointmentDate', 'scheduledDispatchDate', 'marketplaceId', 'warehouse', 'status', 'shipmentStatus'];
     const touchedPlanning = planningFields.some((f) => updates[f] !== undefined && updates[f] !== existing[f]);

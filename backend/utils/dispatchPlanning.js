@@ -58,7 +58,11 @@ function enrichConsignment(consignment, marketplaceMap = {}) {
     marketplaceName: marketplace?.name || '',
   };
 
-  const withPlanning = { ...consignment, ...planning };
+  const withPlanning = {
+    ...consignment,
+    consignmentNo: consignment.consignmentNo || consignment.id || '',
+    ...planning,
+  };
   const criticality = getShipmentCriticality(withPlanning);
 
   return {

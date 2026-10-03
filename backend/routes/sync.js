@@ -10,6 +10,7 @@ const { onConsignmentChange } = require('../utils/syncBus');
 function mapChange(c) {
   return {
     id: c.id,
+    consignmentNo: c.consignmentNo || c.id || '',
     status: c.status,
     shipmentStatus: c.shipmentStatus,
     totalPackedQty: c.totalPackedQty,

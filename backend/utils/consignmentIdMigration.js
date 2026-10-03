@@ -28,13 +28,29 @@ async function reassignConsignmentId(oldId, newId, userId) {
     keys: [trimmedNew],
     excludeId: oldId,
   });
-  if (conflict) {
+  if (conflict && conflict.field === 'internalShipmentNo') {
     return { ok: false, error: formatIdentityConflictError(conflict) };
+  }
+
+  const existingWithId = await firestoreHelpers.getDocument('consignments', trimmedNew);
+  if (existingWithId && existingWithId.id !== oldId) {
+    // Another consignment already uses trimmedNew as its document ID.
+    // Set consignmentNo on the current consignment without clobbering the other document.
+    const updatedConsignment = {
+      ...existing,
+      consignmentNo: trimmedNew,
+      pendingExternalId: false,
+      updatedAt: now(),
+      updatedBy: userId,
+    };
+    await firestoreHelpers.setDocument('consignments', oldId, updatedConsignment);
+    return { ok: true, consignment: updatedConsignment, oldId, newId: oldId };
   }
 
   const updatedConsignment = {
     ...existing,
     id: trimmedNew,
+    consignmentNo: trimmedNew,
     pendingExternalId: false,
     updatedAt: now(),
     updatedBy: userId,

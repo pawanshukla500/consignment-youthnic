@@ -1384,17 +1384,25 @@ const ConsignmentDetail = () => {
       addToast('Enter the official consignment ID', 'error');
       return;
     }
-    if (trimmed === consignment.id) {
-      addToast('New ID must differ from the current ID', 'error');
+    if (trimmed === (consignment.consignmentNo || consignment.id)) {
+      addToast('New consignment ID must differ from the current value', 'error');
       return;
     }
     setReassigningId(true);
     try {
       const { data } = await consignmentsAPI.reassignId(consignment.id, trimmed);
-      addToast(`Consignment ID updated to ${data.newId}`, 'success');
+      addToast(`Consignment ID updated to ${trimmed}`, 'success');
       setShowReassignId(false);
       setNewConsignmentId('');
-      navigate(`/consignments/${data.newId}`, { replace: true });
+      if (data.newId && data.newId !== consignment.id) {
+        navigate(`/consignments/${data.newId}`, { replace: true });
+      } else {
+        setConsignment((prev) => ({
+          ...prev,
+          consignmentNo: trimmed,
+          pendingExternalId: false,
+        }));
+      }
     } catch (error) {
       addToast(error.response?.data?.error || 'Could not update consignment ID', 'error');
     } finally {
@@ -1489,6 +1497,9 @@ const ConsignmentDetail = () => {
             </div>
 
             <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
+              <span className="bg-slate-50 border border-slate-200 px-2 py-0.5 rounded text-[11px] font-semibold text-slate-700">
+                Consignment No: {consignment.consignmentNo || consignment.id}
+              </span>
               {consignment.shipmentNo && (
                 <span className="bg-slate-50 border border-slate-200 px-2 py-0.5 rounded text-[11px] font-semibold text-slate-700">
                   Shipment Ref: {consignment.shipmentNo}
@@ -1502,10 +1513,10 @@ const ConsignmentDetail = () => {
               {(consignment.pendingExternalId || user?.role === 'admin' || user?.role === 'organization_head') && (
                 <button
                   type="button"
-                  onClick={() => { setShowReassignId(true); setNewConsignmentId(''); }}
+                  onClick={() => { setShowReassignId(true); setNewConsignmentId(consignment.consignmentNo || ''); }}
                   className="font-bold text-primary-600 hover:text-primary-700 underline cursor-pointer"
                 >
-                  Assign Official ID
+                  {consignment.consignmentNo ? 'Edit Consignment No' : 'Assign Official ID'}
                 </button>
               )}
               {consignment.pgEnabled === false && (
@@ -3597,23 +3608,28 @@ const ConsignmentDetail = () => {
             onSubmit={handleReassignId}
             className="bg-white rounded-xl shadow-xl border border-slate-200 w-full max-w-md p-5 space-y-4"
           >
-            <h3 className="text-lg font-bold text-slate-900">Assign official consignment ID</h3>
+            <h3 className="text-lg font-bold text-slate-900">
+              {consignment.consignmentNo ? 'Edit Consignment No' : 'Assign official consignment ID'}
+            </h3>
             <p className="text-sm text-slate-600">
-              Current ID: <span className="font-mono font-semibold">{consignment.id}</span>
+              Consignment No: <span className="font-mono font-semibold">{consignment.consignmentNo || consignment.id}</span>
               {consignment.internalShipmentNo && (
                 <> · Internal: <span className="font-semibold">{consignment.internalShipmentNo}</span></>
               )}
             </p>
+            <div className="rounded-md bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-800">
+              Consignment No can be shared across multiple shipments if needed. Internal shipment remains distinct.
+            </div>
             <div>
               <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">
-                Official consignment ID
+                Consignment No / ID
               </label>
               <input
                 type="text"
                 value={newConsignmentId}
                 onChange={(e) => setNewConsignmentId(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary-500 outline-none"
-                placeholder="CON-2024-001"
+                placeholder="e.g. MYNJ-VBXOEO310826-11"
                 autoFocus
                 required
               />
