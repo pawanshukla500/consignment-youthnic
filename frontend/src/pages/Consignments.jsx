@@ -485,6 +485,9 @@ export default function Consignments() {
     setShowCreate(false);
     setEditingRow(c.id);
     setEditForm({
+      shipmentNo: c.shipmentNo || '',
+      internalShipmentNo: c.internalShipmentNo || '',
+      name: c.name || '',
       marketplaceId: c.marketplaceId || '',
       warehouse: c.warehouse || '',
       appointmentDate: c.appointmentDate || '',
@@ -520,7 +523,7 @@ export default function Consignments() {
       addToast('Updated', 'success');
       setEditingRow(null);
       fetchData({ silent: true });
-    } catch (error) { addToast('Update failed', 'error'); }
+    } catch (error) { addToast(error.response?.data?.error || 'Update failed', 'error'); }
     setIsSubmitting(false);
   };
 
@@ -1003,6 +1006,8 @@ export default function Consignments() {
                     <tr className="bg-slate-50">
                       <td colSpan={colCount} className="px-3 py-2">
                         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Consignment No (repeatable)</label><input type="text" value={editForm.shipmentNo || ''} onChange={e=>setEditForm({...editForm,shipmentNo:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none font-mono" placeholder="Marketplace consignment no." /></div>
+                          <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Internal Shipment No (unique)</label><input type="text" value={editForm.internalShipmentNo || ''} onChange={e=>setEditForm({...editForm,internalShipmentNo:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none font-mono" placeholder="Internal shipment no." /></div>
                           <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Appointment Date</label><input type="date" value={editForm.appointmentDate || ''} onChange={e=>setEditForm(applyDispatchToForm({...editForm,appointmentDate:e.target.value}, marketplaces))} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" /></div>
                           <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Required Dispatch</label><input type="date" value={editForm.scheduledDispatchDate || ''} readOnly className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm bg-slate-50 text-slate-600" title="Auto-calculated from appointment − transit days" /></div>
                           <div><label className="text-[10px] uppercase tracking-wider text-slate-500 block mb-1">Actual Dispatch</label><input type="date" value={editForm.actualDispatchDate || ''} onChange={e=>setEditForm({...editForm,actualDispatchDate:e.target.value})} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm focus:ring-2 focus:ring-primary-500 outline-none" /></div>
@@ -1119,7 +1124,7 @@ export default function Consignments() {
                 </div>
 
                 <div className="rounded-lg border border-amber-100 bg-amber-50/70 px-3 py-2 text-[11px] text-amber-900">
-                  Consignment ID and Internal Shipment No. must be unique — including archived consignments.
+                  Consignment ID and Internal Shipment No. must be unique (including archived). The marketplace Consignment No. may repeat across internal shipments.
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">

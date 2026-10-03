@@ -27,6 +27,7 @@ async function reassignConsignmentId(oldId, newId, userId) {
   const conflict = await findConsignmentIdentityConflict({
     keys: [trimmedNew],
     excludeId: oldId,
+    includeShipmentNo: false,
   });
   if (conflict) {
     return { ok: false, error: formatIdentityConflictError(conflict) };

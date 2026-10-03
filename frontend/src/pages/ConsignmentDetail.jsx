@@ -452,6 +452,8 @@ const ConsignmentDetail = () => {
 
   const openTrackingEdit = () => {
     const initial = {
+      shipmentNo: consignment.shipmentNo || '',
+      internalShipmentNo: consignment.internalShipmentNo || '',
       appointmentDate: consignment.appointmentDate || '',
       scheduledDispatchDate: consignment.scheduledDispatchDate || '',
       actualDispatchDate: consignment.actualDispatchDate || '',
@@ -1688,6 +1690,8 @@ const ConsignmentDetail = () => {
             {editingTracking ? (
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 pt-2">
                 {[
+                  { label: 'Consignment No (repeatable)', field: 'shipmentNo', type: 'text' },
+                  { label: 'Internal Shipment No (unique)', field: 'internalShipmentNo', type: 'text' },
                   { label: 'Appointment Date', field: 'appointmentDate', type: 'date' },
                   { label: 'Scheduled Dispatch', field: 'scheduledDispatchDate', type: 'date' },
                   { label: 'Actual Dispatch', field: 'actualDispatchDate', type: 'date' },

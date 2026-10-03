@@ -37,13 +37,17 @@ function normalizeIdentityKey(value) {
 
 /**
  * Find an existing consignment that already owns any of the given identity keys.
- * Matches document id, data.id, internalShipmentNo, and shipmentNo (case-insensitive).
+ * Matches document id, data.id and internalShipmentNo (case-insensitive).
+ * By default it also matches shipmentNo (Consignment No) for lookups; pass
+ * `includeShipmentNo: false` for uniqueness guards, where the marketplace
+ * Consignment/Shipment No is intentionally repeatable and only the document
+ * id + Internal Shipment No must stay unique.
  * Archived consignments still count — the same number cannot be reused.
  *
- * @param {{ keys?: string[], excludeId?: string }} opts
+ * @param {{ keys?: string[], excludeId?: string, includeShipmentNo?: boolean }} opts
  * @returns {Promise<null | { field: string, value: string, consignment: object }>}
  */
-async function findConsignmentIdentityConflict({ keys = [], excludeId = null } = {}) {
+async function findConsignmentIdentityConflict({ keys = [], excludeId = null, includeShipmentNo = true } = {}) {
   const normalized = [...new Set(
     (Array.isArray(keys) ? keys : [keys])
       .map((k) => String(k || '').trim())
@@ -63,6 +67,11 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
         excludeSql = `AND lower(id) <> lower($${n++})`;
         params.push(exclude);
       }
+      const shipmentSql = includeShipmentNo ? `
+             OR (
+               coalesce(data->>'shipmentNo','') <> ''
+               AND lower(data->>'shipmentNo') = ANY($1::text[])
+             )` : '';
       const { rows } = await getPool().query(
         `SELECT id, data
          FROM documents
@@ -71,11 +80,7 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
            AND (
              lower(id) = ANY($1::text[])
              OR lower(coalesce(data->>'id','')) = ANY($1::text[])
-             OR lower(coalesce(data->>'internalShipmentNo','')) = ANY($1::text[])
-             OR (
-               coalesce(data->>'shipmentNo','') <> ''
-               AND lower(data->>'shipmentNo') = ANY($1::text[])
-             )
+             OR lower(coalesce(data->>'internalShipmentNo','')) = ANY($1::text[])${shipmentSql}
            )
          LIMIT 1`,
         params
@@ -86,7 +91,7 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
           normalizeIdentityKey(rows[0].id) === k
           || normalizeIdentityKey(consignment.id) === k
           || normalizeIdentityKey(consignment.internalShipmentNo) === k
-          || normalizeIdentityKey(consignment.shipmentNo) === k
+          || (includeShipmentNo && normalizeIdentityKey(consignment.shipmentNo) === k)
         )) || lowerKeys[0];
         const field =
           normalizeIdentityKey(consignment.internalShipmentNo) === hit ? 'internalShipmentNo'
@@ -115,6 +120,7 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
     if (internalHit) {
       return { field: 'internalShipmentNo', value: internalHit.internalShipmentNo || key, consignment: internalHit };
     }
+    if (!includeShipmentNo) continue;
     const byShip = await firestoreHelpers.queryCollection('consignments', 'shipmentNo', '==', key);
     const shipHit = byShip.find((c) => !exclude || c.id !== exclude);
     if (shipHit) {
@@ -133,7 +139,7 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
       if (c.internalShipmentNo && keySet.has(normalizeIdentityKey(c.internalShipmentNo))) {
         return { field: 'internalShipmentNo', value: c.internalShipmentNo, consignment: c };
       }
-      if (c.shipmentNo && keySet.has(normalizeIdentityKey(c.shipmentNo))) {
+      if (includeShipmentNo && c.shipmentNo && keySet.has(normalizeIdentityKey(c.shipmentNo))) {
         return { field: 'shipmentNo', value: c.shipmentNo, consignment: c };
       }
     }

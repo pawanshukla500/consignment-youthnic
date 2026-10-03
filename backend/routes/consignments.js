@@ -1483,9 +1483,14 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
     const resolvedId = buildConsignmentId(trimmedRequestedId, trimmedInternal);
     if (!resolvedId) return res.status(400).json({ error: 'Internal Shipment No. is required to create a consignment.' });
 
-    // Block reuse of the same Consignment ID / Internal Shipment No (including archived).
+    // Uniqueness is enforced on the document ID + Internal Shipment No
+    // (including archived). The marketplace Consignment/Shipment No
+    // (shipmentNo) is intentionally repeatable — the same marketplace number
+    // is often split across multiple internal shipments — so it is excluded
+    // from the conflict check.
     const conflict = await findConsignmentIdentityConflict({
-      keys: [resolvedId, trimmedRequestedId, trimmedInternal, shipmentNo],
+      keys: [resolvedId, trimmedRequestedId, trimmedInternal],
+      includeShipmentNo: false,
     });
     if (conflict) {
       return res.status(409).json({
@@ -1681,6 +1686,36 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
       'groundTeamUserId', 'groundTeamName', 'groundTeamEmail'];
     const updateData = { updatedAt: now() };
     allowed.forEach(f => { if (updates[f] !== undefined) updateData[f] = updates[f]; });
+
+    // The Consignment/Shipment No (shipmentNo) may repeat across internal
+    // shipments, so it is never uniqueness-checked. The Internal Shipment No
+    // must stay unique across all consignments (including archived).
+    if (updateData.shipmentNo !== undefined) {
+      updateData.shipmentNo = String(updateData.shipmentNo || '').trim();
+    }
+    if (updateData.internalShipmentNo !== undefined) {
+      const nextInternal = String(updateData.internalShipmentNo || '').trim();
+      if (!nextInternal) {
+        return res.status(400).json({ error: 'Internal Shipment No. cannot be empty.' });
+      }
+      if (nextInternal !== existing.internalShipmentNo) {
+        const conflict = await findConsignmentIdentityConflict({
+          keys: [nextInternal],
+          excludeId: id,
+          includeShipmentNo: false,
+        });
+        if (conflict) {
+          return res.status(409).json({
+            error: formatIdentityConflictError(conflict),
+            code: 'CONSIGNMENT_ALREADY_EXISTS',
+            field: conflict.field,
+            value: conflict.value,
+            existingId: conflict.consignment?.id || null,
+          });
+        }
+      }
+      updateData.internalShipmentNo = nextInternal;
+    }
 
     if (updateData.shipmentStatus && updateData.shipmentStatus !== existing.shipmentStatus) {
       const gate = canAdvanceLogistics(existing, updateData.shipmentStatus);
