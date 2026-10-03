@@ -17,24 +17,53 @@ const RELATED_COLLECTIONS = [
 
 async function reassignConsignmentId(oldId, newId, userId) {
   const trimmedNew = String(newId || '').trim();
-  if (!trimmedNew || trimmedNew === oldId) {
-    return { ok: false, error: 'New consignment ID is required and must differ from the current ID.' };
+  if (!trimmedNew) {
+    return { ok: false, error: 'New consignment ID is required.' };
   }
 
   const existing = await firestoreHelpers.getDocument('consignments', oldId);
   if (!existing) return { ok: false, error: 'Consignment not found.' };
 
-  const conflict = await findConsignmentIdentityConflict({
-    keys: [trimmedNew],
-    excludeId: oldId,
-  });
-  if (conflict) {
-    return { ok: false, error: formatIdentityConflictError(conflict) };
+  // Check if trimmedNew is already used as a document ID by another consignment
+  const existingWithDocId = trimmedNew !== oldId
+    ? await firestoreHelpers.getDocument('consignments', trimmedNew)
+    : null;
+
+  if (existingWithDocId && existingWithDocId.id !== oldId) {
+    // Another consignment already has this ID as its primary document ID.
+    // Instead of failing or colliding with the primary key, we keep this consignment's
+    // unique document ID and set its consignmentNo/shipmentNo to the requested ID.
+    const updatedConsignment = {
+      ...existing,
+      consignmentNo: trimmedNew,
+      shipmentNo: trimmedNew,
+      pendingExternalId: false,
+      updatedAt: now(),
+      updatedBy: userId,
+    };
+    await firestoreHelpers.setDocument('consignments', oldId, updatedConsignment);
+    return { ok: true, consignment: updatedConsignment, oldId, newId: oldId };
+  }
+
+  // If new ID is the same document ID, just ensure consignmentNo is updated
+  if (trimmedNew === oldId) {
+    const updatedConsignment = {
+      ...existing,
+      consignmentNo: trimmedNew,
+      shipmentNo: trimmedNew,
+      pendingExternalId: false,
+      updatedAt: now(),
+      updatedBy: userId,
+    };
+    await firestoreHelpers.setDocument('consignments', oldId, updatedConsignment);
+    return { ok: true, consignment: updatedConsignment, oldId, newId: oldId };
   }
 
   const updatedConsignment = {
     ...existing,
     id: trimmedNew,
+    consignmentNo: trimmedNew,
+    shipmentNo: trimmedNew,
     pendingExternalId: false,
     updatedAt: now(),
     updatedBy: userId,

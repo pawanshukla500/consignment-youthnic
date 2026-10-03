@@ -11,12 +11,43 @@ async function resolveConsignmentByKey(key) {
   const byInternal = await firestoreHelpers.queryCollection('consignments', 'internalShipmentNo', '==', trimmed);
   if (byInternal.length) return byInternal[0];
 
-  const byShipNo = await firestoreHelpers.queryCollection('consignments', 'shipmentNo', '==', trimmed);
-  if (byShipNo.length) return byShipNo[0];
+  const byConsignmentNo = await firestoreHelpers.queryCollection('consignments', 'consignmentNo', '==', trimmed);
+  if (byConsignmentNo.length) {
+    const active = byConsignmentNo.find((c) => c?.status !== 'archived' && c?.status !== 'inward_completed') || byConsignmentNo[0];
+    if (active) return active;
+  }
 
-  // Case-insensitive fallback (PG) for id / internalShipmentNo / shipmentNo.
+  const byShipNo = await firestoreHelpers.queryCollection('consignments', 'shipmentNo', '==', trimmed);
+  if (byShipNo.length) {
+    const active = byShipNo.find((c) => c?.status !== 'archived' && c?.status !== 'inward_completed') || byShipNo[0];
+    if (active) return active;
+  }
+
+  // Case-insensitive fallback (PG) for id / internalShipmentNo / consignmentNo / shipmentNo.
+  if (pgEnabled()) {
+    try {
+      const lower = trimmed.toLowerCase();
+      const { rows } = await getPool().query(
+        `SELECT id, data FROM documents
+         WHERE collection = 'consignments'
+           AND (
+             lower(id) = $1
+             OR lower(coalesce(data->>'internalShipmentNo','')) = $1
+             OR lower(coalesce(data->>'consignmentNo','')) = $1
+             OR lower(coalesce(data->>'shipmentNo','')) = $1
+           )
+         ORDER BY (CASE WHEN coalesce(data->>'status','') NOT IN ('archived','inward_completed') THEN 0 ELSE 1 END), updated_at DESC
+         LIMIT 1`,
+        [lower]
+      );
+      if (rows[0]) return rows[0].data || { id: rows[0].id };
+    } catch (e) {
+      console.warn('[Consignments] case-insensitive lookup failed:', e.message);
+    }
+  }
+
   const conflict = await findConsignmentIdentityConflict({
-    keys: [trimmed],
+    internalShipmentNo: trimmed,
   });
   return conflict?.consignment || null;
 }
@@ -36,19 +67,26 @@ function normalizeIdentityKey(value) {
 }
 
 /**
- * Find an existing consignment that already owns any of the given identity keys.
- * Matches document id, data.id, internalShipmentNo, and shipmentNo (case-insensitive).
- * Archived consignments still count — the same number cannot be reused.
+ * Find an existing consignment that already owns the internalShipmentNo.
+ * Internal shipment numbers MUST remain strictly unique across all consignments (including archived).
+ * Consignment numbers / Consignment IDs can be reused across different internal shipments.
  *
- * @param {{ keys?: string[], excludeId?: string }} opts
+ * @param {{ internalShipmentNo?: string, keys?: string[], excludeId?: string }} opts
  * @returns {Promise<null | { field: string, value: string, consignment: object }>}
  */
-async function findConsignmentIdentityConflict({ keys = [], excludeId = null } = {}) {
-  const normalized = [...new Set(
-    (Array.isArray(keys) ? keys : [keys])
-      .map((k) => String(k || '').trim())
-      .filter(Boolean)
-  )];
+async function findConsignmentIdentityConflict({ internalShipmentNo = null, keys = [], excludeId = null } = {}) {
+  const targets = [];
+  if (internalShipmentNo) {
+    const s = String(internalShipmentNo || '').trim();
+    if (s) targets.push(s);
+  } else if (keys && (Array.isArray(keys) ? keys.length : true)) {
+    (Array.isArray(keys) ? keys : [keys]).forEach((k) => {
+      const s = String(k || '').trim();
+      if (s) targets.push(s);
+    });
+  }
+
+  const normalized = [...new Set(targets)];
   if (!normalized.length) return null;
 
   const exclude = String(excludeId || '').trim();
@@ -69,12 +107,10 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
          WHERE collection = 'consignments'
            ${excludeSql}
            AND (
-             lower(id) = ANY($1::text[])
-             OR lower(coalesce(data->>'id','')) = ANY($1::text[])
-             OR lower(coalesce(data->>'internalShipmentNo','')) = ANY($1::text[])
+             lower(coalesce(data->>'internalShipmentNo','')) = ANY($1::text[])
              OR (
-               coalesce(data->>'shipmentNo','') <> ''
-               AND lower(data->>'shipmentNo') = ANY($1::text[])
+               coalesce(data->>'internalShipmentNo','') = ''
+               AND lower(id) = ANY($1::text[])
              )
            )
          LIMIT 1`,
@@ -82,21 +118,8 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
       );
       if (rows[0]) {
         const consignment = rows[0].data || { id: rows[0].id };
-        const hit = lowerKeys.find((k) => (
-          normalizeIdentityKey(rows[0].id) === k
-          || normalizeIdentityKey(consignment.id) === k
-          || normalizeIdentityKey(consignment.internalShipmentNo) === k
-          || normalizeIdentityKey(consignment.shipmentNo) === k
-        )) || lowerKeys[0];
-        const field =
-          normalizeIdentityKey(consignment.internalShipmentNo) === hit ? 'internalShipmentNo'
-            : normalizeIdentityKey(consignment.shipmentNo) === hit ? 'shipmentNo'
-              : 'id';
-        const value =
-          field === 'internalShipmentNo' ? consignment.internalShipmentNo
-            : field === 'shipmentNo' ? consignment.shipmentNo
-              : (consignment.id || rows[0].id);
-        return { field, value: String(value || hit), consignment };
+        const value = consignment.internalShipmentNo || rows[0].id;
+        return { field: 'internalShipmentNo', value: String(value), consignment };
       }
       return null;
     } catch (e) {
@@ -104,21 +127,12 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
     }
   }
 
-  // Memory / fallback path — exact field queries then case-insensitive scan.
+  // Memory / fallback path — search internalShipmentNo
   for (const key of normalized) {
-    const byId = await firestoreHelpers.getDocument('consignments', key);
-    if (byId && (!exclude || byId.id !== exclude)) {
-      return { field: 'id', value: byId.id || key, consignment: byId };
-    }
     const byInternal = await firestoreHelpers.queryCollection('consignments', 'internalShipmentNo', '==', key);
     const internalHit = byInternal.find((c) => !exclude || c.id !== exclude);
     if (internalHit) {
       return { field: 'internalShipmentNo', value: internalHit.internalShipmentNo || key, consignment: internalHit };
-    }
-    const byShip = await firestoreHelpers.queryCollection('consignments', 'shipmentNo', '==', key);
-    const shipHit = byShip.find((c) => !exclude || c.id !== exclude);
-    if (shipHit) {
-      return { field: 'shipmentNo', value: shipHit.shipmentNo || key, consignment: shipHit };
     }
   }
 
@@ -127,14 +141,9 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
     const keySet = new Set(lowerKeys);
     for (const c of all) {
       if (!c || (exclude && c.id === exclude)) continue;
-      if (keySet.has(normalizeIdentityKey(c.id))) {
-        return { field: 'id', value: c.id, consignment: c };
-      }
-      if (c.internalShipmentNo && keySet.has(normalizeIdentityKey(c.internalShipmentNo))) {
-        return { field: 'internalShipmentNo', value: c.internalShipmentNo, consignment: c };
-      }
-      if (c.shipmentNo && keySet.has(normalizeIdentityKey(c.shipmentNo))) {
-        return { field: 'shipmentNo', value: c.shipmentNo, consignment: c };
+      const internalKey = normalizeIdentityKey(c.internalShipmentNo || (c.id && !c.internalShipmentNo ? c.id : ''));
+      if (internalKey && keySet.has(internalKey)) {
+        return { field: 'internalShipmentNo', value: c.internalShipmentNo || c.id, consignment: c };
       }
     }
   } catch (e) {
@@ -146,11 +155,7 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
 
 function formatIdentityConflictError(conflict) {
   if (!conflict) return 'Consignment already exists';
-  const label =
-    conflict.field === 'internalShipmentNo' ? 'Internal Shipment No.'
-      : conflict.field === 'shipmentNo' ? 'Shipment No.'
-        : 'Consignment ID';
-  return `${label} "${conflict.value}" already exists. You cannot create the same consignment again.`;
+  return `Internal Shipment No. "${conflict.value}" already exists. Each internal shipment must be unique.`;
 }
 
 module.exports = {

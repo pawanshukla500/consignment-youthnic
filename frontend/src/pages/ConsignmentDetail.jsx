@@ -450,8 +450,17 @@ const ConsignmentDetail = () => {
   const [skuStatusFilter, setSkuStatusFilter] = useState('all');
   const [boxSearch, setBoxSearch] = useState('');
 
+  const getDetailConsignmentNo = (c) => {
+    if (c?.consignmentNo) return c.consignmentNo;
+    if (c?.shipmentNo && c.shipmentNo !== c.internalShipmentNo) return c.shipmentNo;
+    if (c?.id && c.id !== c.internalShipmentNo && !c.pendingExternalId) return c.id;
+    return c?.consignmentNo || c?.shipmentNo || c?.id || '';
+  };
+
   const openTrackingEdit = () => {
     const initial = {
+      consignmentNo: getDetailConsignmentNo(consignment),
+      internalShipmentNo: consignment.internalShipmentNo || '',
       appointmentDate: consignment.appointmentDate || '',
       scheduledDispatchDate: consignment.scheduledDispatchDate || '',
       actualDispatchDate: consignment.actualDispatchDate || '',
@@ -492,9 +501,21 @@ const ConsignmentDetail = () => {
         }
       });
 
+      if (dirtyPayload.internalShipmentNo !== undefined) {
+        dirtyPayload.internalShipmentNo = String(dirtyPayload.internalShipmentNo || '').trim();
+        if (!dirtyPayload.internalShipmentNo) {
+          addToast('Internal Shipment No. is required and cannot be empty', 'warning');
+          setSavingTracking(false);
+          return;
+        }
+      }
+      if (dirtyPayload.consignmentNo !== undefined) {
+        dirtyPayload.consignmentNo = String(dirtyPayload.consignmentNo || '').trim();
+      }
+
       if (Object.keys(dirtyPayload).length > 0) {
         await consignmentsAPI.update(id, dirtyPayload);
-        addToast('Tracking details updated', 'success');
+        addToast('Consignment details updated', 'success');
       } else {
         addToast('No changes detected', 'info');
       }
@@ -1464,23 +1485,43 @@ const ConsignmentDetail = () => {
 
             <div className="flex flex-wrap items-baseline gap-3">
               <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
-                <span>{consignment.internalShipmentNo || consignment.id}</span>
+                <span>{getDetailConsignmentNo(consignment) || consignment.id}</span>
                 <button
                   type="button"
                   onClick={async () => {
                     try {
-                      await navigator.clipboard.writeText(consignment.internalShipmentNo || consignment.id);
-                      addToast('Copied ID to clipboard', 'info');
+                      await navigator.clipboard.writeText(getDetailConsignmentNo(consignment) || consignment.id);
+                      addToast('Copied Consignment No. to clipboard', 'info');
                     } catch {
                       addToast('Failed to copy to clipboard', 'warning');
                     }
                   }}
                   className="p-1 text-slate-400 hover:text-slate-700 rounded-md transition-colors cursor-pointer"
-                  title="Copy Consignment ID"
+                  title="Copy Consignment No."
                 >
                   <Copy className="w-4 h-4" />
                 </button>
               </h1>
+              {consignment.internalShipmentNo && (
+                <span className="text-sm font-semibold text-primary-700 bg-primary-50 border border-primary-200 px-2.5 py-1 rounded-lg flex items-center gap-1.5">
+                  Internal: {consignment.internalShipmentNo}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(consignment.internalShipmentNo);
+                        addToast('Copied Internal Shipment No. to clipboard', 'info');
+                      } catch {
+                        addToast('Failed to copy to clipboard', 'warning');
+                      }
+                    }}
+                    className="text-primary-500 hover:text-primary-800 transition-colors"
+                    title="Copy Internal Shipment No."
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </span>
+              )}
               {consignment.warehouse && (
                 <span className="text-xs font-semibold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg">
                   WH: {consignment.warehouse}
@@ -1688,6 +1729,8 @@ const ConsignmentDetail = () => {
             {editingTracking ? (
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 pt-2">
                 {[
+                  { label: 'Consignment No', field: 'consignmentNo', type: 'text' },
+                  { label: 'Internal Shipment No *', field: 'internalShipmentNo', type: 'text' },
                   { label: 'Appointment Date', field: 'appointmentDate', type: 'date' },
                   { label: 'Scheduled Dispatch', field: 'scheduledDispatchDate', type: 'date' },
                   { label: 'Actual Dispatch', field: 'actualDispatchDate', type: 'date' },
@@ -1767,9 +1810,17 @@ const ConsignmentDetail = () => {
                 {/* Card 2: Transport & Identifiers */}
                 <div className="bg-slate-50/70 rounded-xl p-4 border border-slate-100 space-y-2.5">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block border-b border-slate-200/60 pb-1">
-                    Carrier & Documents
+                    Carrier & Identifiers
                   </span>
                   <div className="space-y-2 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Consignment No:</span>
+                      <span className="font-semibold font-mono text-slate-800">{getDetailConsignmentNo(consignment) || consignment.id}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Internal Shipment:</span>
+                      <span className="font-semibold font-mono text-slate-800">{consignment.internalShipmentNo || '—'}</span>
+                    </div>
                     <div className="flex justify-between">
                       <span className="text-slate-400">Courier:</span>
                       <span className="font-semibold text-slate-800">{consignment.docketCompany || '—'}</span>
