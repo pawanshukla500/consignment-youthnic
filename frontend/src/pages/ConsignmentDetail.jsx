@@ -452,6 +452,8 @@ const ConsignmentDetail = () => {
 
   const openTrackingEdit = () => {
     const initial = {
+      shipmentNo: consignment.shipmentNo || '',
+      internalShipmentNo: consignment.internalShipmentNo || '',
       appointmentDate: consignment.appointmentDate || '',
       scheduledDispatchDate: consignment.scheduledDispatchDate || '',
       actualDispatchDate: consignment.actualDispatchDate || '',
@@ -486,11 +488,19 @@ const ConsignmentDetail = () => {
         if (val !== initial[key]) {
           if (numericFields.has(key)) {
             dirtyPayload[key] = val === '' ? null : (Number(val) || 0);
+          } else if (key === 'shipmentNo' || key === 'internalShipmentNo') {
+            dirtyPayload[key] = String(val || '').trim();
           } else {
             dirtyPayload[key] = val;
           }
         }
       });
+
+      if (dirtyPayload.internalShipmentNo !== undefined && !dirtyPayload.internalShipmentNo) {
+        addToast('Internal Shipment No. cannot be empty', 'error');
+        setSavingTracking(false);
+        return;
+      }
 
       if (Object.keys(dirtyPayload).length > 0) {
         await consignmentsAPI.update(id, dirtyPayload);
@@ -1686,8 +1696,14 @@ const ConsignmentDetail = () => {
         <div className={`collapsible-content ${trackingOpen ? 'open' : 'closed'}`}>
           <div className="px-5 pb-5">
             {editingTracking ? (
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 pt-2">
+              <div className="space-y-3 pt-2">
+                <div className="rounded-lg border border-primary-100 bg-primary-50/50 px-3 py-2 text-[11px] text-primary-900">
+                  Consignment No (Shipment Ref) may repeat across shipments; Internal Shipment No must stay unique. Related boxes, scans, videos and documents stay linked by the system ID, so editing these numbers never breaks indexing.
+                </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
                 {[
+                  { label: 'Consignment No (Shipment Ref)', field: 'shipmentNo', type: 'text', hint: 'Duplicates allowed' },
+                  { label: 'Internal Shipment No *', field: 'internalShipmentNo', type: 'text', hint: 'Must stay unique' },
                   { label: 'Appointment Date', field: 'appointmentDate', type: 'date' },
                   { label: 'Scheduled Dispatch', field: 'scheduledDispatchDate', type: 'date' },
                   { label: 'Actual Dispatch', field: 'actualDispatchDate', type: 'date' },
@@ -1706,6 +1722,7 @@ const ConsignmentDetail = () => {
                   <div key={item.field}>
                     <label className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block mb-1">
                       {item.label}
+                      {item.hint ? <span className="ml-1 normal-case font-medium text-slate-400">· {item.hint}</span> : null}
                     </label>
                     {item.type === 'select' ? (
                       <select
@@ -1732,6 +1749,7 @@ const ConsignmentDetail = () => {
                     )}
                   </div>
                 ))}
+              </div>
               </div>
             ) : (
               <div className="grid md:grid-cols-3 gap-4 pt-2">

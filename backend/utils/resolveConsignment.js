@@ -37,8 +37,11 @@ function normalizeIdentityKey(value) {
 
 /**
  * Find an existing consignment that already owns any of the given identity keys.
- * Matches document id, data.id, internalShipmentNo, and shipmentNo (case-insensitive).
- * Archived consignments still count — the same number cannot be reused.
+ * Only the document id and internalShipmentNo are unique. The external
+ * shipmentNo (marketplace "Consignment No") is deliberately NOT unique — the
+ * same marketplace consignment number is routinely reused across several
+ * internal shipments, so duplicates there must be allowed.
+ * Archived consignments still count — the same unique number cannot be reused.
  *
  * @param {{ keys?: string[], excludeId?: string }} opts
  * @returns {Promise<null | { field: string, value: string, consignment: object }>}
@@ -72,10 +75,6 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
              lower(id) = ANY($1::text[])
              OR lower(coalesce(data->>'id','')) = ANY($1::text[])
              OR lower(coalesce(data->>'internalShipmentNo','')) = ANY($1::text[])
-             OR (
-               coalesce(data->>'shipmentNo','') <> ''
-               AND lower(data->>'shipmentNo') = ANY($1::text[])
-             )
            )
          LIMIT 1`,
         params
@@ -86,16 +85,13 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
           normalizeIdentityKey(rows[0].id) === k
           || normalizeIdentityKey(consignment.id) === k
           || normalizeIdentityKey(consignment.internalShipmentNo) === k
-          || normalizeIdentityKey(consignment.shipmentNo) === k
         )) || lowerKeys[0];
         const field =
           normalizeIdentityKey(consignment.internalShipmentNo) === hit ? 'internalShipmentNo'
-            : normalizeIdentityKey(consignment.shipmentNo) === hit ? 'shipmentNo'
-              : 'id';
+            : 'id';
         const value =
           field === 'internalShipmentNo' ? consignment.internalShipmentNo
-            : field === 'shipmentNo' ? consignment.shipmentNo
-              : (consignment.id || rows[0].id);
+            : (consignment.id || rows[0].id);
         return { field, value: String(value || hit), consignment };
       }
       return null;
@@ -105,6 +101,8 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
   }
 
   // Memory / fallback path — exact field queries then case-insensitive scan.
+  // shipmentNo is intentionally skipped here: it is a non-unique external
+  // reference and duplicates are expected.
   for (const key of normalized) {
     const byId = await firestoreHelpers.getDocument('consignments', key);
     if (byId && (!exclude || byId.id !== exclude)) {
@@ -114,11 +112,6 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
     const internalHit = byInternal.find((c) => !exclude || c.id !== exclude);
     if (internalHit) {
       return { field: 'internalShipmentNo', value: internalHit.internalShipmentNo || key, consignment: internalHit };
-    }
-    const byShip = await firestoreHelpers.queryCollection('consignments', 'shipmentNo', '==', key);
-    const shipHit = byShip.find((c) => !exclude || c.id !== exclude);
-    if (shipHit) {
-      return { field: 'shipmentNo', value: shipHit.shipmentNo || key, consignment: shipHit };
     }
   }
 
@@ -132,9 +125,6 @@ async function findConsignmentIdentityConflict({ keys = [], excludeId = null } =
       }
       if (c.internalShipmentNo && keySet.has(normalizeIdentityKey(c.internalShipmentNo))) {
         return { field: 'internalShipmentNo', value: c.internalShipmentNo, consignment: c };
-      }
-      if (c.shipmentNo && keySet.has(normalizeIdentityKey(c.shipmentNo))) {
-        return { field: 'shipmentNo', value: c.shipmentNo, consignment: c };
       }
     }
   } catch (e) {

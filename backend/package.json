@@ -31,6 +31,7 @@
     "test:dashboard-analytics": "node scripts/test-dashboard-analytics.js",
     "test:productivity-trends": "node scripts/test-productivity-trends.js",
     "test:consignments-bucket-filter": "node scripts/test-consignments-bucket-filter.js",
+    "test:consignment-identity-edit": "node scripts/test-consignment-identity-edit.js",
     "test:productivity-reversed-range": "node scripts/test-productivity-reversed-range.js",
     "test:consignment-sheet-lookup": "node scripts/test-consignment-sheet-lookup.js",
     "test:consignment-sheet-push": "node scripts/test-consignment-sheet-push.js",
@@ -38,7 +39,7 @@
     "test:video-box-link": "node scripts/test-video-box-link.js",
     "test:productivity-date-filter": "node scripts/test-productivity-date-filter.js",
     "test:whatsapp": "node scripts/test-whatsapp.js",
-    "test:security": "npm run test:sanitize-user && npm run test:whatsapp && npm run test:env-validation && npm run test:permissions && npm run test:cors && npm run test:auth-active && npm run test:login-path && npm run test:reliability && npm run test:packing-stability && npm run test:shipment-status && npm run test:packing-increment && npm run test:packing-scan-idempotency && npm run test:packing-box-operation && npm run test:packing-quantity && npm run test:inventory-planning && npm run test:workflow-pending && npm run test:workflow-automation && npm run test:inventory-email-policy && npm run test:storage-verify && npm run test:inward-disputes && npm run test:dashboard-analytics && npm run test:productivity-trends && npm run test:consignments-bucket-filter && npm run test:productivity-reversed-range && npm run test:productivity-date-filter && npm run test:consignment-sheet-lookup && npm run test:consignment-sheet-push && npm run test:box-document-integrity && npm run test:video-box-link",
+    "test:security": "npm run test:sanitize-user && npm run test:whatsapp && npm run test:env-validation && npm run test:permissions && npm run test:cors && npm run test:auth-active && npm run test:login-path && npm run test:reliability && npm run test:packing-stability && npm run test:shipment-status && npm run test:packing-increment && npm run test:packing-scan-idempotency && npm run test:packing-box-operation && npm run test:packing-quantity && npm run test:inventory-planning && npm run test:workflow-pending && npm run test:workflow-automation && npm run test:inventory-email-policy && npm run test:storage-verify && npm run test:inward-disputes && npm run test:dashboard-analytics && npm run test:productivity-trends && npm run test:consignments-bucket-filter && npm run test:productivity-reversed-range && npm run test:productivity-date-filter && npm run test:consignment-sheet-lookup && npm run test:consignment-sheet-push && npm run test:box-document-integrity && npm run test:video-box-link && npm run test:consignment-identity-edit",
     "lint": "node -e \"console.log('backend lint: no ESLint config (scripts validated via npm test)')\""
   },
   "dependencies": {

@@ -1483,9 +1483,12 @@ router.post('/', authenticateToken, requirePermission('consignments', 'create co
     const resolvedId = buildConsignmentId(trimmedRequestedId, trimmedInternal);
     if (!resolvedId) return res.status(400).json({ error: 'Internal Shipment No. is required to create a consignment.' });
 
-    // Block reuse of the same Consignment ID / Internal Shipment No (including archived).
+    // Block reuse of the same document ID / Internal Shipment No (including archived).
+    // The external Shipment No / marketplace Consignment No is NOT unique — the
+    // same number is often reused across different internal shipments — so it
+    // is intentionally excluded from the conflict check and may repeat.
     const conflict = await findConsignmentIdentityConflict({
-      keys: [resolvedId, trimmedRequestedId, trimmedInternal, shipmentNo],
+      keys: [resolvedId, trimmedRequestedId, trimmedInternal],
     });
     if (conflict) {
       return res.status(409).json({
@@ -1682,6 +1685,43 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
     const updateData = { updatedAt: now() };
     allowed.forEach(f => { if (updates[f] !== undefined) updateData[f] = updates[f]; });
 
+    // Identity edits: Consignment No (shipmentNo) is a non-unique external
+    // reference — trimming only, duplicates are allowed so the same marketplace
+    // number can appear on several internal shipments. Internal Shipment No.
+    // stays unique (case-insensitive, including archived) and is validated here
+    // because the document id itself is immutable via PUT (use /reassign-id).
+    if (updateData.shipmentNo !== undefined) {
+      updateData.shipmentNo = String(updateData.shipmentNo || '').trim();
+    }
+    if (updateData.internalShipmentNo !== undefined) {
+      const trimmedInternal = String(updateData.internalShipmentNo || '').trim();
+      if (!trimmedInternal) {
+        return res.status(400).json({ error: 'Internal Shipment No. cannot be empty.' });
+      }
+      updateData.internalShipmentNo = trimmedInternal;
+      const currentInternal = String(existing.internalShipmentNo || '').trim();
+      if (trimmedInternal.toLowerCase() !== currentInternal.toLowerCase()) {
+        const conflict = await findConsignmentIdentityConflict({
+          keys: [trimmedInternal],
+          excludeId: id,
+        });
+        if (conflict) {
+          return res.status(409).json({
+            error: formatIdentityConflictError(conflict),
+            code: 'CONSIGNMENT_ALREADY_EXISTS',
+            field: conflict.field,
+            value: conflict.value,
+            existingId: conflict.consignment?.id || null,
+          });
+        }
+      }
+    }
+    if (updateData.name !== undefined) {
+      const trimmedName = String(updateData.name || '').trim();
+      if (trimmedName) updateData.name = trimmedName;
+      else delete updateData.name;
+    }
+
     if (updateData.shipmentStatus && updateData.shipmentStatus !== existing.shipmentStatus) {
       const gate = canAdvanceLogistics(existing, updateData.shipmentStatus);
       if (!gate.ok) {
@@ -1702,6 +1742,7 @@ router.put('/:id', authenticateToken, requirePermission('consignments', 'update 
       totalPackedQty: enriched.totalPackedQty,
       totalRequiredQty: enriched.totalRequiredQty,
       internalShipmentNo: enriched.internalShipmentNo,
+      shipmentNo: enriched.shipmentNo,
       updatedAt: enriched.updatedAt,
     });
     res.json({ consignment: enriched });
