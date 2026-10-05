@@ -26,6 +26,7 @@ import ConsignmentWorkflowPanel from '../components/ConsignmentWorkflowPanel';
 import { useAuth } from '../context/AuthContext';
 import { summarizeOmsGuruSkus } from '../utils/omsGuruSku';
 import { inwardStatusClass, inwardStatusLabel } from '../utils/inwardSku';
+import { buildConsignmentTimeline, sortedBoxQtyEntries } from '../utils/consignmentTimeline';
 
 const PACKING_LIVE_TYPES = new Set([
   'packing_scan',
@@ -112,6 +113,34 @@ async function loadConsignmentWithLiveSession(consignmentId, { withSyncStatus = 
   }
   const syncRes = await packingAPI.syncStatus(consignmentId).catch(() => null)
   return mergeLivePackingSession(consignment, syncRes?.data)
+}
+
+function BoxQtyChips({ entries, variant = 'slate' }) {
+  const sorted = sortedBoxQtyEntries(entries);
+  if (!sorted.length) return <span className="text-slate-300 font-mono text-xs">—</span>;
+  const summary = sorted.map(([boxNo, qty]) => `#${boxNo}: ${qty}`).join(', ');
+  const chipClass = variant === 'primary'
+    ? 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary-50 text-primary-800 text-[10px] font-mono font-semibold whitespace-nowrap border border-primary-100'
+    : 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-700 font-mono text-[10px] font-semibold border border-slate-200/60 whitespace-nowrap';
+  return (
+    <div
+      className="max-h-24 min-w-[14rem] max-w-[28rem] overflow-y-auto overscroll-contain pr-1"
+      title={summary}
+      aria-label={`${sorted.length} boxes`}
+    >
+      <div className="flex flex-wrap gap-1">
+        {sorted.map(([boxNo, qty]) => (
+          <span key={boxNo} className={chipClass}>
+            {variant === 'primary' ? (
+              <>#{boxNo}<span className="text-primary-400">·</span>{qty}</>
+            ) : (
+              <><span className="text-slate-400">#</span>{boxNo}:<strong className="text-primary-700">{qty}</strong></>
+            )}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function VideoFileCard({ video, boxNo, onDelete, addToast, canDelete }) {
@@ -566,141 +595,7 @@ const ConsignmentDetail = () => {
     });
   }, [consignmentBoxes, boxSearch]);
 
-  const timelineEvents = useMemo(() => {
-    if (!consignment) return [];
-    const events = [];
-
-    // 1. Consignment Creation
-    if (consignment.createdAt) {
-      events.push({
-        id: 'evt-created',
-        timestamp: new Date(consignment.createdAt).getTime(),
-        type: 'creation',
-        title: 'Consignment Inward Registered',
-        description: `Shipment inward registered for ${consignment.marketplace || 'Marketplace'} (${consignment.marketplaceConsignmentId || consignment.internalShipmentNo || 'ID'})`,
-        user: consignment.createdByName || consignment.createdBy || 'System',
-        badge: 'Inward Created',
-        badgeColor: 'bg-blue-50 text-blue-700 border-blue-200/80',
-      });
-    }
-
-    // 2. Stage Confirmations
-    if (consignment.stageConfirmations && typeof consignment.stageConfirmations === 'object') {
-      const stageMeta = {
-        material_inwarded: { title: 'Material Inward Confirmed', badge: 'Stage: Inward', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-        packing_completed: { title: 'Packing Station Completed', badge: 'Stage: Packed', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-        invoice_created: { title: 'Invoice Generated & Confirmed', badge: 'Stage: Invoiced', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-        ready_to_dispatch: { title: 'Ready to Dispatch Sign-off', badge: 'Stage: Ready', color: 'bg-teal-50 text-teal-700 border-teal-200' },
-        dispatched: { title: 'Consignment Dispatched', badge: 'Stage: Dispatched', color: 'bg-purple-50 text-purple-700 border-purple-200' },
-      };
-
-      Object.entries(consignment.stageConfirmations).forEach(([stageKey, data]) => {
-        if (data?.confirmedAt) {
-          const meta = stageMeta[stageKey] || { title: `Stage Milestone: ${stageKey}`, badge: 'Milestone', color: 'bg-slate-50 text-slate-700 border-slate-200' };
-          events.push({
-            id: `evt-stage-${stageKey}`,
-            timestamp: new Date(data.confirmedAt).getTime(),
-            type: 'stage',
-            title: meta.title,
-            description: data.notes ? `Note: "${data.notes}"` : 'Stage milestone successfully approved and signed off.',
-            user: data.confirmedByName || data.confirmedBy || 'Warehouse Team',
-            badge: meta.badge,
-            badgeColor: meta.color,
-          });
-        }
-      });
-    }
-
-    // 3. Boxes Packed
-    if (Array.isArray(consignment.boxes)) {
-      consignment.boxes.forEach((box) => {
-        const time = box.createdAt || box.updatedAt || box.scannedAt;
-        if (time) {
-          const itemCount = Array.isArray(box.items) ? box.items.reduce((sum, it) => sum + (Number(it.quantity) || 1), 0) : 0;
-          events.push({
-            id: `evt-box-${box.boxNo}`,
-            timestamp: new Date(time).getTime(),
-            type: 'box',
-            title: `Box #${box.boxNo} Finalized`,
-            description: `Box sealed with ${itemCount} units${box.weight ? ` · Weight: ${box.weight} kg` : ''}`,
-            user: box.packedByName || box.packedBy || 'Packing Station',
-            badge: `Box #${box.boxNo}`,
-            badgeColor: 'bg-amber-50 text-amber-700 border-amber-200',
-          });
-        }
-
-        // Box quantity audit events
-        if (Array.isArray(box.auditLog)) {
-          box.auditLog.forEach((audit, idx) => {
-            if (audit.completedAt) {
-              events.push({
-                id: `evt-audit-${box.boxNo}-${idx}`,
-                timestamp: new Date(audit.completedAt).getTime(),
-                type: 'audit',
-                title: `Quantity Adjustment in Box #${box.boxNo}`,
-                description: `${audit.internalSku || audit.skuId || 'SKU'}: ${audit.actionType === 'edit' ? `${audit.previousQuantity} → ${audit.updatedQuantity}` : `-${audit.quantity}`} (${audit.reasonLabel || audit.reason || 'Variance adjustment'})`,
-                user: audit.removedByName || audit.userName || 'Supervisor',
-                badge: 'Adjustment',
-                badgeColor: 'bg-rose-50 text-rose-700 border-rose-200',
-              });
-            }
-          });
-        }
-      });
-    }
-
-    // 4. Video Proof Uploads
-    if (Array.isArray(consignment.videos)) {
-      consignment.videos.forEach((vid) => {
-        if (vid.uploadedAt) {
-          events.push({
-            id: `evt-vid-${vid.id}`,
-            timestamp: new Date(vid.uploadedAt).getTime(),
-            type: 'video',
-            title: 'Surveillance Video Attached',
-            description: `Box #${vid.boxNo || '—'}: "${vid.originalName}" (${vid.size ? `${(vid.size / 1024 / 1024).toFixed(1)} MB` : 'Stream recorded'})`,
-            user: vid.uploadedByName || 'CCTV Station',
-            badge: 'Video Proof',
-            badgeColor: 'bg-indigo-50 text-indigo-700 border-indigo-200',
-          });
-        }
-      });
-    }
-
-    // 5. Document Uploads
-    if (Array.isArray(consignment.documents)) {
-      consignment.documents.forEach((doc) => {
-        if (doc.uploadedAt) {
-          events.push({
-            id: `evt-doc-${doc.id}`,
-            timestamp: new Date(doc.uploadedAt).getTime(),
-            type: 'document',
-            title: `Document Uploaded: ${doc.originalName}`,
-            description: `Type: ${doc.purpose || 'Shipment Document'} (${doc.size ? `${(doc.size / 1024).toFixed(1)} KB` : 'Cloud Vault'})`,
-            user: doc.uploadedByName || 'Operations Team',
-            badge: doc.purpose === 'invoice' ? 'Invoice Doc' : doc.purpose === 'docket' ? 'Docket Doc' : 'Document',
-            badgeColor: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-          });
-        }
-      });
-    }
-
-    // 6. Marketplace Dispute Ticket
-    if (consignment.marketplaceTicketId) {
-      events.push({
-        id: 'evt-dispute-ticket',
-        timestamp: consignment.updatedAt ? new Date(consignment.updatedAt).getTime() : Date.now(),
-        type: 'dispute',
-        title: 'Marketplace Claim / Dispute Logged',
-        description: `Ticket Reference: ${consignment.marketplaceTicketId}`,
-        user: 'Marketplace Operations',
-        badge: 'Claim Filed',
-        badgeColor: 'bg-red-50 text-red-700 border-red-200',
-      });
-    }
-
-    return events.sort((a, b) => b.timestamp - a.timestamp);
-  }, [consignment]);
+  const timelineEvents = useMemo(() => buildConsignmentTimeline(consignment), [consignment]);
 
   useEffect(() => {
     fetchConsignment();
@@ -1831,7 +1726,7 @@ const ConsignmentDetail = () => {
 
 
       {/* Tabs Container */}
-      <div className="bg-white rounded-2xl shadow-xs border border-slate-200/80 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-xs border border-slate-200/80 overflow-hidden min-w-0">
         {/* Modern Segmented Navigation Bar */}
         <div
           id="consignment-tabs-nav"
@@ -1871,7 +1766,7 @@ const ConsignmentDetail = () => {
                     document.getElementById(`tab-${prev}`)?.focus();
                   }
                 }}
-                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs transition-all whitespace-nowrap cursor-pointer ${
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                   isActive
                     ? 'bg-primary-50 text-primary-800 border border-primary-200 shadow-xs font-bold ring-2 ring-primary-100/50'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 border border-transparent font-semibold'
@@ -1897,11 +1792,11 @@ const ConsignmentDetail = () => {
             <div id="panel-skus" role="tabpanel" aria-labelledby="tab-skus" tabIndex={0} className="space-y-5 outline-hidden">
               {/* Contextual Info & Quick Actions Banner */}
               <div className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div className="p-2.5 rounded-xl bg-primary-100/80 text-primary-700 shrink-0">
                     <Package className="w-5 h-5" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">SKU Inventory & Inward Ledger</h4>
                     <p className="text-xs text-slate-500">
                       Track packed quantities, post-pack removals, and warehouse inward counts. Inward counts never alter packed box records.
@@ -2091,19 +1986,19 @@ const ConsignmentDetail = () => {
 
               {/* SKU Items Table */}
               <div className="overflow-x-auto rounded-xl border border-slate-200/80">
-                <table className="w-full text-left">
+                <table className="w-full min-w-[960px] text-left">
                   <thead>
                     <tr className="bg-slate-50/80 border-b border-slate-200/80 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                      <th className="py-3 px-3">Barcode / Marketplace</th>
-                      <th className="py-3 px-3">Internal SKU</th>
-                      <th className="py-3 px-3 text-right">Required</th>
-                      <th className="py-3 px-3 text-right">Orig Packed</th>
-                      <th className="py-3 px-3 text-right">Removed</th>
-                      <th className="py-3 px-3 text-right">Final Packed</th>
-                      <th className="py-3 px-3">Box Breakdown</th>
-                      <th className="py-3 px-3 text-right">Inward Qty</th>
-                      <th className="py-3 px-3 text-right">Diff</th>
-                      <th className="py-3 px-3">Status</th>
+                      <th className="py-3 px-3 whitespace-nowrap">Barcode / Marketplace</th>
+                      <th className="py-3 px-3 whitespace-nowrap">Internal SKU</th>
+                      <th className="py-3 px-3 text-right whitespace-nowrap">Required</th>
+                      <th className="py-3 px-3 text-right whitespace-nowrap">Orig Packed</th>
+                      <th className="py-3 px-3 text-right whitespace-nowrap">Removed</th>
+                      <th className="py-3 px-3 text-right whitespace-nowrap">Final Packed</th>
+                      <th className="py-3 px-3 whitespace-nowrap">Box Breakdown</th>
+                      <th className="py-3 px-3 text-right whitespace-nowrap">Inward Qty</th>
+                      <th className="py-3 px-3 text-right whitespace-nowrap">Diff</th>
+                      <th className="py-3 px-3 whitespace-nowrap">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs">
@@ -2117,7 +2012,6 @@ const ConsignmentDetail = () => {
                         const diff = Number(sku.quantityDifference ?? (inwardQty - packedQty));
                         const mismatch = sku.inwardMismatch;
                         const barcode = sku.barcode || sku.marketplaceBarcode || '';
-                        const boxEntries = Object.entries(sku.boxQuantities || {}).filter(([, qty]) => Number(qty) > 0);
 
                         return (
                           <tr
@@ -2167,18 +2061,8 @@ const ConsignmentDetail = () => {
                             <td className="py-3 px-3 text-right font-extrabold text-slate-900 tabular-nums">
                               {packedQty}
                             </td>
-                            <td className="py-3 px-3 max-w-[200px]">
-                              {boxEntries.length > 0 ? (
-                                <div className="flex flex-wrap gap-1">
-                                  {boxEntries.map(([boxNo, qty]) => (
-                                    <span key={boxNo} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-700 font-mono text-[10px] font-semibold border border-slate-200/60">
-                                      <span className="text-slate-400">#</span>{boxNo}:<strong className="text-primary-700">{qty}</strong>
-                                    </span>
-                                  ))}
-                                </div>
-                              ) : (
-                                <span className="text-slate-300 font-mono text-xs">—</span>
-                              )}
+                            <td className="py-3 px-3 align-top">
+                              <BoxQtyChips entries={sku.boxQuantities} />
                             </td>
                             <td className="py-3 px-3 text-right font-bold text-slate-800 tabular-nums">{inwardQty}</td>
                             <td className="py-3 px-3 text-right">
@@ -2200,8 +2084,8 @@ const ConsignmentDetail = () => {
                                 <span className="text-slate-300 font-mono text-xs">—</span>
                               )}
                             </td>
-                            <td className="py-3 px-3">
-                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${inwardStatusClass(sku.inwardStatus)}`}>
+                            <td className="py-3 px-3 whitespace-nowrap">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border whitespace-nowrap ${inwardStatusClass(sku.inwardStatus)}`}>
                                 {inwardStatusLabel(sku.inwardStatus)}
                               </span>
                             </td>
@@ -2355,10 +2239,10 @@ const ConsignmentDetail = () => {
                     <Scale className="w-4 h-4 text-primary-500" />
                     Shipment Weight Records Ledger
                   </h4>
-                  <div className="overflow-x-auto">
+                  <div className="overflow-auto max-h-[28rem]">
                     <table className="w-full text-xs border-collapse">
-                      <thead>
-                        <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px]">
+                      <thead className="sticky top-0 z-10">
+                        <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px] bg-white">
                           <th className="py-2 px-3 text-left font-bold">Box No</th>
                           <th className="py-2 px-3 text-right font-bold">Weight</th>
                           <th className="py-2 px-3 text-left font-bold">Captured By</th>
@@ -2857,9 +2741,6 @@ const ConsignmentDetail = () => {
                     <tbody className="divide-y divide-slate-100">
                       {pivotData.rows.map((row, idx) => {
                         const barcodeSku = row.marketplaceBarcode || row.barcode || '';
-                        const packedIn = Object.entries(row.boxQtys || {})
-                          .filter(([, qty]) => qty > 0)
-                          .sort((a, b) => String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true }));
                         return (
                           <tr key={row.skuId} className={`${row.remaining === 0 ? 'bg-emerald-50/40' : row.remaining < 0 ? 'bg-red-50/40' : 'bg-white'} hover:bg-slate-50/80`}>
                             <td className="px-3 py-2.5 text-xs text-slate-400">{idx + 1}</td>
@@ -2882,18 +2763,8 @@ const ConsignmentDetail = () => {
                                 <span className="text-amber-600">{row.remaining}</span>
                               )}
                             </td>
-                            <td className="px-3 py-2.5">
-                              {packedIn.length > 0 ? (
-                                <div className="flex flex-wrap gap-1">
-                                  {packedIn.map(([boxNo, qty]) => (
-                                    <span key={boxNo} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary-50 text-primary-800 text-[10px] font-mono font-semibold whitespace-nowrap">
-                                      #{boxNo}<span className="text-primary-400">·</span>{qty}
-                                    </span>
-                                  ))}
-                                </div>
-                              ) : (
-                                <span className="text-slate-300 text-xs">—</span>
-                              )}
+                            <td className="px-3 py-2.5 align-top">
+                              <BoxQtyChips entries={row.boxQtys} variant="primary" />
                             </td>
                           </tr>
                         );
@@ -3357,57 +3228,64 @@ const ConsignmentDetail = () => {
             <div id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" tabIndex={0} className="space-y-6 outline-hidden">
               {/* Header banner */}
               <div className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div className="p-2.5 rounded-xl bg-primary-100/80 text-primary-700 shrink-0">
                     <History className="w-5 h-5" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Consignment Lifecycle &amp; Audit Trail</h4>
                     <p className="text-xs text-slate-500 mt-0.5">
                       Chronological record of inward, stage milestones, container packaging, and audit modifications
                     </p>
                   </div>
                 </div>
-                <div className="text-xs font-semibold text-slate-600 bg-white border border-slate-200 px-3 py-1.5 rounded-xl shadow-2xs tabular-nums">
+                <div className="shrink-0 text-xs font-semibold text-slate-600 bg-white border border-slate-200 px-3 py-1.5 rounded-xl shadow-2xs tabular-nums whitespace-nowrap">
                   {timelineEvents.length} Recorded {timelineEvents.length === 1 ? 'Event' : 'Events'}
                 </div>
               </div>
 
               {/* Timeline Stream */}
               {timelineEvents.length > 0 ? (
-                <div className="relative pl-6 sm:pl-8 before:absolute before:left-3 before:top-3 before:bottom-3 before:w-0.5 before:bg-slate-200">
-                  <div className="space-y-6">
-                    {timelineEvents.map((evt) => (
-                      <div key={evt.id} className="relative group">
-                        {/* Dot */}
-                        <div className="absolute -left-[27px] sm:-left-[35px] top-1.5 w-6 h-6 rounded-full bg-white border-2 border-primary-500 flex items-center justify-center shadow-xs">
+                <div className="space-y-0">
+                  {timelineEvents.map((evt, index) => (
+                    <div key={evt.id} className="flex gap-3 sm:gap-4">
+                      <div className="flex w-6 shrink-0 flex-col items-center">
+                        <div className="mt-4 w-6 h-6 rounded-full bg-white border-2 border-primary-500 flex items-center justify-center shadow-xs">
                           <span className="w-2 h-2 rounded-full bg-primary-600" />
                         </div>
-
-                        {/* Event card */}
+                        {index < timelineEvents.length - 1 && (
+                          <div className="w-0.5 flex-1 bg-slate-200 my-1" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1 pb-4">
                         <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs hover:border-slate-300 hover:shadow-xs transition-all">
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                            <div className="flex items-center gap-2 flex-wrap">
+                          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
+                            <div className="flex items-center gap-2 flex-wrap min-w-0">
                               <span className="font-bold text-sm text-slate-900">{evt.title}</span>
                               <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${evt.badgeColor}`}>
                                 {evt.badge}
                               </span>
                             </div>
-                            <span className="text-[11px] font-mono text-slate-400">
-                              {new Date(evt.timestamp).toLocaleString('en-GB', {
-                                day: '2-digit', month: 'short', year: 'numeric',
-                                hour: '2-digit', minute: '2-digit'
-                              })}
-                            </span>
+                            <time
+                              className="shrink-0 text-[11px] font-mono text-slate-400 whitespace-nowrap"
+                              dateTime={Number.isFinite(evt.timestamp) ? new Date(evt.timestamp).toISOString() : undefined}
+                            >
+                              {Number.isFinite(evt.timestamp)
+                                ? new Date(evt.timestamp).toLocaleString('en-GB', {
+                                  day: '2-digit', month: 'short', year: 'numeric',
+                                  hour: '2-digit', minute: '2-digit', second: '2-digit',
+                                })
+                                : '—'}
+                            </time>
                           </div>
-                          <p className="text-xs text-slate-600 mt-1.5">{evt.description}</p>
+                          <p className="text-xs text-slate-600 mt-1.5 break-words">{evt.description}</p>
                           <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
                             <span className="font-medium text-slate-500">Recorded by: <span className="font-semibold text-slate-700">{evt.user}</span></span>
                           </div>
                         </div>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  ))}
                 </div>
               ) : (
                 <div className="text-center py-12 px-4 rounded-xl border border-dashed border-slate-200 bg-slate-50/50">
