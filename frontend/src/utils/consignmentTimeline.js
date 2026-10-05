@@ -21,6 +21,14 @@ export function boxPackedUnits(box) {
   return fromItems
 }
 
+export function timelineBoxUnits(box) {
+  if (box?.liveOverlay && box.sealedTotalQty != null && box.sealedTotalQty !== '') {
+    const sealed = Number(box.sealedTotalQty)
+    if (Number.isFinite(sealed)) return sealed
+  }
+  return boxPackedUnits(box)
+}
+
 export function formatUnitCount(units) {
   const count = Number(units) || 0
   return `${count} ${count === 1 ? 'unit' : 'units'}`
@@ -109,8 +117,8 @@ export function buildConsignmentTimeline(consignment) {
   if (Array.isArray(consignment.boxes)) {
     consignment.boxes.forEach((box) => {
       const timestamp = toEventTime(box.createdAt || box.updatedAt || box.scannedAt)
-      if (timestamp != null) {
-        const units = boxPackedUnits(box)
+      if (!box.liveUnsaved && timestamp != null) {
+        const units = timelineBoxUnits(box)
         events.push({
           id: `evt-box-${box.boxNo}`,
           timestamp,

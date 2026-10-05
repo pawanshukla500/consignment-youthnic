@@ -79,7 +79,14 @@ function mergeLivePackingSession(consignment, syncData) {
       liveUnsaved: !savedBoxNos.has(String(boxNo)),
     };
     if (existingIdx >= 0) {
-      savedBoxes[existingIdx] = { ...savedBoxes[existingIdx], ...overlay };
+      const saved = savedBoxes[existingIdx];
+      savedBoxes[existingIdx] = {
+        ...saved,
+        ...overlay,
+        liveUnsaved: false,
+        liveOverlay: true,
+        sealedTotalQty: saved.sealedTotalQty ?? saved.totalQty,
+      };
     } else {
       savedBoxes.push({
         id: `${consignment.id}_box_${boxNo}`,

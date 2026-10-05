@@ -3,6 +3,7 @@ import {
   boxPackedUnits,
   buildConsignmentTimeline,
   sortedBoxQtyEntries,
+  timelineBoxUnits,
 } from '../consignmentTimeline'
 
 describe('sortedBoxQtyEntries', () => {
@@ -34,6 +35,17 @@ describe('boxPackedUnits', () => {
     expect(boxPackedUnits({
       items: [{ quantity: 14 }],
     })).toBe(14)
+  })
+})
+
+describe('timelineBoxUnits', () => {
+  it('keeps the last sealed count when a live session overlays a saved box', () => {
+    expect(timelineBoxUnits({
+      liveOverlay: true,
+      sealedTotalQty: 18,
+      totalQty: 40,
+      items: [{ qty: 40 }],
+    })).toBe(18)
   })
 })
 
@@ -88,6 +100,31 @@ describe('buildConsignmentTimeline', () => {
       'evt-box-39',
       'evt-created',
     ])
+  })
+
+  it('does not mark an open live box as sealed, and keeps the saved count on an overlaid box', () => {
+    const events = buildConsignmentTimeline({
+      boxes: [
+        {
+          boxNo: 4,
+          createdAt: '2026-09-23T12:00:00.000Z',
+          weight: 8,
+          liveOverlay: true,
+          sealedTotalQty: 18,
+          totalQty: 40,
+          items: [{ qty: 40 }],
+        },
+        {
+          boxNo: 5,
+          liveUnsaved: true,
+          createdAt: '2026-09-23T12:05:00.000Z',
+          totalQty: 7,
+          items: [{ qty: 7 }],
+        },
+      ],
+    })
+    expect(events.find((event) => event.id === 'evt-box-4').description).toBe('Box sealed with 18 units · Weight: 8 kg')
+    expect(events.find((event) => event.id === 'evt-box-5')).toBeUndefined()
   })
 
   it('does not invent a unit when a box line has no quantity', () => {
