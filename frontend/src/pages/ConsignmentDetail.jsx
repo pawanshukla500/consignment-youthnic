@@ -1733,13 +1733,13 @@ const ConsignmentDetail = () => {
 
 
       {/* Tabs Container */}
-      <div className="bg-white rounded-2xl shadow-xs border border-slate-200/80 overflow-hidden min-w-0">
-        {/* Modern Segmented Navigation Bar */}
+      <div className="bg-white rounded-2xl shadow-xs border border-slate-200/80 min-w-0">
+        {/* Tab bar stays in normal flow so it cannot cover the panel headers. */}
         <div
           id="consignment-tabs-nav"
           role="tablist"
           aria-label="Consignment Details Navigation"
-          className="sticky top-[60px] z-20 bg-white/95 backdrop-blur-xs border-b border-slate-200/80 px-3 sm:px-5 py-2.5 flex items-center gap-2 overflow-x-auto no-scrollbar"
+          className="rounded-t-2xl bg-white border-b border-slate-200/80 px-3 sm:px-5 py-3 flex items-center gap-2 overflow-x-auto"
         >
           {[
             { id: 'skus', label: 'SKU Items', subtitle: 'Quantities & Inward', icon: Package, count: consignment.skus?.length || 0 },
@@ -1775,7 +1775,7 @@ const ConsignmentDetail = () => {
                 }}
                 className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                   isActive
-                    ? 'bg-primary-50 text-primary-800 border border-primary-200 shadow-xs font-bold ring-2 ring-primary-100/50'
+                    ? 'bg-primary-50 text-primary-800 border border-primary-200 shadow-xs font-bold'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 border border-transparent font-semibold'
                 }`}
               >
@@ -1798,8 +1798,8 @@ const ConsignmentDetail = () => {
           {activeTab === 'skus' && (
             <div id="panel-skus" role="tabpanel" aria-labelledby="tab-skus" tabIndex={0} className="space-y-5 outline-hidden">
               {/* Contextual Info & Quick Actions Banner */}
-              <div className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-4 flex flex-col lg:flex-row lg:items-start justify-between gap-3">
+                <div className="flex items-start gap-3 min-w-0 flex-1">
                   <div className="p-2.5 rounded-xl bg-primary-100/80 text-primary-700 shrink-0">
                     <Package className="w-5 h-5" />
                   </div>
@@ -2529,12 +2529,12 @@ const ConsignmentDetail = () => {
                 <div className="space-y-4">
                   {/* Google Sheets Live Sync Banner & Action Card */}
                   <div className="rounded-2xl border border-emerald-200/90 bg-linear-to-r from-emerald-50/70 via-white to-teal-50/40 p-4 sm:p-5 shadow-xs">
-                    <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-                      <div className="flex items-start gap-3.5">
-                        <div className="p-2.5 rounded-xl bg-emerald-100 text-emerald-800 border border-emerald-200 shadow-2xs shrink-0 mt-0.5">
+                    <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                      <div className="flex items-start gap-3.5 min-w-0 flex-1">
+                        <div className="p-2.5 rounded-xl bg-emerald-100 text-emerald-800 border border-emerald-200 shadow-2xs shrink-0">
                           <FileSpreadsheet className="w-5 h-5" />
                         </div>
-                        <div className="space-y-1">
+                        <div className="space-y-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-sm font-bold text-slate-900">Google Sheets Live Sync</span>
                             <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100/90 text-emerald-800 border border-emerald-200">
@@ -2595,7 +2595,7 @@ const ConsignmentDetail = () => {
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 w-full md:w-auto shrink-0 justify-end">
+                      <div className="flex items-center gap-2 w-full lg:w-auto shrink-0 justify-end">
                         <button
                           type="button"
                           id="btn-push-google-sheet"
@@ -3234,8 +3234,8 @@ const ConsignmentDetail = () => {
           {activeTab === 'activity' && (
             <div id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" tabIndex={0} className="space-y-6 outline-hidden">
               {/* Header banner */}
-              <div className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-4 flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                <div className="flex items-start gap-3 min-w-0 flex-1">
                   <div className="p-2.5 rounded-xl bg-primary-100/80 text-primary-700 shrink-0">
                     <History className="w-5 h-5" />
                   </div>
@@ -3253,7 +3253,7 @@ const ConsignmentDetail = () => {
 
               {/* Timeline Stream */}
               {timelineEvents.length > 0 ? (
-                <div className="space-y-0">
+                <div className="space-y-0 pl-1">
                   {timelineEvents.map((evt, index) => (
                     <div key={evt.id} className="flex gap-3 sm:gap-4">
                       <div className="flex w-6 shrink-0 flex-col items-center">
