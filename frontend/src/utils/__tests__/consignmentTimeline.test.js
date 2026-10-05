@@ -101,6 +101,45 @@ describe('buildConsignmentTimeline', () => {
     expect(events[0].description).toBe('Box sealed with 0 units')
   })
 
+  it('uses workflow stage keys and shows added quantities as additions', () => {
+    const events = buildConsignmentTimeline({
+      stageConfirmations: {
+        ready_for_dispatch: {
+          confirmedAt: '2026-09-24T04:00:00.000Z',
+          confirmedByName: 'Pawan Shukla',
+          note: 'Vehicle booked',
+        },
+        inward_completed: {
+          confirmedAt: '2026-09-25T04:00:00.000Z',
+          confirmedByName: 'Warehouse',
+          note: 'Received in full',
+        },
+      },
+      boxes: [{
+        boxNo: 2,
+        createdAt: '2026-09-23T12:00:00.000Z',
+        totalQty: 10,
+        adjustments: [{
+          id: 'add-1',
+          status: 'completed',
+          completedAt: '2026-09-23T12:10:00.000Z',
+          actionType: 'add',
+          quantity: 3,
+          internalSku: 'SKU-1',
+        }],
+      }],
+    })
+
+    expect(events.find((event) => event.id === 'evt-stage-ready_for_dispatch')).toMatchObject({
+      title: 'Ready to Dispatch Sign-off',
+      badge: 'Stage: Ready',
+      description: 'Note: "Vehicle booked"',
+      user: 'Pawan Shukla',
+    })
+    expect(events.find((event) => event.id === 'evt-stage-inward_completed').title).toBe('Warehouse Inward Completed')
+    expect(events.find((event) => event.id === 'evt-audit-2-add-1').description).toContain('+3')
+  })
+
   it('ignores pending adjustments and does not duplicate auditLog copies', () => {
     const events = buildConsignmentTimeline({
       boxes: [{

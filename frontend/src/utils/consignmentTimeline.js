@@ -26,6 +26,13 @@ export function formatUnitCount(units) {
   return `${count} ${count === 1 ? 'unit' : 'units'}`
 }
 
+function formatAdjustmentChange(audit) {
+  if (audit.actionType === 'edit') return `${audit.previousQuantity} → ${audit.updatedQuantity}`
+  if (audit.actionType === 'add') return `+${audit.quantity}`
+  if (audit.actionType === 'remove') return `-${audit.quantity}`
+  return audit.quantity == null ? '' : String(audit.quantity)
+}
+
 function pushAdjustmentEvents(events, box) {
   const rows = [
     ...(Array.isArray(box.adjustments) ? box.adjustments : []),
@@ -46,7 +53,7 @@ function pushAdjustmentEvents(events, box) {
       timestamp,
       type: 'audit',
       title: `Quantity Adjustment in Box #${box.boxNo}`,
-      description: `${audit.internalSku || audit.skuId || 'SKU'}: ${audit.actionType === 'edit' ? `${audit.previousQuantity} → ${audit.updatedQuantity}` : `-${audit.quantity}`} (${audit.reasonLabel || audit.reason || 'Variance adjustment'})`,
+      description: `${audit.internalSku || audit.skuId || 'SKU'}: ${formatAdjustmentChange(audit)} (${audit.reasonLabel || audit.reason || 'Variance adjustment'})`,
       user: audit.removedByName || audit.userName || 'Supervisor',
       badge: 'Adjustment',
       badgeColor: 'bg-rose-50 text-rose-700 border-rose-200',
@@ -74,11 +81,12 @@ export function buildConsignmentTimeline(consignment) {
 
   if (consignment.stageConfirmations && typeof consignment.stageConfirmations === 'object') {
     const stageMeta = {
-      material_inwarded: { title: 'Material Inward Confirmed', badge: 'Stage: Inward', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
       packing_completed: { title: 'Packing Station Completed', badge: 'Stage: Packed', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+      ready_for_invoice: { title: 'Ready for Invoice', badge: 'Stage: Invoice', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
       invoice_created: { title: 'Invoice Generated & Confirmed', badge: 'Stage: Invoiced', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-      ready_to_dispatch: { title: 'Ready to Dispatch Sign-off', badge: 'Stage: Ready', color: 'bg-teal-50 text-teal-700 border-teal-200' },
+      ready_for_dispatch: { title: 'Ready to Dispatch Sign-off', badge: 'Stage: Ready', color: 'bg-teal-50 text-teal-700 border-teal-200' },
       dispatched: { title: 'Consignment Dispatched', badge: 'Stage: Dispatched', color: 'bg-purple-50 text-purple-700 border-purple-200' },
+      inward_completed: { title: 'Warehouse Inward Completed', badge: 'Stage: Inward', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
     }
 
     Object.entries(consignment.stageConfirmations).forEach(([stageKey, data]) => {
@@ -90,7 +98,7 @@ export function buildConsignmentTimeline(consignment) {
         timestamp,
         type: 'stage',
         title: meta.title,
-        description: data.notes ? `Note: "${data.notes}"` : 'Stage milestone successfully approved and signed off.',
+        description: (data.note || data.notes) ? `Note: "${data.note || data.notes}"` : 'Stage milestone successfully approved and signed off.',
         user: data.confirmedByName || data.confirmedBy || 'Warehouse Team',
         badge: meta.badge,
         badgeColor: meta.color,
